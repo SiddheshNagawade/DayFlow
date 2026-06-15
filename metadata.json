@@ -1,0 +1,6 @@
+{
+  "name": "Schedule Planner",
+  "description": "An offline-first schedule planner with a programmatic sorting and gap-filling engine and a minimal AI-powered natural language prompt parser.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
