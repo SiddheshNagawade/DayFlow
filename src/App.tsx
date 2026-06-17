@@ -53,9 +53,9 @@ import {
   Play,
   Pause
 } from "lucide-react";
-import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone } from "./types";
+import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone, WeightEntry } from "./types";
 import { generateSchedule, calculateFuturePredictions, timeToMinutes, minutesToTime, isFixedBlockActiveOnDate, calculateCalibrationProfile } from "./utils/scheduler";
-import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData, loadGoals, saveGoals, loadAchievements, saveAchievements } from "./utils/storage";
+import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData, loadGoals, saveGoals, loadAchievements, saveAchievements, loadWeightLog, saveWeightLog } from "./utils/storage";
 import { generateMockMLData, getTaskCategory, detectHighDelayPatterns } from "./utils/mlEngine";
 import { updateGoalProgressFromTask, predictGoalCompletion, generateCheckInPrompt, getGoalsDueForCheckIn, suggestGoalsFromTaskHistory, generateMilestones, checkForGlobalAchievements } from "./utils/goalEngine";
 
@@ -245,6 +245,19 @@ export default function App() {
   const [proposedChanges, setProposedChanges] = useState<any[] | null>(null);
   const [chatHistory, setChatHistory] = useState<{ sender: "ai" | "user"; text: string }[]>([]);
   const [greetingMessage, setGreetingMessage] = useState("");
+
+  // Vision image attachment for copilot
+  const [copilotImage, setCopilotImage] = useState<{ base64: string; mimeType: string; previewUrl: string } | null>(null);
+  const copilotImageInputRef = useRef<HTMLInputElement>(null);
+
+  // Inline task card expansion state
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
+
+  // Frictionless completion dialog
+  const [effortDialogTaskId, setEffortDialogTaskId] = useState<string | null>(null);
+
+  // Weight log
+  const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
   
   // Notification states
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default");
@@ -367,6 +380,7 @@ export default function App() {
     setProfiles(loadProfiles());
     setGoals(loadGoals());
     setAchievements(loadAchievements());
+    setWeightLog(loadWeightLog());
 
     // Show onboarding if first time
     if (!isOnboardingComplete()) {
@@ -946,10 +960,13 @@ export default function App() {
 
   const handleSendCopilotMessage = async () => {
     const messageText = copilotInput.trim();
-    if (!messageText) return;
+    if (!messageText && !copilotImage) return;
 
-    setChatHistory(prev => [...prev, { sender: "user", text: messageText }]);
+    const displayText = messageText || (copilotImage ? "[Image attached]" : "");
+    setChatHistory(prev => [...prev, { sender: "user", text: displayText }]);
     setCopilotInput("");
+    const imagePayload = copilotImage ? { base64: copilotImage.base64, mimeType: copilotImage.mimeType } : undefined;
+    setCopilotImage(null);
     setIsProcessingCopilot(true);
     setCopilotError(null);
     setProposedChanges(null);
@@ -960,10 +977,11 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userText: messageText,
+          userText: messageText || "Please analyze the attached image and extract schedule/workout/weight info.",
           currentSchedule: daySchedule.items,
           pendingTasks: flexibleTasks.filter(t => t.status !== "done"),
-          today: selectedDate
+          today: selectedDate,
+          image: imagePayload
         })
       });
 
@@ -993,22 +1011,41 @@ export default function App() {
     let updatedFlexible = [...flexibleTasks];
     let updatedFixed = [...fixedBlocks];
     let updatedGoals = [...goals];
+    let updatedWeightLog = [...weightLog];
     let goalsModified = false;
+    let weightModified = false;
     let appliedCount = 0;
 
     for (const change of proposedChanges) {
-      const { action, taskId, newDate, newTime, durationMultiplier, newTaskTitle, newTaskDuration, goalTitle, goalCategory, goalMetric, goalTarget, goalKeywords, insertImmediately } = change;
+      const { action, taskId, newDate, newTime, durationMultiplier, newTaskTitle, newTaskDuration, newTaskDescription, goalTitle, goalCategory, goalMetric, goalTarget, goalKeywords, insertImmediately, weightValue } = change;
 
-      if (action === "add") {
+      if (action === "record_weight" && weightValue) {
+        const today = new Date().toISOString().split("T")[0];
+        // Replace entry for today if it already exists
+        const existingIdx = updatedWeightLog.findIndex(e => e.date === today);
+        const entry: WeightEntry = { date: today, weight: weightValue };
+        if (existingIdx >= 0) {
+          updatedWeightLog[existingIdx] = entry;
+        } else {
+          updatedWeightLog = [...updatedWeightLog, entry].sort((a, b) => a.date.localeCompare(b.date));
+        }
+        weightModified = true;
+        appliedCount++;
+        continue;
+      }
+
+      if (action === "add" || action === "generate_workout_plan") {
         const newTask: FlexibleTask = {
           id: `flex-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
           title: newTaskTitle || "New Task",
           duration_minutes: newTaskDuration || 45,
           deadline: null,
-          energy_level: "medium",
+          energy_level: newTaskTitle?.toLowerCase().includes("gym") || newTaskTitle?.toLowerCase().includes("workout") || newTaskTitle?.toLowerCase().includes("exercise") ? "high" as EnergyLevel : "medium" as EnergyLevel,
           status: "scheduled",
           scheduled_date: selectedDate,
-          pinned_start_time: insertImmediately ? minutesToTime(currentTimeMins) : undefined
+          pinned_start_time: insertImmediately ? minutesToTime(currentTimeMins) : undefined,
+          description: newTaskDescription || undefined,
+          createdDate: new Date().toISOString().split("T")[0]
         };
         updatedFlexible.push(newTask);
         appliedCount++;
@@ -1136,7 +1173,13 @@ export default function App() {
         setGoals(updatedGoals);
         saveGoals(updatedGoals);
       }
-      showToast(`Applied ${appliedCount} schedule adjustments!`, "success");
+      if (weightModified) {
+        setWeightLog(updatedWeightLog);
+        saveWeightLog(updatedWeightLog);
+        showToast(`Weight logged: ${updatedWeightLog[updatedWeightLog.length - 1]?.weight} kg`, "success");
+      } else {
+        showToast(`Applied ${appliedCount} schedule adjustments!`, "success");
+      }
       triggerHaptic([40, 40]);
     }
 
@@ -3164,7 +3207,14 @@ export default function App() {
                                   <div className="flex items-center gap-1 shrink-0">
                                     {!isFixedType && (
                                       <button 
-                                        onClick={() => handleToggleTaskDone(item.id)}
+                                        onClick={() => {
+                                          if (isCompleted) {
+                                            handleToggleTaskDone(item.id);
+                                          } else {
+                                            // Frictionless: show quick effort picker
+                                            setEffortDialogTaskId(item.id);
+                                          }
+                                        }}
                                         className="p-1 cursor-pointer hover:bg-neutral-50 rounded-lg text-neutral-400 hover:text-emerald-500 transition-colors"
                                         title={isCompleted ? "Re-schedule" : "Mark Complete"}
                                       >
@@ -3232,6 +3282,70 @@ export default function App() {
                                   </div>
                                 </div>
                               </div>
+
+                              {/* Inline Effort Dialog (frictionless completion) */}
+                              {effortDialogTaskId === item.id && (
+                                <div className="mt-3 p-3.5 bg-gradient-to-br from-[#F6F5FF] to-white border border-[#E0D9FF] rounded-2xl space-y-3 animate-fade-in shadow-sm">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[11px] font-bold text-neutral-500 uppercase tracking-wider">How did it go?</span>
+                                    <button onClick={() => setEffortDialogTaskId(null)} className="text-neutral-300 hover:text-neutral-500 cursor-pointer"><X className="w-3.5 h-3.5" /></button>
+                                  </div>
+                                  <div className="grid grid-cols-3 gap-2">
+                                    {(["good", "okay", "struggled"] as const).map((effort) => (
+                                      <button
+                                        key={effort}
+                                        onClick={() => {
+                                          const updated = flexibleTasks.map(t =>
+                                            t.id === item.id ? {
+                                              ...t,
+                                              status: "done" as const,
+                                              focus_quality_effort: effort,
+                                              completed_at: new Date().toISOString(),
+                                              actual_duration_minutes: t.duration_minutes,
+                                              category: t.category || getTaskCategory(t.title),
+                                            } : t
+                                          );
+                                          handleUpdateFlexible(updated);
+                                          setEffortDialogTaskId(null);
+                                          showToast(effort === "good" ? "Great work! 💪" : effort === "okay" ? "Done! Keep going." : "Noted. We'll adjust tomorrow.", "success");
+                                          triggerHaptic(40);
+                                        }}
+                                        className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer capitalize ${
+                                          effort === "good" ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100" :
+                                          effort === "okay" ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100" :
+                                          "bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100"
+                                        }`}
+                                      >
+                                        {effort === "good" ? "✅ Good" : effort === "okay" ? "👌 Okay" : "😤 Struggled"}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <p className="text-[10px] text-neutral-400 leading-relaxed font-sans">Your effort rating helps DayFlow learn your real capacity over time — no timers needed.</p>
+                                </div>
+                              )}
+
+                              {/* Inline Task Expansion (workout exercises / class details) */}
+                              {task?.description && (
+                                <div className="mt-2">
+                                  <button
+                                    onClick={() => setExpandedTaskIds(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                                    className="flex items-center gap-1 text-[10px] font-bold text-primary/70 hover:text-primary cursor-pointer transition-colors"
+                                  >
+                                    <ChevronDown className={`w-3 h-3 transition-transform ${expandedTaskIds[item.id] ? "rotate-180" : ""}`} />
+                                    {expandedTaskIds[item.id] ? "Hide details" : "See details"}
+                                  </button>
+                                  {expandedTaskIds[item.id] && (
+                                    <div className="mt-2 p-3 bg-[#FAFAFA] border border-neutral-100 rounded-xl space-y-1.5 animate-fade-in">
+                                      {task.description.split("\n").filter(Boolean).map((line, i) => (
+                                        <div key={i} className="flex items-start gap-2 text-xs">
+                                          <span className="w-4 h-4 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0 text-[9px] font-bold mt-0.5">{i + 1}</span>
+                                          <span className="text-neutral-600 font-medium leading-relaxed">{line.replace(/^[-•*]\s*/, "")}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
 
                               {/* Deadline badge */}
                               {item.deadline && (
@@ -4180,8 +4294,118 @@ export default function App() {
                         )}
                       </div>
 
+
+                      {/* ─── Weight & Health Progress ─── */}
+                      <div className="bg-white border border-neutral-200/60 rounded-3xl p-5 shadow-xs space-y-4 text-left">
+                        <div className="flex items-center justify-between">
+                          <div className="text-left">
+                            <h4 className="text-xs font-bold text-neutral-800 uppercase tracking-wider font-display flex items-center gap-1.5">
+                              <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-100" /> Health & Weight Progress
+                            </h4>
+                            <p className="text-[11px] text-neutral-400 font-medium font-sans mt-0.5">
+                              Log weight via AI Copilot: <span className="text-primary font-semibold">"Today I weigh 74.5 kg"</span>
+                            </p>
+                          </div>
+                          {weightLog.length > 0 && (
+                            <div className="text-right">
+                              <span className="text-xl font-extrabold text-neutral-800 font-mono">{weightLog[weightLog.length - 1]?.weight} <span className="text-xs font-bold text-neutral-400">kg</span></span>
+                              <span className="block text-[10px] text-neutral-400 font-medium">Latest entry</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {weightLog.length < 2 ? (
+                          <div className="text-center py-8 px-4 border border-dashed border-neutral-200 rounded-2xl bg-neutral-50/30">
+                            <Heart className="w-8 h-8 text-neutral-300 stroke-[1.5] mx-auto mb-2" />
+                            <p className="text-xs text-neutral-500 font-medium">No weight data yet</p>
+                            <p className="text-[10px] text-neutral-400 mt-1 max-w-xs mx-auto">
+                              Tell the AI Copilot your weight each day (e.g. "Today I weigh 75 kg") or attach a scale photo and it will log it automatically.
+                            </p>
+                          </div>
+                        ) : (() => {
+                          const recent = weightLog.slice(-30);
+                          const vals = recent.map(e => e.weight);
+                          const min = Math.min(...vals);
+                          const max = Math.max(...vals);
+                          const range = max - min || 1;
+                          const w = 400;
+                          const h = 100;
+                          const points = recent.map((e, i) => {
+                            const x = (i / (recent.length - 1)) * w;
+                            const y = h - ((e.weight - min) / range) * (h - 10) - 5;
+                            return `${x},${y}`;
+                          }).join(" ");
+                          const firstWeight = recent[0].weight;
+                          const lastWeight = recent[recent.length - 1].weight;
+                          const delta = lastWeight - firstWeight;
+                          const deltaStr = delta >= 0 ? `+${delta.toFixed(1)}` : delta.toFixed(1);
+                          const deltaColor = delta < 0 ? "text-emerald-600" : delta > 0 ? "text-rose-600" : "text-neutral-500";
+
+                          return (
+                            <div className="space-y-3">
+                              {/* Delta badge */}
+                              <div className="flex items-center gap-3">
+                                <span className={`text-xs font-bold px-2 py-0.5 rounded-full border font-mono ${delta < 0 ? "bg-emerald-50 border-emerald-200 text-emerald-700" : delta > 0 ? "bg-rose-50 border-rose-200 text-rose-700" : "bg-neutral-50 border-neutral-200 text-neutral-600"}`}>
+                                  {deltaStr} kg over {recent.length} logs
+                                </span>
+                                <span className="text-[10px] text-neutral-400 font-medium">{recent[0].date} → {recent[recent.length - 1].date}</span>
+                              </div>
+
+                              {/* SVG Line Chart */}
+                              <div className="bg-neutral-50 border border-neutral-100 rounded-2xl p-3 overflow-hidden">
+                                <svg viewBox={`0 0 ${w} ${h + 20}`} className="w-full h-28" preserveAspectRatio="none">
+                                  {/* Gradient fill */}
+                                  <defs>
+                                    <linearGradient id="wGrad" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="0%" stopColor="#8B7EFF" stopOpacity="0.25" />
+                                      <stop offset="100%" stopColor="#8B7EFF" stopOpacity="0" />
+                                    </linearGradient>
+                                  </defs>
+                                  {/* Fill area */}
+                                  <polygon
+                                    points={`0,${h + 5} ${points} ${w},${h + 5}`}
+                                    fill="url(#wGrad)"
+                                  />
+                                  {/* Line */}
+                                  <polyline
+                                    points={points}
+                                    fill="none"
+                                    stroke="#8B7EFF"
+                                    strokeWidth="2.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                  {/* Dots for each entry */}
+                                  {recent.map((e, i) => {
+                                    const x = (i / (recent.length - 1)) * w;
+                                    const y = h - ((e.weight - min) / range) * (h - 10) - 5;
+                                    return <circle key={i} cx={x} cy={y} r="3" fill="#8B7EFF" stroke="white" strokeWidth="1.5" />;
+                                  })}
+                                </svg>
+                                <div className="flex items-center justify-between text-[9px] text-neutral-400 font-mono mt-1">
+                                  <span>{recent[0].date}</span>
+                                  <span className={`font-bold text-[10px] ${deltaColor}`}>{deltaStr} kg trend</span>
+                                  <span>{recent[recent.length - 1].date}</span>
+                                </div>
+                              </div>
+
+                              {/* Last 7 log entries */}
+                              <div className="space-y-1 max-h-32 overflow-y-auto pr-1 scrollbar-thin">
+                                {[...weightLog].reverse().slice(0, 7).map((e, i) => (
+                                  <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-neutral-50">
+                                    <span className="text-neutral-500 font-medium">{new Date(e.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
+                                    <span className="font-bold text-neutral-800 font-mono">{e.weight} kg</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
                     </div>
                   )}
+
 
                   {profileViewTab === "goals" && (
                     <div className="space-y-8 text-left animate-fade-in">
@@ -5097,6 +5321,8 @@ export default function App() {
                       "I'm lazy/tired. Keep it light",
                       "Add study for 2 hours",
                       "Postpone my workouts to tomorrow",
+                      "Summarize my day",
+                      "Create a workout plan for me",
                     ].map((sStr) => (
                       <button
                         key={sStr}
@@ -5104,7 +5330,7 @@ export default function App() {
                         onClick={() => setCopilotInput(sStr)}
                         className="text-left py-1.5 px-3 bg-white hover:bg-neutral-50 border border-neutral-200 rounded-xl text-xs font-semibold text-[#475569] cursor-pointer transition-all shadow-xs"
                       >
-                        "{sStr}"
+                        {sStr}
                       </button>
                     ))}
                   </div>
@@ -5138,8 +5364,41 @@ export default function App() {
                 </div>
               )}
 
-              {/* Chat Input & Mic Area */}
-              <div className="border-t border-neutral-100 pt-4">
+              {/* Chat Input & Mic & Attach Area */}
+              <div className="border-t border-neutral-100 pt-4 space-y-2">
+                {/* Image Preview (if attached) */}
+                {copilotImage && (
+                  <div className="flex items-center gap-2 p-2 bg-indigo-50 border border-indigo-100 rounded-xl">
+                    <img src={copilotImage.previewUrl} alt="Attached" className="w-12 h-10 object-cover rounded-lg border border-white shadow-sm shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-indigo-700 truncate">Image ready to send</p>
+                      <p className="text-[10px] text-indigo-400">AI will analyze and extract schedule data</p>
+                    </div>
+                    <button onClick={() => setCopilotImage(null)} className="text-indigo-300 hover:text-indigo-600 cursor-pointer shrink-0">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+                {/* Hidden file input */}
+                <input
+                  ref={copilotImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      const dataUrl = ev.target?.result as string;
+                      const base64 = dataUrl.split(",")[1];
+                      setCopilotImage({ base64, mimeType: file.type, previewUrl: dataUrl });
+                    };
+                    reader.readAsDataURL(file);
+                    // reset so same file can be re-picked
+                    e.target.value = "";
+                  }}
+                />
                 <div className="relative flex items-center">
                   <textarea 
                     value={copilotInput}
@@ -5150,13 +5409,28 @@ export default function App() {
                         handleSendCopilotMessage();
                       }
                     }}
-                    placeholder={proposedChanges ? "Changes ready below..." : "Ask me anything, e.g. 'I am feeling lazy today'..."}
+                    placeholder={proposedChanges ? "Changes ready below..." : copilotImage ? "Describe the image or just hit send..." : "Ask me anything, e.g. 'I weigh 74.5 kg today'..."}
                     rows={2}
-                    className="w-full pl-3 pr-20 py-2.5 border border-neutral-200 rounded-2xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none resize-none font-sans font-medium"
+                    className="w-full pl-3 pr-24 py-2.5 border border-neutral-200 rounded-2xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none resize-none font-sans font-medium"
                     disabled={isProcessingCopilot || !!proposedChanges}
                   />
                   
                   <div className="absolute right-2.5 flex items-center gap-1.5">
+                    {/* Attach image button */}
+                    {!proposedChanges && (
+                      <button
+                        type="button"
+                        onClick={() => copilotImageInputRef.current?.click()}
+                        className={`p-2 rounded-xl transition-colors cursor-pointer ${
+                          copilotImage ? "bg-indigo-100 text-indigo-600" : "bg-neutral-50 hover:bg-neutral-100 text-[#475569]"
+                        }`}
+                        title="Attach image (workout plan, timetable, scale)"
+                        disabled={isProcessingCopilot}
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
                     {speechSupported && !proposedChanges && (
                       <button
                         type="button"
@@ -5176,7 +5450,7 @@ export default function App() {
                         type="button"
                         onClick={handleSendCopilotMessage}
                         className="p-2 rounded-xl bg-primary hover:bg-primary-dark text-white transition-colors cursor-pointer"
-                        disabled={isProcessingCopilot || !copilotInput.trim()}
+                        disabled={isProcessingCopilot || (!copilotInput.trim() && !copilotImage)}
                       >
                         <Send className="w-3.5 h-3.5" />
                       </button>

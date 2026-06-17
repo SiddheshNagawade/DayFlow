@@ -1,4 +1,4 @@
-import { FixedBlock, FlexibleTask, ScheduleProfile, UserGoal, Achievement } from "../types";
+import { FixedBlock, FlexibleTask, ScheduleProfile, UserGoal, Achievement, WeightEntry } from "../types";
 
 const FIXED_BLOCKS_KEY = "schedule_planner_fixed_blocks";
 const FLEXIBLE_TASKS_KEY = "schedule_planner_flexible_tasks";
@@ -8,7 +8,8 @@ const PROFILES_KEY = "dayflow_routine_profiles";
 const GOALS_KEY = "dayflow_goals";
 const ACHIEVEMENTS_KEY = "dayflow_achievements";
 const STORAGE_VERSION_KEY = "dayflow_storage_version";
-const CURRENT_VERSION = "v4-goals"; // bump this to force-wipe old data
+const WEIGHT_LOG_KEY = "dayflow_weight_log";
+const CURRENT_VERSION = "v5-weight"; // bump this to force-wipe old data
 
 export interface AppSettings {
   day_start: string;
@@ -31,6 +32,7 @@ function ensureCleanStorage() {
     localStorage.removeItem("dayflow_notif_dismissed");
     localStorage.removeItem(GOALS_KEY);
     localStorage.removeItem(ACHIEVEMENTS_KEY);
+    localStorage.removeItem(WEIGHT_LOG_KEY);
     localStorage.setItem(STORAGE_VERSION_KEY, CURRENT_VERSION);
   }
 }
@@ -94,6 +96,7 @@ export function clearAllData() {
   localStorage.removeItem(STORAGE_VERSION_KEY);
   localStorage.removeItem(GOALS_KEY);
   localStorage.removeItem(ACHIEVEMENTS_KEY);
+  localStorage.removeItem(WEIGHT_LOG_KEY);
 }
 
 export function loadGoals(): UserGoal[] {
@@ -147,4 +150,18 @@ export function loadAchievements(): Achievement[] {
 
 export function saveAchievements(achievements: Achievement[]) {
   localStorage.setItem(ACHIEVEMENTS_KEY, JSON.stringify(achievements));
+}
+
+export function loadWeightLog(): WeightEntry[] {
+  const data = localStorage.getItem(WEIGHT_LOG_KEY);
+  if (!data) return [];
+  try {
+    const parsed = JSON.parse(data);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((e: any) => e.date && typeof e.weight === "number");
+  } catch { return []; }
+}
+
+export function saveWeightLog(log: WeightEntry[]) {
+  localStorage.setItem(WEIGHT_LOG_KEY, JSON.stringify(log));
 }

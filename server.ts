@@ -123,7 +123,7 @@ Never guess a start time for flexible tasks. Please output correct JSON structur
 // 3. Schedule Adjustment API — user describes changes in plain text, AI returns structured modifications
 app.post("/api/adjust-schedule", async (req, res) => {
   try {
-    const { userText, currentSchedule, pendingTasks, today } = req.body;
+    const { userText, currentSchedule, pendingTasks, today, image } = req.body;
     if (!userText || typeof userText !== "string" || userText.trim() === "") {
       res.status(400).json({ error: "Change description is required" });
       return;
@@ -156,23 +156,26 @@ Your response must conform exactly to this structure. Return only keys from this
 {
   "changes": [
     {
-      "action": "delete" | "move_to_tomorrow" | "move_to_date" | "change_time" | "reduce_duration" | "add" | "cant_do_today" | "add_goal" | "update_goal",
+      "action": "delete" | "move_to_tomorrow" | "move_to_date" | "change_time" | "reduce_duration" | "add" | "cant_do_today" | "add_goal" | "update_goal" | "record_weight" | "generate_workout_plan",
       "taskId": "string representing the task/goal ID to modify (empty/omit for add/add_goal)",
       "newDate": "YYYY-MM-DD (used only for move_to_date)",
       "newTime": "HH:MM (used for change_time to schedule/pin at specific time)",
       "durationMultiplier": 0.5, // number (used only for reduce_duration to scale length, e.g. 0.5)
       "newTaskTitle": "string (used only for action=add)",
       "newTaskDuration": 30, // integer minutes (used only for action=add)
+      "newTaskDescription": "string (used when action=add and the task has workout steps or class details. One item per line.)",
       "insertImmediately": true | false, // boolean (used when action=add or action=change_time to pin/start a task/break immediately at the current time without doing calendar time math)
       "goalTitle": "string (used to set/find a goal for add_goal or update_goal)",
       "goalCategory": "fitness" | "academic" | "project" | "habit" | "personal",
       "goalMetric": "string (e.g., 'sessions', 'hours', 'pages')",
       "goalTarget": 10, // integer (new target count for add_goal or update_goal)
       "goalKeywords": ["keyword1", "keyword2"], // array of keywords to auto-match task titles
+      "weightValue": 75.5, // number in kg (used only for action=record_weight)
       "reasoning": "Brief explanation for the change"
     }
   ],
-  "message": "A supportive, conversational explanation of the changes"
+  "message": "A supportive, conversational explanation of the changes. If there are clarifying questions (e.g. missing room number, unclear times), include them here.",
+  "clarificationNeeded": false // set to true if critical info is missing from an image/timetable and you need to ask the user a question
 }
 
 ### TIME CALCULATION RULE (AVOID HALLUCINATION):
@@ -180,13 +183,30 @@ Your response must conform exactly to this structure. Return only keys from this
 - For relative placements like "add a break now", "give me a rest immediately", or "do this task right now", set "insertImmediately": true on the action ("add" or "change_time") instead of guessing/calculating "newTime".
 
 ### ACTION RULES:
-- "add": Propose adding a task (e.g. a rest block like title "Rest / Break" with duration 30 and "insertImmediately": true, or a new backlog item).
+- "add": Propose adding a task (e.g. a rest block like title "Rest / Break" with duration 30 and "insertImmediately": true, or a new backlog item). If the task has exercises or lecture room info, put each item on a new line in "newTaskDescription".
 - "delete": Remove task by taskId.
 - "move_to_tomorrow": Move task by taskId to tomorrow.
 - "change_time": Shift task by taskId to start at "newTime" (absolute) or right now ("insertImmediately": true).
 - "reduce_duration": Shorten task duration using "durationMultiplier".
 - "add_goal": Create a new goal.
-- "update_goal": Change target/parameters of an existing goal when user requests it (e.g., "increase workout target to 15 sessions"). Specify the goal by matching "taskId" (goal id) or "goalTitle" (goal name), and specify the new target in "goalTarget".
+- "update_goal": Change target/parameters of an existing goal when user requests it. Specify the goal by matching "taskId" (goal id) or "goalTitle" (goal name), and specify the new target in "goalTarget".
+- "record_weight": When the user logs their weight (e.g. "today 74.5 kg" or "I weigh 80kg"), create this action with "weightValue" set to the number in kg.
+- "generate_workout_plan": When user shares a workout screenshot or asks you to create a plan, generate one or more "add" actions per day/muscle group. Use "newTaskDescription" to include the individual exercises (one per line) for that day.
+
+### VISION / IMAGE PARSING RULES:
+If an image is attached (college timetable, workout plan screenshot, scale photo, etc.):
+1. **Workout Split (e.g. "Monday: Chest & Triceps")**:
+   - Create one "add" action per training day.
+   - Set "newTaskTitle" to the muscle group (e.g. "Chest & Triceps").
+   - Set "newTaskDescription" with the exercises listed as multi-line text.
+   - Set "newTaskDuration" to 60 (default gym session).
+   - If specific exercises are not visible, set "clarificationNeeded": true and ask in "message".
+2. **College Timetable**:
+   - Create one "add" action per class/lecture block.
+   - Set "newTaskTitle" to the subject name.
+   - Set "newTaskDescription" with "Room: [room number]\nLecture Hall: [hall name]" if visible.
+   - For any missing room numbers or times, set "clarificationNeeded": true and ask in "message".
+3. **Weighing Scale Photo**: Extract the weight reading and use "record_weight" action.
 
 TREAT SUBJECTIVE INPUTS/MOODS GRACEFULLY:
 - If the user says they are "tired" or "feeling lazy":
@@ -208,9 +228,18 @@ PROACTIVE GOAL SETUP & TRACKING:
 Be concise, warm, non-judgmental, and focused on helping the user stay productive without burning out.
 Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY with a raw, valid JSON object. Do not include markdown code block characters, notes, formatting tags, or preambles.`;
 
+    // Build contents array — optionally include image for vision
+    const contents: any[] = [];
+    if (image && image.base64 && image.mimeType) {
+      contents.push({
+        inlineData: { mimeType: image.mimeType, data: image.base64 }
+      });
+    }
+    contents.push({ text: `User's change request: "${userText}"` });
+
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: `User's change request: "${userText}"`,
+      model: "gemini-2.0-flash",
+      contents,
       config: {
         systemInstruction: systemPrompt,
         temperature: 0.2,
@@ -223,13 +252,14 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  action: { type: Type.STRING, description: "One of: delete, move_to_tomorrow, move_to_date, change_time, reduce_duration, add, cant_do_today, add_goal, update_goal" },
+                  action: { type: Type.STRING, description: "One of: delete, move_to_tomorrow, move_to_date, change_time, reduce_duration, add, cant_do_today, add_goal, update_goal, record_weight, generate_workout_plan" },
                   taskId: { type: Type.STRING, description: "Task or goal id to modify (empty for add/add_goal)" },
                   newDate: { type: Type.STRING, description: "YYYY-MM-DD for move_to_date" },
                   newTime: { type: Type.STRING, description: "HH:MM for change_time" },
                   durationMultiplier: { type: Type.NUMBER, description: "e.g. 0.5 to scale duration for reduce_duration" },
                   newTaskTitle: { type: Type.STRING, description: "Title for new task when action=add" },
                   newTaskDuration: { type: Type.INTEGER, description: "Minutes for new task when action=add" },
+                  newTaskDescription: { type: Type.STRING, description: "Multi-line detail: exercises or class info, one item per line. Used when action=add." },
                   insertImmediately: { type: Type.BOOLEAN, description: "Set to true if the task/break must start right now, avoiding time calculations" },
                   goalTitle: { type: Type.STRING, description: "Title of the goal if action=add_goal or update_goal" },
                   goalCategory: { type: Type.STRING, description: "fitness, academic, project, habit, personal if action=add_goal" },
@@ -240,12 +270,14 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
                     items: { type: Type.STRING },
                     description: "Keywords to auto-match task titles, e.g. ['gym', 'workout'] if action=add_goal"
                   },
+                  weightValue: { type: Type.NUMBER, description: "Weight in kg if action=record_weight" },
                   reasoning: { type: Type.STRING },
                 },
                 required: ["action", "reasoning"],
               },
             },
-            message: { type: Type.STRING, description: "A short friendly summary of all changes made and any suggested goals" },
+            message: { type: Type.STRING, description: "A short friendly summary of all changes made, any suggested goals, and clarifying questions if needed" },
+            clarificationNeeded: { type: Type.BOOLEAN, description: "True if AI needs more info from user (e.g. missing room numbers, unclear times in an image)" },
           },
           required: ["changes", "message"],
         },

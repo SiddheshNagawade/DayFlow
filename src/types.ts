@@ -33,7 +33,16 @@ export interface FlexibleTask {
   actual_start_time?: string;      // "HH:MM" format
   actual_duration_minutes?: number; // actual elapsed minutes
   completed_at?: string;            // ISO timestamp when user checked it done
+  createdDate?: string;             // "YYYY-MM-DD" when task was created
   
+  // Frictionless completion logging
+  focus_quality_effort?: "good" | "okay" | "struggled"; // replaces complex mood sliders
+  inferred_mood_before?: number;   // 1-10 inferred from patterns
+  inferred_mood_after?: number;    // 1-10 inferred from completion stats
+
+  // Rich detail expansion (workout exercises, class rooms, etc.)
+  description?: string; // multi-line detail: one item per line
+
   // Advanced CCM Telemetry
   mood_before?: number;   // 1-10 scale
   mood_after?: number;    // 1-10 scale
@@ -162,8 +171,9 @@ export interface ScheduledItem {
   locked: boolean;
   status: "done" | "scheduled" | "fixed";
   deadline?: string | null;
-  pinned?: boolean; // true when user manually pinned the start time
-  color?: string;   // custom color theme for fixed block
+  pinned?: boolean;       // true when user manually pinned the start time
+  color?: string;         // custom color theme for fixed block
+  description?: string;   // multi-line detail for inline expansion
 }
 
 export interface DaySchedule {
@@ -190,4 +200,12 @@ export interface ScheduleProfile {
   appliesTo: ProfileAppliesTo;
   isActive?: boolean; // manual override — force-activate regardless of day type
   blocks: ProfileBlock[];
+}
+
+// ─── Health & Fitness ─────────────────────────────────────────────────────────
+
+export interface WeightEntry {
+  date: string;   // "YYYY-MM-DD"
+  weight: number; // in kg
+  note?: string;
 }
