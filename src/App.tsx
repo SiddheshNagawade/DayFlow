@@ -329,6 +329,7 @@ export default function App() {
   // EOD Review sheet state
   const [showEodReview, setShowEodReview] = useState(false);
   const [eodDismissed, setEodDismissed] = useState(false);
+  const [showDaySummaryReminder, setShowDaySummaryReminder] = useState(false);
 
   // Sidebar adjustability states
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -633,6 +634,38 @@ export default function App() {
       calibrationProfile
     );
   }, [flexibleTasks, effectiveFixedBlocks, appSettings, selectedDate, calibrationProfile]);
+
+
+  // Periodic/On-mount check to remind user to summarize day (after 8 PM/20:00)
+  useEffect(() => {
+    const checkEveningReminder = () => {
+      const now = new Date();
+      const currentHour = now.getHours();
+      
+      if (currentHour >= 20) {
+        const todayStr = now.toISOString().split("T")[0];
+        const lastSummaryDate = localStorage.getItem("dayflow_last_summary_prompt_date");
+        
+        if (lastSummaryDate !== todayStr) {
+          // Check if there are tasks scheduled for today
+          const todayTasks = flexibleTasks.filter(t => t.scheduled_date === selectedDate);
+          if (todayTasks.length > 0) {
+            setShowDaySummaryReminder(true);
+            if ("Notification" in window && Notification.permission === "granted") {
+              new Notification("Wrap up your day! 🌟", {
+                body: "Ready to wrap up today? Discuss your day and plan tomorrow with your AI Copilot.",
+                tag: "dayflow-evening-summary"
+              });
+            }
+          }
+        }
+      }
+    };
+
+    checkEveningReminder();
+    const interval = setInterval(checkEveningReminder, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [flexibleTasks, selectedDate]);
 
 
   // Trigger Notifications Trigger Loop
@@ -2058,6 +2091,24 @@ export default function App() {
 
 
 
+  const checkDayComplete = (updatedFlexTasks: any[]) => {
+    // Find all flexible tasks currently scheduled for today's selectedDate
+    const todayTasks = updatedFlexTasks.filter(t => t.scheduled_date === selectedDate);
+    if (todayTasks.length > 0 && todayTasks.every(t => t.status === "done")) {
+      const todayStr = new Date().toISOString().split("T")[0];
+      const lastSummaryDate = localStorage.getItem("dayflow_last_summary_prompt_date");
+      if (lastSummaryDate !== todayStr) {
+        setShowDaySummaryReminder(true);
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("Day Complete! 🌟", {
+            body: "Great job completing your schedule! Click here to discuss your day and plan tomorrow with AI.",
+            tag: "dayflow-summary"
+          });
+        }
+      }
+    }
+  };
+
   const handleToggleTaskDone = (taskId: string) => {
     const matched = flexibleTasks.find(t => t.id === taskId);
     if (!matched) return;
@@ -2135,6 +2186,7 @@ export default function App() {
     );
 
     handleUpdateFlexible(updated);
+    checkDayComplete(updated);
     showToast("Done! Keep going.", "success");
     triggerHaptic(40);
   };
@@ -3309,6 +3361,7 @@ export default function App() {
                                             } : t
                                           );
                                           handleUpdateFlexible(updated);
+                                          checkDayComplete(updated);
                                           setEffortDialogTaskId(null);
                                           showToast(effort === "good" ? "Great work! 💪" : effort === "okay" ? "Done! Keep going." : "Noted. We'll adjust tomorrow.", "success");
                                           triggerHaptic(40);
@@ -5250,48 +5303,46 @@ export default function App() {
           </div>
 
           {/* SHEET 3 — AI Copilot */}
-          <div 
-            className={`absolute bottom-0 left-0 right-0 max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-white/95 backdrop-blur-xl border border-neutral-200/80 shadow-2xl p-6 z-49 overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${
-              activeBottomSheet === "assistant" 
-                ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" 
-                : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible"
-            }`}
-          >
-            <div className="flex justify-center pb-3">
-              <span className="w-10 h-1 bg-neutral-200 rounded-full" />
-            </div>
-
-            {/* Header */}
-            <div className="flex items-center justify-between mb-4 gap-2">
-              <h3 className="font-display font-semibold text-lg text-[#0F172A] flex items-center gap-1.5 shrink-0">
-                <Sparkles className="w-5 h-5 text-primary fill-primary/10 shrink-0" />
-                <span>DayFlow AI Copilot</span>
-              </h3>
-              
-              <button
-                type="button"
-                onClick={() => handleSendCopilotMessage("Summarize my day and plan tomorrow")}
-                disabled={isProcessingCopilot}
-                className="ml-auto px-2.5 py-1 text-[10px] md:text-xs font-bold bg-gradient-to-r from-primary to-indigo-600 hover:from-primary-dark hover:to-indigo-700 text-white rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200 disabled:opacity-50 disabled:pointer-events-none shadow-sm shadow-primary/10"
-                title="Summarize my day and plan tomorrow"
+          {(() => {
+            const userPromptsCount = chatHistory.filter(m => m.sender === "user").length;
+            const isCopilotFullScreen = userPromptsCount >= 3;
+            return (
+              <div 
+                className={`absolute z-49 bg-white/95 backdrop-blur-xl transition-all duration-300 ease-out flex flex-col overflow-y-auto ${
+                  activeBottomSheet === "assistant" 
+                    ? "opacity-100 scale-100 pointer-events-auto" 
+                    : "opacity-0 pointer-events-none invisible"
+                } ${
+                  isCopilotFullScreen
+                    ? "top-0 bottom-0 left-0 right-0 w-full h-full max-h-screen rounded-none p-6"
+                    : "bottom-0 left-0 right-0 max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl border border-neutral-200/80 shadow-2xl p-6 transform " + 
+                      (activeBottomSheet === "assistant" ? "translate-y-0 scale-100" : "translate-y-full md:translate-y-10 md:scale-95")
+                }`}
               >
-                <Sparkles className="w-3 h-3 fill-white/10" />
-                <span>Summarize & Plan</span>
-              </button>
+                {!isCopilotFullScreen && (
+                  <div className="flex justify-center pb-3">
+                    <span className="w-10 h-1 bg-neutral-200 rounded-full" />
+                  </div>
+                )}
 
-              <button 
-                type="button" 
-                onClick={() => {
-                  setActiveBottomSheet(null);
-                  setCopilotInput("");
-                  setProposedChanges(null);
-                  setChatHistory([]);
-                }}
-                className="p-1.5 rounded-full bg-neutral-50 hover:bg-neutral-100 text-[#475569] transition-colors cursor-pointer shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+                {/* Header */}
+                <div className="flex items-center justify-between mb-4 gap-2">
+                  <h3 className="font-display font-semibold text-lg text-[#0F172A] flex items-center gap-1.5 shrink-0">
+                    <Sparkles className="w-5 h-5 text-primary fill-primary/10 shrink-0" />
+                    <span>DayFlow AI Copilot</span>
+                  </h3>
+                  
+                  <button
+                    type="button"
+                    onClick={() => handleSendCopilotMessage("Summarize my day and plan tomorrow")}
+                    disabled={isProcessingCopilot}
+                    className="ml-auto px-2.5 py-1 text-[10px] md:text-xs font-bold bg-gradient-to-r from-primary to-indigo-600 hover:from-primary-dark hover:to-indigo-700 text-white rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200 disabled:opacity-50 disabled:pointer-events-none shadow-sm shadow-primary/10"
+                    title="Summarize my day and plan tomorrow"
+                  >
+                    <Sparkles className="w-3 h-3 fill-white/10" />
+                    <span>Summarize & Plan</span>
+                  </button>
+                </div>
 
             {/* Content Container */}
             <div className="space-y-5 flex-1 flex flex-col min-h-0">
@@ -5327,7 +5378,7 @@ export default function App() {
               </div>
 
               {/* Suggestions shortcuts — personalized */}
-              {!proposedChanges && !isProcessingCopilot && (() => {
+              {!proposedChanges && !isProcessingCopilot && chatHistory.filter(m => m.sender === "user").length === 0 && (() => {
                 const firstName = profileName.split(" ")[0] || "there";
                 const todayPending = daySchedule.items
                   .filter(i => i.type === "flexible" && i.status !== "done")
@@ -5581,9 +5632,10 @@ export default function App() {
                   </button>
                 )}
               </div>
-
             </div>
           </div>
+          );
+        })()}
 
           {/* SHEET 5 — End of Day Review */}
           <div 
@@ -6061,6 +6113,49 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* DAY SUMMARY POPUP REMINDER */}
+          {showDaySummaryReminder && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-white rounded-3xl p-6 max-w-sm w-full border border-neutral-150 shadow-2xl text-center space-y-4.5 animate-scale-up">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-primary to-indigo-650 text-white flex items-center justify-center mx-auto shadow-lg shadow-primary/20">
+                  <Sparkles className="w-6 h-6 fill-white/10" />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="font-display font-black text-lg text-[#1A1A2E]">Wrap up your day! 🌟</h3>
+                  <p className="text-xs text-[#5A5A7A] leading-relaxed font-medium">
+                    Ready to summarize today's achievements and discuss tomorrow's plan with your AI Copilot? It keeps your schedule aligned and minimizes friction.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDaySummaryReminder(false);
+                      const todayStr = new Date().toISOString().split("T")[0];
+                      localStorage.setItem("dayflow_last_summary_prompt_date", todayStr);
+                      handleOpenAICopilot();
+                      handleSendCopilotMessage("Summarize my day and plan tomorrow");
+                    }}
+                    className="w-full py-3 bg-gradient-to-r from-primary to-indigo-650 hover:from-primary-dark hover:to-indigo-750 text-white rounded-2xl text-xs font-bold transition-all shadow-md shadow-primary/10 active:scale-97 cursor-pointer"
+                  >
+                    Summarize & Plan with AI
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDaySummaryReminder(false);
+                      const todayStr = new Date().toISOString().split("T")[0];
+                      localStorage.setItem("dayflow_last_summary_prompt_date", todayStr);
+                    }}
+                    className="w-full py-2.5 bg-neutral-50 hover:bg-neutral-100 border border-neutral-200 text-neutral-500 hover:text-neutral-700 rounded-2xl text-xs font-semibold transition-all active:scale-97 cursor-pointer"
+                  >
+                    I'll do it later
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
         </div>
 
