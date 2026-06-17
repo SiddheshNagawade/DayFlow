@@ -958,13 +958,16 @@ export default function App() {
     setActiveBottomSheet("assistant");
   };
 
-  const handleSendCopilotMessage = async () => {
-    const messageText = copilotInput.trim();
+  const handleSendCopilotMessage = async (textOverride?: any) => {
+    const isOverride = typeof textOverride === "string";
+    const messageText = isOverride ? textOverride.trim() : copilotInput.trim();
     if (!messageText && !copilotImage) return;
 
     const displayText = messageText || (copilotImage ? "[Image attached]" : "");
     setChatHistory(prev => [...prev, { sender: "user", text: displayText }]);
-    setCopilotInput("");
+    if (!isOverride) {
+      setCopilotInput("");
+    }
     const imagePayload = copilotImage ? { base64: copilotImage.base64, mimeType: copilotImage.mimeType } : undefined;
     setCopilotImage(null);
     setIsProcessingCopilot(true);
@@ -5259,11 +5262,23 @@ export default function App() {
             </div>
 
             {/* Header */}
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-display font-semibold text-lg text-[#0F172A] flex items-center gap-1.5">
+            <div className="flex items-center justify-between mb-4 gap-2">
+              <h3 className="font-display font-semibold text-lg text-[#0F172A] flex items-center gap-1.5 shrink-0">
                 <Sparkles className="w-5 h-5 text-primary fill-primary/10 shrink-0" />
                 <span>DayFlow AI Copilot</span>
               </h3>
+              
+              <button
+                type="button"
+                onClick={() => handleSendCopilotMessage("Summarize my day and plan tomorrow")}
+                disabled={isProcessingCopilot}
+                className="ml-auto px-2.5 py-1 text-[10px] md:text-xs font-bold bg-gradient-to-r from-primary to-indigo-600 hover:from-primary-dark hover:to-indigo-700 text-white rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200 disabled:opacity-50 disabled:pointer-events-none shadow-sm shadow-primary/10"
+                title="Summarize my day and plan tomorrow"
+              >
+                <Sparkles className="w-3 h-3 fill-white/10" />
+                <span>Summarize & Plan</span>
+              </button>
+
               <button 
                 type="button" 
                 onClick={() => {
@@ -5272,7 +5287,7 @@ export default function App() {
                   setProposedChanges(null);
                   setChatHistory([]);
                 }}
-                className="p-1.5 rounded-full bg-neutral-50 hover:bg-neutral-100 text-[#475569] transition-colors cursor-pointer"
+                className="p-1.5 rounded-full bg-neutral-50 hover:bg-neutral-100 text-[#475569] transition-colors cursor-pointer shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
