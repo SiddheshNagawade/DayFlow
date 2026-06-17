@@ -5311,31 +5311,66 @@ export default function App() {
                 )}
               </div>
 
-              {/* Suggestions shortcuts */}
-              {!proposedChanges && !isProcessingCopilot && (
-                <div className="space-y-1.5">
-                  <span className="text-[10px] uppercase font-bold text-[#94A3B8] block">Quick prompts:</span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {[
-                      "I am feeling very productive today",
-                      "I'm lazy/tired. Keep it light",
-                      "Add study for 2 hours",
-                      "Postpone my workouts to tomorrow",
-                      "Summarize my day",
-                      "Create a workout plan for me",
-                    ].map((sStr) => (
-                      <button
-                        key={sStr}
-                        type="button"
-                        onClick={() => setCopilotInput(sStr)}
-                        className="text-left py-1.5 px-3 bg-white hover:bg-neutral-50 border border-neutral-200 rounded-xl text-xs font-semibold text-[#475569] cursor-pointer transition-all shadow-xs"
-                      >
-                        {sStr}
-                      </button>
-                    ))}
+              {/* Suggestions shortcuts — personalized */}
+              {!proposedChanges && !isProcessingCopilot && (() => {
+                const firstName = profileName.split(" ")[0] || "there";
+                const todayPending = daySchedule.items
+                  .filter(i => i.type === "flexible" && i.status !== "done")
+                  .slice(0, 1);
+                const backlogTop = flexibleTasks
+                  .filter(t => t.status !== "done" && t.scheduled_date === null)
+                  .slice(0, 1);
+                const hour = new Date().getHours();
+                const timeGreeting = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+
+                const personalized: string[] = [];
+
+                // Contextual greeting based on time
+                if (hour < 10) {
+                  personalized.push(`Good morning ${firstName}! Start with my highest priority task`);
+                } else if (hour >= 21) {
+                  personalized.push(`Wrap up my day and summarize what I got done`);
+                } else {
+                  personalized.push(`I'm feeling productive this ${timeGreeting}`);
+                }
+
+                // Based on today's specific tasks
+                if (todayPending.length > 0) {
+                  personalized.push(`I can't do "${todayPending[0].title}" today, move it`);
+                } else {
+                  personalized.push(`I'm lazy/tired. Keep it light today`);
+                }
+
+                // Based on backlog
+                if (backlogTop.length > 0) {
+                  personalized.push(`Schedule "${backlogTop[0].title}" for me today`);
+                } else {
+                  personalized.push(`Add study session for 2 hours`);
+                }
+
+                // Always useful
+                personalized.push(`Postpone my gym/workout to tomorrow`);
+                personalized.push(`Create a personalized workout plan for me`);
+                personalized.push(`Summarize my day and plan tomorrow`);
+
+                return (
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] uppercase font-bold text-[#94A3B8] block">Quick prompts for you, {firstName}:</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {personalized.map((sStr) => (
+                        <button
+                          key={sStr}
+                          type="button"
+                          onClick={() => setCopilotInput(sStr)}
+                          className="text-left py-1.5 px-3 bg-white hover:bg-primary/5 hover:border-primary/30 border border-neutral-200 rounded-xl text-xs font-semibold text-[#475569] cursor-pointer transition-all shadow-xs"
+                        >
+                          {sStr}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Proposed Changes Decisions Card */}
               {proposedChanges && proposedChanges.length > 0 && (
@@ -5366,36 +5401,63 @@ export default function App() {
 
               {/* Chat Input & Mic & Attach Area */}
               <div className="border-t border-neutral-100 pt-4 space-y-2">
-                {/* Image Preview (if attached) */}
+                {/* File Preview (image or PDF) */}
                 {copilotImage && (
                   <div className="flex items-center gap-2 p-2 bg-indigo-50 border border-indigo-100 rounded-xl">
-                    <img src={copilotImage.previewUrl} alt="Attached" className="w-12 h-10 object-cover rounded-lg border border-white shadow-sm shrink-0" />
+                    {copilotImage.mimeType === "application/pdf" ? (
+                      <div className="w-12 h-10 rounded-lg border border-indigo-200 bg-indigo-100 flex items-center justify-center shrink-0">
+                        <span className="text-indigo-600 text-[10px] font-black">PDF</span>
+                      </div>
+                    ) : (
+                      <img src={copilotImage.previewUrl} alt="Attached" className="w-12 h-10 object-cover rounded-lg border border-white shadow-sm shrink-0" />
+                    )}
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-indigo-700 truncate">Image ready to send</p>
-                      <p className="text-[10px] text-indigo-400">AI will analyze and extract schedule data</p>
+                      <p className="text-xs font-semibold text-indigo-700 truncate">
+                        {copilotImage.mimeType === "application/pdf" ? "PDF ready to send" : "Image ready to send"}
+                      </p>
+                      <p className="text-[10px] text-indigo-400">AI will extract schedule / workout data</p>
                     </div>
                     <button onClick={() => setCopilotImage(null)} className="text-indigo-300 hover:text-indigo-600 cursor-pointer shrink-0">
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 )}
-                {/* Hidden file input */}
+                {/* Hidden file input — images + PDFs, max 5 MB */}
                 <input
                   ref={copilotImageInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,application/pdf"
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;
+
+                    // ── Guard: 5 MB size limit ──────────────────────────────
+                    const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+                    if (file.size > MAX_BYTES) {
+                      showToast(`File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max allowed is 5 MB.`, "warning");
+                      e.target.value = "";
+                      return;
+                    }
+
+                    // ── Guard: PDFs — size proxy for page count (~300 KB/page) ──
+                    // We can't count pages client-side without a library,
+                    // so we cap PDFs at 1.5 MB ≈ ~5 pages as a safe proxy.
+                    if (file.type === "application/pdf" && file.size > 1.5 * 1024 * 1024) {
+                      showToast("PDF too large. Please keep PDFs under ~5 pages / 1.5 MB to stay within AI limits.", "warning");
+                      e.target.value = "";
+                      return;
+                    }
+
                     const reader = new FileReader();
                     reader.onload = (ev) => {
                       const dataUrl = ev.target?.result as string;
                       const base64 = dataUrl.split(",")[1];
-                      setCopilotImage({ base64, mimeType: file.type, previewUrl: dataUrl });
+                      // PDFs don't get a visual preview URL — use a sentinel
+                      const previewUrl = file.type === "application/pdf" ? "" : dataUrl;
+                      setCopilotImage({ base64, mimeType: file.type, previewUrl });
                     };
                     reader.readAsDataURL(file);
-                    // reset so same file can be re-picked
                     e.target.value = "";
                   }}
                 />
@@ -5409,7 +5471,13 @@ export default function App() {
                         handleSendCopilotMessage();
                       }
                     }}
-                    placeholder={proposedChanges ? "Changes ready below..." : copilotImage ? "Describe the image or just hit send..." : "Ask me anything, e.g. 'I weigh 74.5 kg today'..."}
+                    placeholder={
+                      proposedChanges
+                        ? "Changes ready below..."
+                        : copilotImage
+                        ? "Describe the file or just hit send..."
+                        : `Hey ${profileName.split(" ")[0] || "there"}, what's on your mind? (e.g. 'I weigh 74.5 kg today')`
+                    }
                     rows={2}
                     className="w-full pl-3 pr-24 py-2.5 border border-neutral-200 rounded-2xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none resize-none font-sans font-medium"
                     disabled={isProcessingCopilot || !!proposedChanges}
@@ -5424,7 +5492,7 @@ export default function App() {
                         className={`p-2 rounded-xl transition-colors cursor-pointer ${
                           copilotImage ? "bg-indigo-100 text-indigo-600" : "bg-neutral-50 hover:bg-neutral-100 text-[#475569]"
                         }`}
-                        title="Attach image (workout plan, timetable, scale)"
+                        title="Attach image or PDF (workout plan, timetable, scale photo)"
                         disabled={isProcessingCopilot}
                       >
                         <Upload className="w-3.5 h-3.5" />

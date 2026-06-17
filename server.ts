@@ -66,7 +66,7 @@ For flexible items extract:
 Never guess a start time for flexible tasks. Please output correct JSON structure conforming exactly to the schema. Respond ONLY with a raw, valid JSON object. Do not include markdown code block characters, notes, formatting tags, or preambles.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-1.5-flash",
       contents: `Current Date is: ${currentDate || '2026-06-13'}. User input schedule is:\n"${text}"`,
       config: {
         systemInstruction: systemPrompt,
@@ -238,7 +238,7 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
     contents.push({ text: `User's change request: "${userText}"` });
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: "gemini-1.5-flash",
       contents,
       config: {
         systemInstruction: systemPrompt,
