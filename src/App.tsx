@@ -151,6 +151,24 @@ export default function App() {
     return "today";
   }, [currentPath]);
 
+  const pageTitle = useMemo(() => {
+    switch (activeTab) {
+      case "backlog":
+        return "Backlog";
+      case "calendar":
+        return "Calendar";
+      case "routines":
+        if (currentPath === "/goals" || currentPath === "/routines/goals") return "Goals";
+        if (currentPath === "/insights" || currentPath === "/routines/insights") return "Insights";
+        return "Routines";
+      case "settings":
+        return "Settings";
+      case "today":
+      default:
+        return "Today";
+    }
+  }, [activeTab, currentPath]);
+
   const profileViewTab = useMemo(() => {
     if (currentPath === "/goals" || currentPath === "/routines/goals") return "goals";
     if (currentPath === "/insights" || currentPath === "/routines/insights") return "insights";
@@ -2892,7 +2910,7 @@ export default function App() {
               className="flex items-center gap-1.5 cursor-pointer select-none"
               title="Tap 5 times for developer mode"
             >
-              <span className="font-display font-medium text-lg text-primary tracking-tight">DayFlow</span>
+              <span className="font-display font-black text-lg md:text-xl text-[#0F172A] tracking-tight">{pageTitle}</span>
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               {activeTab === "today" && daySchedule.items.length > 0 && (
                 <span className="text-[11px] font-bold font-mono px-2 py-0.5 bg-indigo-500/10 text-indigo-400 rounded-full ml-1 animate-fade-in">
@@ -2901,7 +2919,7 @@ export default function App() {
               )}
             </div>
 
-            {/* Selected Date Jump Widget and Arrow Controls */}
+            {/* Selected Date Jump Widget and Arrow Controls shifted to the Right (Minimalistic style) */}
             <div className="flex items-center gap-1">
               <button 
                 onClick={() => {
@@ -2909,15 +2927,15 @@ export default function App() {
                   d.setDate(d.getDate() - 1);
                   setSelectedDate(d.toISOString().split("T")[0]);
                 }}
-                className="p-1 rounded-lg hover:bg-neutral-100 text-slate-400 cursor-pointer"
+                className="p-1.5 rounded-full hover:bg-neutral-100 text-[#475569] cursor-pointer active:scale-90 transition-all duration-150"
                 title="Previous Day"
               >
-                <ChevronLeft className="w-4 h-4" />
+                <ChevronLeft className="w-4.5 h-4.5" />
               </button>
               
-              <div className="text-xs font-semibold px-2 py-1 bg-neutral-50 border border-neutral-200 rounded-lg text-neutral-600 min-w-[76px] text-center font-mono select-none">
+              <span className="text-xs font-bold text-[#475569] font-mono select-none px-1">
                 {new Date(selectedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-              </div>
+              </span>
 
               <button 
                 onClick={() => {
@@ -2925,10 +2943,10 @@ export default function App() {
                   d.setDate(d.getDate() + 1);
                   setSelectedDate(d.toISOString().split("T")[0]);
                 }}
-                className="p-1 rounded-lg hover:bg-neutral-100 text-slate-400 cursor-pointer"
+                className="p-1.5 rounded-full hover:bg-neutral-100 text-[#475569] cursor-pointer active:scale-90 transition-all duration-150"
                 title="Next Day"
               >
-                <ChevronRight className="w-4 h-4" />
+                <ChevronRight className="w-4.5 h-4.5" />
               </button>
             </div>
 
@@ -2941,17 +2959,6 @@ export default function App() {
                 />
               </div>
             )}
-            {/* Header Settings/Profile Button */}
-            <button 
-              onClick={() => {
-                navigate("/settings");
-                triggerHaptic(15);
-              }}
-              className="p-2 bg-white hover:bg-neutral-100 text-neutral-500 rounded-xl cursor-pointer transition-colors flex items-center justify-center border border-neutral-200"
-              title="Profile Settings"
-            >
-              <User className="w-4 h-4" />
-            </button>
           </header>
 
           {/* MAIN DYNAMIC CONTENT RAIL (Independently scrolling tab viewports) */}
@@ -3084,7 +3091,7 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    <div className="relative border-l border-neutral-200 pl-4 py-1 ml-2.5">
+                    <div className="relative border-l border-neutral-200/40 pl-4 py-1 ml-2.5">
                       
                       {daySchedule.items.map((item, idx) => {
                         const isFixedType = item.type === "fixed";
@@ -3126,7 +3133,7 @@ export default function App() {
                             
                             {/* Marker line point dot */}
                             <span 
-                              className={`absolute -left-[22px] top-4 w-3 h-3 rounded-full border bg-white transition-transform duration-200 ${
+                              className={`absolute -left-[22px] top-4.5 w-3 h-3 rounded-full border bg-white transition-transform duration-200 ${
                                 isEmergencyItem
                                   ? "bg-amber-500 border-amber-600"
                                   : isFixedType
@@ -3139,10 +3146,10 @@ export default function App() {
 
                             {/* TIMELINE CARD */}
                             <div 
-                              className={`rounded-r-lg rounded-l-none border border-neutral-200 p-4 relative transition-all text-left shadow-sm ${
+                              className={`rounded-2xl border border-neutral-150 p-4.5 relative transition-all text-left shadow-xs ${
                                 isDragging ? "opacity-40 scale-95 ring-2 ring-primary/30" :
                                 isDragOver ? "ring-2 ring-primary/20" :
-                                isCompleted ? "opacity-60 bg-[#F0FDF4]" : "bg-white hover:scale-[1.01] hover:border-neutral-300 hover:shadow-md"
+                                isCompleted ? "opacity-60 bg-[#F0FDF4]" : "bg-white hover:scale-[1.005] hover:shadow-sm hover:border-neutral-200/80"
                               }`}
                               style={{
                                 borderLeft: `3px solid ${
