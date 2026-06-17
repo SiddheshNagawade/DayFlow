@@ -81,7 +81,8 @@ export function generateSchedule(
   dayEndStr = "23:00",
   emergencyTime: string | null = null,
   emergencyDurationMinutes = 60,
-  profile?: CalibrationProfile
+  profile?: CalibrationProfile,
+  delayPatterns?: { category: string; problemHour: number; avgDelays: number }[]
 ): DaySchedule {
   const finalScheduledItems: ScheduledItem[] = [];
   const conflicts: FlexibleTask[] = [];
@@ -274,18 +275,39 @@ export function generateSchedule(
 
   // In Phase 2, re-order gaps so that the user's peak window comes first
   // for high-energy tasks, preserving original order for low/medium energy.
-  const orderGapsForTask = (taskEnergyLevel: string): TimeGap[] => {
-    if (activeProfile.phase < 2 || taskEnergyLevel !== "high") return gaps;
+  const isProblematicSlot = (gapStartMins: number, category: string): boolean => {
+    if (!delayPatterns) return false;
+    const hour = Math.floor(gapStartMins / 60);
+    return delayPatterns.some(p => p.category === category && p.problemHour === hour);
+  };
+
+  // Order gaps: normal peak gaps -> other normal gaps -> problematic gaps (delayed slots)
+  const orderGapsForTask = (task: FlexibleTask): TimeGap[] => {
+    const category = task.category || getTaskCategory(task.title);
+    
+    const checkProblem = (g: TimeGap) => {
+      const mid = (timeToMinutes(g.start) + timeToMinutes(g.end)) / 2;
+      return isProblematicSlot(mid, category);
+    };
+
+    const nonProblemGaps = gaps.filter(g => !checkProblem(g));
+    const problemGaps = gaps.filter(g => checkProblem(g));
+
+    if (activeProfile.phase < 2 || task.energy_level !== "high") {
+      return [...nonProblemGaps, ...problemGaps];
+    }
+
     const [peakStart, peakEnd] = getPeakRange();
-    const peakGaps = gaps.filter(g => {
+    const peakGaps = nonProblemGaps.filter(g => {
       const mid = (timeToMinutes(g.start) + timeToMinutes(g.end)) / 2;
       return mid >= peakStart && mid < peakEnd;
     });
-    const otherGaps = gaps.filter(g => {
+    const otherGaps = nonProblemGaps.filter(g => {
       const mid = (timeToMinutes(g.start) + timeToMinutes(g.end)) / 2;
       return !(mid >= peakStart && mid < peakEnd);
     });
-    return [...peakGaps, ...otherGaps];
+
+    return [...peakGaps, ...otherGaps, ...problemGaps];
   };
 
   // 4. Fill gaps with flexible tasks (peak-aware in Phase 2, with transition buffers)
@@ -294,7 +316,7 @@ export function generateSchedule(
     const taskDuration = getCalibratedTaskDuration(task, activeProfile);
 
     // Get gaps ordered by preference for this task's energy level
-    const orderedGaps = orderGapsForTask(task.energy_level);
+    const orderedGaps = orderGapsForTask(task);
 
     for (const preferredGap of orderedGaps) {
       // Find actual index in the mutable gaps array

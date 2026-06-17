@@ -45,12 +45,19 @@ import {
   Database,
   User,
   Grid,
-  Heart
+  Heart,
+  Target,
+  Trophy,
+  Award,
+  TrendingUp,
+  Play,
+  Pause
 } from "lucide-react";
-import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo } from "./types";
+import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone } from "./types";
 import { generateSchedule, calculateFuturePredictions, timeToMinutes, minutesToTime, isFixedBlockActiveOnDate, calculateCalibrationProfile } from "./utils/scheduler";
-import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData } from "./utils/storage";
-import { generateMockMLData, getTaskCategory } from "./utils/mlEngine";
+import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData, loadGoals, saveGoals, loadAchievements, saveAchievements } from "./utils/storage";
+import { generateMockMLData, getTaskCategory, detectHighDelayPatterns } from "./utils/mlEngine";
+import { updateGoalProgressFromTask, predictGoalCompletion, generateCheckInPrompt, getGoalsDueForCheckIn, suggestGoalsFromTaskHistory, generateMilestones, checkForGlobalAchievements } from "./utils/goalEngine";
 
 interface Toast {
   id: string;
@@ -114,11 +121,47 @@ export default function App() {
   const [showPhase2Banner, setShowPhase2Banner] = useState(false);
   const prevPhaseRef = useRef<1 | 2>(1);
 
-  // Tab controller: "today" | "backlog" | "calendar" | "routines"
-  const [activeTab, setActiveTab] = useState<"today" | "backlog" | "calendar" | "routines">("today");
-  
+  // Routing-based Tab controllers
+  const [currentPath, setCurrentPath] = useState(() => {
+    const p = window.location.pathname;
+    return p === "/" || p === "" ? "/today" : p;
+  });
+
+  const navigate = useCallback((path: string) => {
+    window.history.pushState(null, "", path);
+    setCurrentPath(path);
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const p = window.location.pathname;
+      setCurrentPath(p === "/" || p === "" ? "/today" : p);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const activeTab = useMemo(() => {
+    if (currentPath === "/backlog") return "backlog";
+    if (currentPath === "/calendar") return "calendar";
+    if (currentPath === "/routines" || currentPath === "/routines/grid") return "routines";
+    if (currentPath === "/goals" || currentPath === "/routines/goals") return "routines";
+    if (currentPath === "/insights" || currentPath === "/routines/insights") return "routines";
+    return "today";
+  }, [currentPath]);
+
+  const profileViewTab = useMemo(() => {
+    if (currentPath === "/goals" || currentPath === "/routines/goals") return "goals";
+    if (currentPath === "/insights" || currentPath === "/routines/insights") return "insights";
+    return "grid";
+  }, [currentPath]);
+
   const changeTabWithHaptic = (tab: "today" | "backlog" | "calendar" | "routines") => {
-    setActiveTab(tab);
+    if (tab === "routines") {
+      navigate("/routines");
+    } else {
+      navigate(`/${tab}`);
+    }
     triggerHaptic(12);
   };
   
@@ -155,7 +198,7 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
 
   // Bottom Sheets control
-  const [activeBottomSheet, setActiveBottomSheet] = useState<"fixed" | "flexible" | "emergency" | "assistant" | "profile" | "eodreview" | null>(null);
+  const [activeBottomSheet, setActiveBottomSheet] = useState<"fixed" | "flexible" | "emergency" | "assistant" | "profile" | "eodreview" | "goal" | null>(null);
   
   // Live Clock for Time indicator
   const [currentTimeMins, setCurrentTimeMins] = useState(0);
@@ -213,22 +256,46 @@ export default function App() {
   const [profileBio, setProfileBio] = useState(() => localStorage.getItem("dayflow_profile_bio") || "Productivity creator. Tracking daily flows.");
   const [profileEmoji, setProfileEmoji] = useState(() => localStorage.getItem("dayflow_profile_emoji") || "👨‍💻");
   const [showProfileSettings, setShowProfileSettings] = useState(false);
-  const [profileViewTab, setProfileViewTab] = useState<"grid" | "insights">("grid");
 
-  // Advanced CCM Telemetry state variables
-  const [telemetryTaskId, setTelemetryTaskId] = useState<string | null>(null);
-  const [telemetryForm, setTelemetryForm] = useState({
-    actual_duration_minutes: 60,
-    mood_before: 7,
-    mood_after: 7,
-    complexity: 5,
-    interruptions: 0
+  // Goals and Achievements states
+  const [goals, setGoals] = useState<UserGoal[]>([]);
+  const [achievements, setAchievements] = useState<Achievement[]>([]);
+  const [activeGoalCheckIn, setActiveGoalCheckIn] = useState<{ goal: UserGoal; prompt: string } | null>(null);
+  const [editingGoal, setEditingGoal] = useState<UserGoal | null>(null);
+  const [goalForm, setGoalForm] = useState({
+    title: "",
+    category: "fitness" as GoalCategory,
+    description: "",
+    metricLabel: "sessions",
+    currentValue: 0,
+    targetValue: 10,
+    targetDate: "",
+    linkedTaskKeywords: ""
   });
+  const [checkInResponseVal, setCheckInResponseVal] = useState<string>("");
+
+  const [logoClickCount, setLogoClickCount] = useState(0);
+  const [showDevTools, setShowDevTools] = useState(() => localStorage.getItem("dayflow_dev_tools_enabled") === "true");
+
+  const handleLogoClick = () => {
+    setLogoClickCount(prev => {
+      const newCount = prev + 1;
+      if (newCount >= 5) {
+        const nextDev = !showDevTools;
+        setShowDevTools(nextDev);
+        localStorage.setItem("dayflow_dev_tools_enabled", String(nextDev));
+        showToast(nextDev ? "Developer options unlocked! ✨" : "Developer options locked.", "info");
+        triggerHaptic(50);
+        return 0;
+      }
+      return newCount;
+    });
+  };
 
   const handleInjectMockMLData = () => {
     const mockTasks = generateMockMLData();
-    handleUpdateFlexible(mockTasks);
-    showToast("ML Simulation Data Injected (52 tasks)!", "success");
+    handleUpdateFlexible(mockTasks, true);
+    showToast("Demo completion history injected silently!", "success");
     triggerHaptic(50);
   };
 
@@ -295,6 +362,8 @@ export default function App() {
     setFlexibleTasks(tasks);
     setAppSettings(loadSettings());
     setProfiles(loadProfiles());
+    setGoals(loadGoals());
+    setAchievements(loadAchievements());
 
     // Show onboarding if first time
     if (!isOnboardingComplete()) {
@@ -386,7 +455,46 @@ export default function App() {
   };
 
   // Update flexibleTasks wrapper
-  const handleUpdateFlexible = (newTasks: FlexibleTask[]) => {
+  const handleUpdateFlexible = (newTasks: FlexibleTask[], isSilent = false) => {
+    // Find newly completed tasks (comparing with previous state)
+    const newlyCompleted = newTasks.filter(t => {
+      const prev = flexibleTasks.find(p => p.id === t.id);
+      return t.status === "done" && prev?.status !== "done";
+    });
+    
+    // Update goals based on newly completed tasks
+    if (newlyCompleted.length > 0) {
+      let currentGoals = [...goals];
+      let allNewAchievements: Achievement[] = [];
+      
+      if (goals.length > 0) {
+        for (const task of newlyCompleted) {
+          const { updatedGoals, newAchievements } = updateGoalProgressFromTask(currentGoals, task);
+          currentGoals = updatedGoals;
+          allNewAchievements = [...allNewAchievements, ...newAchievements];
+        }
+        setGoals(currentGoals);
+        saveGoals(currentGoals);
+      }
+
+      // Check for global lifetime/category achievements
+      const globalAchievements = checkForGlobalAchievements(newTasks, achievements);
+      allNewAchievements = [...allNewAchievements, ...globalAchievements];
+      
+      if (allNewAchievements.length > 0) {
+        const updated = [...achievements, ...allNewAchievements];
+        setAchievements(updated);
+        saveAchievements(updated);
+        
+        if (!isSilent) {
+          // Show achievement toast
+          allNewAchievements.forEach(ach => {
+            showToast(`${ach.icon} Achievement Unlocked: ${ach.title}`, "success");
+          });
+        }
+      }
+    }
+    
     setFlexibleTasks(newTasks);
     saveFlexibleTasks(newTasks);
   };
@@ -478,6 +586,10 @@ export default function App() {
     prevPhaseRef.current = calibrationProfile.phase;
   }, [calibrationProfile.phase]);
 
+  const delayPatterns = useMemo(() => {
+    return detectHighDelayPatterns(flexibleTasks);
+  }, [flexibleTasks]);
+
   // Daily Schedule Calculations (uses effectiveFixedBlocks which merges profile + manual blocks)
   const daySchedule = useMemo(() => {
     return generateSchedule(
@@ -488,9 +600,10 @@ export default function App() {
       appSettings.day_end,
       null,
       60,
-      calibrationProfile
+      calibrationProfile,
+      delayPatterns
     );
-  }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile]);
+  }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile, delayPatterns]);
 
   // Run predictions for all backlog items
   const futurePredictions = useMemo(() => {
@@ -876,10 +989,12 @@ export default function App() {
 
     let updatedFlexible = [...flexibleTasks];
     let updatedFixed = [...fixedBlocks];
+    let updatedGoals = [...goals];
+    let goalsModified = false;
     let appliedCount = 0;
 
     for (const change of proposedChanges) {
-      const { action, taskId, newDate, newTime, durationMultiplier, newTaskTitle, newTaskDuration } = change;
+      const { action, taskId, newDate, newTime, durationMultiplier, newTaskTitle, newTaskDuration, goalTitle, goalCategory, goalMetric, goalTarget, goalKeywords, insertImmediately } = change;
 
       if (action === "add") {
         const newTask: FlexibleTask = {
@@ -889,15 +1004,70 @@ export default function App() {
           deadline: null,
           energy_level: "medium",
           status: "scheduled",
-          scheduled_date: selectedDate
+          scheduled_date: selectedDate,
+          pinned_start_time: insertImmediately ? minutesToTime(currentTimeMins) : undefined
         };
         updatedFlexible.push(newTask);
         appliedCount++;
         continue;
       }
 
-      const isFlex = taskId.startsWith("flex-") || taskId.startsWith("ai-flex-");
-      const isFixed = taskId.startsWith("fixed-") || taskId.startsWith("ai-fixed-") || taskId.startsWith("profile-");
+      if (action === "add_goal") {
+        const keywords = goalKeywords && goalKeywords.length > 0 
+          ? goalKeywords 
+          : [goalTitle?.toLowerCase() || ""];
+          
+        const targetValue = goalTarget || 10;
+        const metricLabel = goalMetric || "sessions";
+        const milestones = generateMilestones(targetValue, metricLabel);
+        
+        const nextCheckIn = new Date();
+        nextCheckIn.setDate(nextCheckIn.getDate() + 7);
+        
+        const newGoal: UserGoal = {
+          id: `goal-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          title: goalTitle || "New Goal",
+          category: (goalCategory as any) || "personal",
+          description: "Created automatically via AI Copilot",
+          metricLabel: metricLabel,
+          currentValue: 0,
+          targetValue: targetValue,
+          startValue: 0,
+          createdAt: new Date().toISOString(),
+          status: "active",
+          milestones: milestones,
+          checkInFrequencyDays: 7,
+          nextCheckInAt: nextCheckIn.toISOString().split("T")[0],
+          linkedTaskKeywords: keywords,
+          progressLog: [{ date: new Date().toISOString().split("T")[0], value: 0 }]
+        };
+        
+        updatedGoals.push(newGoal);
+        appliedCount++;
+        goalsModified = true;
+        continue;
+      }
+
+      if (action === "update_goal") {
+        updatedGoals = updatedGoals.map(g => {
+          if (g.id === taskId || g.title.toLowerCase() === goalTitle?.toLowerCase()) {
+            const newTarget = goalTarget || g.targetValue;
+            const newMilestones = g.targetValue === newTarget ? g.milestones : generateMilestones(newTarget, g.metricLabel);
+            goalsModified = true;
+            return {
+              ...g,
+              targetValue: newTarget,
+              milestones: newMilestones
+            };
+          }
+          return g;
+        });
+        appliedCount++;
+        continue;
+      }
+
+      const isFlex = taskId?.startsWith("flex-") || taskId?.startsWith("ai-flex-");
+      const isFixed = taskId?.startsWith("fixed-") || taskId?.startsWith("ai-fixed-") || taskId?.startsWith("profile-");
 
       if (action === "delete") {
         if (isFlex) {
@@ -930,16 +1100,17 @@ export default function App() {
           appliedCount++;
         }
       } else if (action === "change_time") {
+        const pinTime = insertImmediately ? minutesToTime(currentTimeMins) : newTime;
         if (isFlex) {
           updatedFlexible = updatedFlexible.map(t => t.id === taskId ? {
             ...t,
-            pinned_start_time: newTime || undefined
+            pinned_start_time: pinTime || undefined
           } : t);
           appliedCount++;
         } else if (isFixed) {
           updatedFixed = updatedFixed.map(b => b.id === taskId ? {
             ...b,
-            start_time: newTime || b.start_time
+            start_time: pinTime || b.start_time
           } : b);
           appliedCount++;
         }
@@ -958,6 +1129,10 @@ export default function App() {
     if (appliedCount > 0) {
       handleUpdateFlexible(updatedFlexible);
       handleUpdateFixed(updatedFixed);
+      if (goalsModified) {
+        setGoals(updatedGoals);
+        saveGoals(updatedGoals);
+      }
       showToast(`Applied ${appliedCount} schedule adjustments!`, "success");
       triggerHaptic([40, 40]);
     }
@@ -1211,7 +1386,7 @@ export default function App() {
     handleUpdateFlexible(updated);
     showToast(`"${task.title}" slotted to today!`, "success");
     triggerHaptic(40);
-    setActiveTab("today");
+    navigate("/today");
   };
 
   // --- DRAG AND DROP: reorder flexible tasks on the timeline ---
@@ -1297,7 +1472,12 @@ export default function App() {
   // Return scheduled task back to backlog
   const handleUnscheduleTask = (taskId: string) => {
     const updated = flexibleTasks.map((t) => 
-      t.id === taskId ? { ...t, scheduled_date: null, status: "backlog" as const } : t
+      t.id === taskId ? {
+        ...t,
+        scheduled_date: null,
+        status: "backlog" as const,
+        notification_response: "skipped_today" as const
+      } : t
     );
     handleUpdateFlexible(updated);
     showToast("Task returned to Backlog.", "info");
@@ -1310,30 +1490,53 @@ export default function App() {
     const newTimeStr = minutesToTime(newStartMins);
 
     const updated = flexibleTasks.map(t =>
-      t.id === taskId ? { ...t, pinned_start_time: newTimeStr } : t
+      t.id === taskId ? {
+        ...t,
+        pinned_start_time: newTimeStr,
+        delay_count: (t.delay_count || 0) + 1,
+        notification_response: "delayed_15" as const
+      } : t
     );
     handleUpdateFlexible(updated);
-    showToast("Task delayed by 15 minutes", "success");
+    showToast("Task delayed by 15 minutes", "info");
     triggerHaptic(20);
   };
 
+  const handleStartTaskFromNotification = (taskId: string) => {
+    const updated = flexibleTasks.map(t =>
+      t.id === taskId ? {
+        ...t,
+        notification_response: "started" as const,
+        actual_start_time: minutesToTime(new Date().getHours() * 60 + new Date().getMinutes()),
+      } : t
+    );
+    handleUpdateFlexible(updated);
+    showToast("Awesome! Stay in flow.", "success");
+    triggerHaptic(30);
+  };
+
   const handleClearAllData = () => {
-    if (confirm("Are you sure you want to delete all tasks, routine profiles, and settings? This action is permanent and cannot be undone.")) {
+    const confirmation = prompt("WARNING: This will permanently delete all tasks, routine profiles, settings, goals, and achievements.\n\nTo confirm, please type 'DELETE ALL DATA' in the input box below:");
+    if (confirmation === "DELETE ALL DATA") {
       clearAllData();
       setFixedBlocks([]);
       setFlexibleTasks([]);
       setProfiles([]);
+      setGoals([]);
+      setAchievements([]);
       setAppSettings({ day_start: "07:00", day_end: "23:00" });
       setShowOnboarding(true);
       showToast("All data wiped.", "warning");
       triggerHaptic([50, 50, 50]);
+    } else if (confirmation !== null) {
+      showToast("Confirmation text did not match. Reset cancelled.", "warning");
     }
   };
 
   const exportMyData = () => {
     const dataToExport = {
       exported_at: new Date().toISOString(),
-      version: "dayflow-telemetry-v1",
+      version: "dayflow-telemetry-v2",
       settings: appSettings,
       summary: {
         total_flexible_tasks: flexibleTasks.length,
@@ -1341,11 +1544,16 @@ export default function App() {
         backlog_tasks: flexibleTasks.filter(t => t.status === "backlog").length,
         scheduled_tasks: flexibleTasks.filter(t => t.status === "scheduled").length,
         total_fixed_blocks: fixedBlocks.length,
-        total_routine_profiles: profiles.length
+        total_routine_profiles: profiles.length,
+        total_goals: goals.length,
+        achieved_goals: goals.filter(g => g.status === "achieved").length,
+        total_achievements: achievements.length
       },
       flexible_tasks: flexibleTasks,
       fixed_blocks: fixedBlocks,
-      routine_profiles: profiles
+      routine_profiles: profiles,
+      goals: goals,
+      achievements: achievements
     };
 
     const dataStr = JSON.stringify(dataToExport, null, 2);
@@ -1401,6 +1609,18 @@ export default function App() {
         if (Array.isArray(imported.routine_profiles)) {
           setProfiles(imported.routine_profiles);
           saveProfiles(imported.routine_profiles);
+        }
+
+        // Import goals
+        if (Array.isArray(imported.goals)) {
+          setGoals(imported.goals);
+          saveGoals(imported.goals);
+        }
+
+        // Import achievements
+        if (Array.isArray(imported.achievements)) {
+          setAchievements(imported.achievements);
+          saveAchievements(imported.achievements);
         }
 
         showToast("Data imported successfully!", "success");
@@ -1570,117 +1790,300 @@ export default function App() {
     setProfileForm(prev => ({ ...prev, blocks: prev.blocks.filter(b => b.id !== blockId) }));
   };
 
+  // Check for goal check-ins once per day
+  useEffect(() => {
+    if (goals.length === 0) return;
+    const checkGoalCheckIns = () => {
+      const dueGoals = getGoalsDueForCheckIn(goals);
+      if (dueGoals.length > 0 && !activeGoalCheckIn) {
+        // Find the first goal that needs check-in
+        const firstGoal = dueGoals[0];
+        const prompt = generateCheckInPrompt(firstGoal);
+        setActiveGoalCheckIn({ goal: firstGoal, prompt });
+      }
+    };
+
+    checkGoalCheckIns();
+    const interval = setInterval(checkGoalCheckIns, 3600000); // Check hourly
+    return () => clearInterval(interval);
+  }, [goals, activeGoalCheckIn]);
+
+  const handleOpenCreateGoal = (initialValues?: { title: string; category: GoalCategory; keywords: string[]; targetValue: number; metricLabel: string }) => {
+    setEditingGoal(null);
+    setGoalForm({
+      title: initialValues?.title || "",
+      category: initialValues?.category || "fitness",
+      description: "",
+      metricLabel: initialValues?.metricLabel || "sessions",
+      currentValue: 0,
+      targetValue: initialValues?.targetValue || 10,
+      targetDate: "",
+      linkedTaskKeywords: initialValues?.keywords.join(", ") || ""
+    });
+    setActiveBottomSheet("goal");
+    triggerHaptic(20);
+  };
+
+  const handleSaveGoal = () => {
+    if (!goalForm.title.trim()) {
+      showToast("Please enter a goal title", "warning");
+      return;
+    }
+    
+    const keywords = goalForm.linkedTaskKeywords
+      .split(",")
+      .map(k => k.trim())
+      .filter(k => k !== "");
+      
+    const milestones = generateMilestones(goalForm.targetValue, goalForm.metricLabel);
+
+    const today = new Date().toISOString().split("T")[0];
+    const nextCheckIn = new Date();
+    nextCheckIn.setDate(nextCheckIn.getDate() + 7); // Default check-in frequency: 7 days
+
+    if (editingGoal) {
+      const updated = goals.map(g => g.id === editingGoal.id ? {
+        ...g,
+        title: goalForm.title.trim(),
+        category: goalForm.category,
+        description: goalForm.description || undefined,
+        metricLabel: goalForm.metricLabel,
+        targetValue: goalForm.targetValue,
+        targetDate: goalForm.targetDate || undefined,
+        linkedTaskKeywords: keywords,
+        milestones: g.targetValue === goalForm.targetValue ? g.milestones : milestones
+      } : g);
+      setGoals(updated);
+      saveGoals(updated);
+      showToast(`Goal "${goalForm.title}" updated!`, "success");
+    } else {
+      const newGoal: UserGoal = {
+        id: `goal-${Date.now()}`,
+        title: goalForm.title.trim(),
+        category: goalForm.category,
+        description: goalForm.description || undefined,
+        metricLabel: goalForm.metricLabel,
+        currentValue: goalForm.currentValue,
+        targetValue: goalForm.targetValue,
+        startValue: goalForm.currentValue,
+        createdAt: new Date().toISOString(),
+        targetDate: goalForm.targetDate || undefined,
+        status: "active",
+        milestones,
+        checkInFrequencyDays: 7,
+        nextCheckInAt: nextCheckIn.toISOString().split("T")[0],
+        linkedTaskKeywords: keywords,
+        progressLog: [{ date: today, value: goalForm.currentValue }]
+      };
+      const updated = [...goals, newGoal];
+      setGoals(updated);
+      saveGoals(updated);
+      showToast(`Goal "${goalForm.title}" created!`, "success");
+    }
+    setActiveBottomSheet(null);
+    triggerHaptic(30);
+  };
+
+  const handleOpenEditGoal = (goal: UserGoal) => {
+    setEditingGoal(goal);
+    setGoalForm({
+      title: goal.title,
+      category: goal.category,
+      description: goal.description || "",
+      metricLabel: goal.metricLabel,
+      currentValue: goal.currentValue,
+      targetValue: goal.targetValue,
+      targetDate: goal.targetDate || "",
+      linkedTaskKeywords: goal.linkedTaskKeywords.join(", ")
+    });
+    setActiveBottomSheet("goal");
+    triggerHaptic(20);
+  };
+
+  const handleDeleteGoal = (goalId: string) => {
+    const updated = goals.filter(g => g.id !== goalId);
+    setGoals(updated);
+    saveGoals(updated);
+    showToast("Goal deleted.", "info");
+    triggerHaptic(20);
+  };
+
+  const handleToggleGoalPause = (goalId: string) => {
+    const updated = goals.map(g => {
+      if (g.id === goalId) {
+        const newStatus = g.status === "active" ? "paused" as const : "active" as const;
+        showToast(newStatus === "active" ? `"${g.title}" activated!` : `"${g.title}" paused.`, "info");
+        return { ...g, status: newStatus };
+      }
+      return g;
+    });
+    setGoals(updated);
+    saveGoals(updated);
+    triggerHaptic(20);
+  };
+
+  const handleCheckInResponse = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeGoalCheckIn) return;
+    
+    const { goal } = activeGoalCheckIn;
+    const value = parseFloat(checkInResponseVal);
+    
+    if (isNaN(value)) {
+      showToast("Please enter a valid number", "warning");
+      return;
+    }
+    
+    // Update goal value
+    const today = new Date().toISOString().split("T")[0];
+    const newLog = { date: today, value };
+    
+    // Check milestones and achievements
+    const newAchievements: Achievement[] = [];
+    const updatedMilestones = goal.milestones.map(milestone => {
+      if (!milestone.achievedAt && value >= milestone.targetValue) {
+        newAchievements.push({
+          id: `ach-${Date.now()}-${milestone.id}`,
+          title: milestone.label,
+          description: `You reached ${milestone.targetValue} ${goal.metricLabel} for "${goal.title}"`,
+          category: goal.category,
+          earnedAt: new Date().toISOString(),
+          icon: "⭐",
+          goalId: goal.id,
+        });
+        return { ...milestone, achievedAt: new Date().toISOString() };
+      }
+      return milestone;
+    });
+    
+    let status = goal.status;
+    let achievedAt = goal.achievedAt;
+    if (value >= goal.targetValue && goal.status === "active") {
+      status = "achieved";
+      achievedAt = new Date().toISOString();
+      newAchievements.push({
+        id: `ach-goal-${goal.id}-${Date.now()}`,
+        title: `🎯 Goal Complete: ${goal.title}`,
+        description: `You hit ${goal.targetValue} ${goal.metricLabel}!`,
+        category: goal.category,
+        earnedAt: new Date().toISOString(),
+        icon: "🏆",
+        goalId: goal.id,
+      });
+    }
+    
+    // Set next check-in date
+    const nextCheckIn = new Date();
+    nextCheckIn.setDate(nextCheckIn.getDate() + goal.checkInFrequencyDays);
+    
+    const updatedGoals = goals.map(g => g.id === goal.id ? {
+      ...g,
+      currentValue: value,
+      status,
+      achievedAt,
+      lastCheckInAt: today,
+      nextCheckInAt: nextCheckIn.toISOString().split("T")[0],
+      milestones: updatedMilestones,
+      progressLog: [...g.progressLog, newLog]
+    } : g);
+    
+    setGoals(updatedGoals);
+    saveGoals(updatedGoals);
+    
+    if (newAchievements.length > 0) {
+      const updatedAch = [...achievements, ...newAchievements];
+      setAchievements(updatedAch);
+      saveAchievements(updatedAch);
+      newAchievements.forEach(ach => showToast(`${ach.icon} ${ach.title}`, "success"));
+    }
+    
+    setActiveGoalCheckIn(null);
+    setCheckInResponseVal("");
+    showToast("Goal progress logged successfully!", "success");
+    triggerHaptic(35);
+  };
+
 
 
   const handleToggleTaskDone = (taskId: string) => {
     const matched = flexibleTasks.find(t => t.id === taskId);
     if (!matched) return;
-    
-    const isDone = matched.status === "done";
-    if (!isDone) {
-      // Open telemetry modal first!
-      const now = new Date();
-      const currentMins = now.getHours() * 60 + now.getMinutes();
-      let actDuration = matched.duration_minutes; // fallback
-      if (matched.scheduled_start_time) {
-        const schStartMins = timeToMinutes(matched.scheduled_start_time);
-        const elapsed = currentMins - schStartMins;
-        if (elapsed > 0) {
-          actDuration = Math.max(15, Math.min(Math.round(matched.duration_minutes * 2.5), elapsed));
-        }
-      }
-      
-      setTelemetryForm({
-        actual_duration_minutes: actDuration,
-        mood_before: 7,
-        mood_after: 7,
-        complexity: 5,
-        interruptions: 0
-      });
-      setTelemetryTaskId(taskId);
-    } else {
-      // Unmarking done -> immediately toggle back
-      const updated = flexibleTasks.map((t) => {
-        if (t.id === taskId) {
-          return {
-            ...t,
-            status: "scheduled" as const,
-            actual_start_time: undefined,
-            actual_duration_minutes: undefined,
-            completed_at: undefined,
-            mood_before: undefined,
-            mood_after: undefined,
-            complexity: undefined,
-            interruptions: undefined
-          };
-        }
-        return t;
-      });
+
+    if (matched.status === "done") {
+      // Undo completion
+      const updated = flexibleTasks.map(t =>
+        t.id === taskId ? {
+          ...t,
+          status: "scheduled" as const,
+          actual_duration_minutes: undefined,
+          completed_at: undefined,
+        } : t
+      );
       handleUpdateFlexible(updated);
-      triggerHaptic(20);
+      return;
     }
-  };
 
-  const handleSubmitTelemetry = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!telemetryTaskId) return;
-    
+    // PASSIVE inference — no modal, no timer
     const now = new Date();
-    const currentMins = now.getHours() * 60 + now.getMinutes();
-    
-    const updated = flexibleTasks.map((t) => {
-      if (t.id === telemetryTaskId) {
-        let actStart = t.scheduled_start_time || minutesToTime(currentMins);
-        return {
-          ...t,
-          status: "done" as const,
-          actual_start_time: actStart,
-          actual_duration_minutes: Number(telemetryForm.actual_duration_minutes),
-          completed_at: now.toISOString(),
-          mood_before: Number(telemetryForm.mood_before),
-          mood_after: Number(telemetryForm.mood_after),
-          complexity: Number(telemetryForm.complexity),
-          interruptions: Number(telemetryForm.interruptions),
-          category: t.category || getTaskCategory(t.title)
-        };
-      }
-      return t;
-    });
-    
-    handleUpdateFlexible(updated);
-    showToast("Completed! Keep up the momentum.", "success");
-    triggerHaptic(40);
-    setTelemetryTaskId(null);
-  };
+    const nowMins = now.getHours() * 60 + now.getMinutes();
 
-  const handleQuickCompleteTelemetry = () => {
-    if (!telemetryTaskId) return;
-    const now = new Date();
-    const currentMins = now.getHours() * 60 + now.getMinutes();
-    
-    const updated = flexibleTasks.map((t) => {
-      if (t.id === telemetryTaskId) {
-        let actStart = t.scheduled_start_time || minutesToTime(currentMins);
-        return {
-          ...t,
-          status: "done" as const,
-          actual_start_time: actStart,
-          actual_duration_minutes: Number(telemetryForm.actual_duration_minutes),
-          completed_at: now.toISOString(),
-          mood_before: 7, // default
-          mood_after: 7,  // default
-          complexity: 5,  // default
-          interruptions: 0, // default
-          category: t.category || getTaskCategory(t.title)
-        };
+    // Find when this task was scheduled to start today
+    const scheduledItem = daySchedule.items.find(i => i.id === taskId);
+    let inferredDuration = matched.duration_minutes; // fallback = estimate
+
+    const startVal = matched.actual_start_time || scheduledItem?.start_time;
+    if (startVal) {
+      const startMins = timeToMinutes(startVal);
+      const elapsed = nowMins - startMins;
+
+      // 1. Overlap Check: Ensure this passive window doesn't overlap with any already completed task today
+      const todayStr = now.toISOString().split("T")[0];
+      const completedToday = flexibleTasks.filter(t => 
+        t.id !== taskId && 
+        t.status === "done" && 
+        t.completed_at && 
+        t.completed_at.startsWith(todayStr) &&
+        t.actual_start_time &&
+        t.actual_duration_minutes
+      );
+
+      let overlaps = false;
+      for (const other of completedToday) {
+        const otherStartMins = timeToMinutes(other.actual_start_time!);
+        const otherEndMins = otherStartMins + other.actual_duration_minutes!;
+        if (startMins < otherEndMins && otherStartMins < nowMins) {
+          overlaps = true;
+          break;
+        }
       }
-      return t;
-    });
-    
+
+      if (overlaps) {
+        // Fallback to original estimate due to overlap
+        inferredDuration = matched.duration_minutes;
+      } else {
+        // Use elapsed duration if plausible (between 50% and 250% of estimate)
+        const lower = matched.duration_minutes * 0.5;
+        const upper = matched.duration_minutes * 2.5;
+        if (elapsed > lower && elapsed < upper) {
+          inferredDuration = elapsed;
+        }
+      }
+    }
+
+    const updated = flexibleTasks.map(t =>
+      t.id === taskId ? {
+        ...t,
+        status: "done" as const,
+        actual_duration_minutes: inferredDuration,
+        completed_at: now.toISOString(),
+        actual_start_time: startVal,
+        category: t.category || getTaskCategory(t.title),
+      } : t
+    );
+
     handleUpdateFlexible(updated);
-    showToast("Completed! Keep up the momentum.", "success");
+    showToast("Done! Keep going.", "success");
     triggerHaptic(40);
-    setTelemetryTaskId(null);
   };
 
 
@@ -2054,155 +2457,6 @@ export default function App() {
         ))}
       </div>
 
-      {/* Advanced CCM Telemetry Modal */}
-      {telemetryTaskId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-fade-in">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full border border-neutral-200 overflow-hidden animate-scale-up text-neutral-800">
-            {/* Header */}
-            <div className="px-6 py-5 border-b border-neutral-150 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-primary fill-primary/10" />
-                <h3 className="text-base font-bold tracking-tight text-neutral-900 font-display">CCM Task Telemetry</h3>
-              </div>
-              <button 
-                onClick={() => setTelemetryTaskId(null)}
-                className="p-1.5 rounded-full hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600 transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Form */}
-            <form onSubmit={handleSubmitTelemetry} className="p-6 space-y-4 text-left">
-              <p className="text-xs text-neutral-500 leading-relaxed font-sans">
-                Log real-time performance indicators to calibrate the machine-learning Circadian Rhythm matrix.
-              </p>
-
-              {/* Task Title display */}
-              <div className="bg-[#F6F5FF] border border-[#E0D9FF] rounded-2xl p-3.5 text-xs text-neutral-700">
-                <span className="font-bold text-[#5A4DC2] block uppercase tracking-wider text-[9px] mb-1 font-sans">Task Completed</span>
-                <span className="font-semibold text-neutral-800 text-sm font-display">
-                  {flexibleTasks.find(t => t.id === telemetryTaskId)?.title}
-                </span>
-              </div>
-
-              {/* Actual Duration selector */}
-              <div>
-                <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1.5 font-sans">
-                  Actual Duration (minutes)
-                </label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setTelemetryForm(prev => ({ ...prev, actual_duration_minutes: Math.max(5, prev.actual_duration_minutes - 5) }))}
-                    className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-lg text-xs font-bold cursor-pointer transition-colors font-sans"
-                  >
-                    -5m
-                  </button>
-                  <input
-                    type="number"
-                    value={telemetryForm.actual_duration_minutes}
-                    onChange={(e) => setTelemetryForm(prev => ({ ...prev, actual_duration_minutes: Math.max(1, Number(e.target.value)) }))}
-                    className="flex-1 text-center font-mono text-xs bg-neutral-50 border border-neutral-200 rounded-lg py-1.5 font-bold focus:outline-none focus:ring-1 focus:ring-primary"
-                    required
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setTelemetryForm(prev => ({ ...prev, actual_duration_minutes: prev.actual_duration_minutes + 5 }))}
-                    className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-lg text-xs font-bold cursor-pointer transition-colors font-sans"
-                  >
-                    +5m
-                  </button>
-                </div>
-              </div>
-
-              {/* Complexity slider */}
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider font-sans">
-                    Task Complexity
-                  </label>
-                  <span className="text-xs font-bold text-neutral-800 bg-neutral-100 px-2 py-0.5 rounded font-mono">
-                    {telemetryForm.complexity} / 10
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="10"
-                  value={telemetryForm.complexity}
-                  onChange={(e) => setTelemetryForm(prev => ({ ...prev, complexity: Number(e.target.value) }))}
-                  className="w-full accent-primary h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-
-              {/* Mood before slider */}
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider font-sans">
-                    Focus / Energy Level
-                  </label>
-                  <span className="text-xs font-bold text-neutral-800 bg-neutral-100 px-2 py-0.5 rounded font-mono">
-                    {telemetryForm.mood_before} / 10
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="10"
-                  value={telemetryForm.mood_before}
-                  onChange={(e) => setTelemetryForm(prev => ({ ...prev, mood_before: Number(e.target.value) }))}
-                  className="w-full accent-primary h-1 bg-neutral-200 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-
-              {/* Interruptions counter */}
-              <div>
-                <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1.5 font-sans">
-                  Interruptions count (Phone checks, etc.)
-                </label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setTelemetryForm(prev => ({ ...prev, interruptions: Math.max(0, prev.interruptions - 1) }))}
-                    className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-lg text-xs font-bold cursor-pointer transition-colors font-sans"
-                  >
-                    -
-                  </button>
-                  <span className="flex-1 text-center font-mono text-xs bg-neutral-50 border border-neutral-200 rounded-lg py-1.5 font-bold">
-                    {telemetryForm.interruptions}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setTelemetryForm(prev => ({ ...prev, interruptions: prev.interruptions + 1 }))}
-                    className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 rounded-lg text-xs font-bold cursor-pointer transition-colors font-sans"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-
-              {/* Actions */}
-              <div className="flex flex-col gap-2 pt-4 border-t border-neutral-100">
-                <button
-                  type="submit"
-                  className="w-full py-3 text-xs font-bold bg-primary hover:bg-primary-dark text-white rounded-xl transition-all shadow-md shadow-primary/20 cursor-pointer text-center font-display"
-                >
-                  Submit & Calibrate Schedule
-                </button>
-                <button
-                  type="button"
-                  onClick={handleQuickCompleteTelemetry}
-                  className="w-full py-2.5 text-xs font-bold border border-neutral-200 text-neutral-500 hover:bg-neutral-50 rounded-xl transition-all cursor-pointer text-center font-display"
-                >
-                  Quick Complete (Skip telemetry)
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {notificationResponseTask && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-fade-in">
           <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full border border-slate-100 overflow-hidden animate-scale-up">
@@ -2235,7 +2489,7 @@ export default function App() {
               <div className="flex flex-col gap-2.5 pt-2">
                 <button
                   onClick={() => {
-                    handleToggleTaskDone(notificationResponseTask.id);
+                    handleStartTaskFromNotification(notificationResponseTask.id);
                     setNotificationResponseTask(null);
                   }}
                   className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-bold text-sm transition-all shadow-md shadow-emerald-500/10 cursor-pointer flex items-center justify-center gap-2"
@@ -2267,6 +2521,66 @@ export default function App() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeGoalCheckIn && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full border border-slate-100 overflow-hidden animate-scale-up">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-violet-500 to-indigo-600 px-6 py-8 text-white relative">
+              <button 
+                onClick={() => setActiveGoalCheckIn(null)}
+                className="absolute top-4 right-4 p-1.5 rounded-full bg-white/20 hover:bg-white/30 transition-colors text-white cursor-pointer"
+                title="Dismiss"
+              >
+                <X className="w-4 h-4" />
+              </button>
+              <div className="flex items-center gap-2 mb-2">
+                <Target className="w-5 h-5 animate-bounce" />
+                <span className="text-xs font-bold uppercase tracking-wider opacity-90">Goal Progress Check-in</span>
+              </div>
+              <h3 className="text-xl font-bold tracking-tight">{activeGoalCheckIn.goal.title}</h3>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleCheckInResponse} className="p-6 space-y-4 text-left">
+              <p className="text-sm text-slate-600 leading-relaxed font-sans">
+                {activeGoalCheckIn.prompt}
+              </p>
+
+              <div>
+                <label className="block text-[10px] font-bold text-neutral-450 uppercase tracking-wider mb-1">
+                  Current Value ({activeGoalCheckIn.goal.metricLabel})
+                </label>
+                <input 
+                  type="number" 
+                  step="any"
+                  value={checkInResponseVal}
+                  onChange={(e) => setCheckInResponseVal(e.target.value)}
+                  placeholder={`e.g. ${activeGoalCheckIn.goal.currentValue + 1}`}
+                  className="w-full px-3.5 py-2.5 border border-neutral-200 rounded-xl text-sm bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                  required
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveGoalCheckIn(null)}
+                  className="flex-1 py-3 border border-neutral-200 hover:bg-neutral-50 text-neutral-600 rounded-xl font-bold text-sm transition-colors cursor-pointer"
+                >
+                  Skip Check-in
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3 bg-primary hover:bg-primary-dark text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-primary/10 cursor-pointer"
+                >
+                  Log Progress
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -2381,6 +2695,19 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Danger Zone */}
+              <div className="pt-3 border-t border-neutral-100 text-left">
+                <label className="block text-[10px] font-bold text-rose-500 uppercase tracking-wider mb-2 font-sans">Danger Zone</label>
+                <button
+                  type="button"
+                  onClick={handleClearAllData}
+                  className="w-full py-2.5 px-3 bg-rose-50 border border-rose-100 hover:bg-rose-100/80 text-rose-600 text-xs font-bold rounded-xl transition-all cursor-pointer text-center flex items-center justify-center gap-1.5 font-display"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                  <span>Clear All Data</span>
+                </button>
+              </div>
+
               {/* Action buttons */}
               <div className="flex gap-2 pt-4 border-t border-neutral-100">
                 <button
@@ -2426,7 +2753,11 @@ export default function App() {
           <div className="space-y-6 overflow-y-auto pr-0.5 scrollbar-none flex-1">
             {/* Header / Brand */}
             <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "justify-between"}`}>
-              <div className="flex items-center gap-2">
+              <div 
+                onClick={handleLogoClick}
+                className="flex items-center gap-2 cursor-pointer select-none"
+                title="Tap 5 times for developer mode"
+              >
                 <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center shadow-lg shadow-primary/20 shrink-0">
                   <Check className="w-5 h-5 text-white stroke-[3.5px]" />
                 </div>
@@ -2644,21 +2975,22 @@ export default function App() {
                       <Download className="w-3.5 h-3.5 text-neutral-500" /> Export Data (JSON)
                     </button>
 
-                    {/* Simulate ML Calibration Data */}
-                    <button
-                      onClick={handleInjectMockMLData}
-                      className="w-full py-1.5 px-2.5 bg-[#F6F5FF] border border-[#E0D9FF] hover:bg-[#EFEBFF] text-[#5A4DC2] rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm font-display"
-                    >
-                      <Sparkles className="w-3.5 h-3.5 text-[#8B7EFF] fill-[#8B7EFF]/10" /> Simulate ML Calibration
-                    </button>
+                    {/* Populate Demo History */}
+                    {showDevTools && (
+                      <div className="space-y-1 p-2 bg-[#F6F5FF]/50 border border-[#E0D9FF]/40 rounded-xl animate-fade-in text-left">
+                        <span className="text-[9px] font-extrabold text-[#5A4DC2] uppercase tracking-wider block mb-1 font-mono text-center">🛠️ Developer Options</span>
+                        <button
+                          onClick={handleInjectMockMLData}
+                          className="w-full py-1.5 px-2.5 bg-[#F6F5FF] border border-[#E0D9FF] hover:bg-[#EFEBFF] text-[#5A4DC2] rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm font-display"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-[#8B7EFF] fill-[#8B7EFF]/10" /> Populate Demo History
+                        </button>
+                        <p className="text-[10px] text-neutral-400 leading-relaxed font-sans text-center px-1">
+                          Adds 30 days of mock task history to instantly preview calibrated AI schedule spacing, peak focus times, and procrastination patterns in Insights.
+                        </p>
+                      </div>
+                    )}
 
-                    {/* Clear Data */}
-                    <button
-                      onClick={handleClearAllData}
-                      className="w-full py-1.5 px-2.5 bg-rose-50 border border-rose-100 hover:bg-rose-100/80 text-rose-600 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1 font-display"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-rose-500" /> Clear All Data
-                    </button>
                   </div>
                 </div>
               </>
@@ -2680,7 +3012,11 @@ export default function App() {
           
           {/* TOP APP HEADER BAR (Fixed boundary, does not move) */}
           <header id="mobile_sticky_header" className="h-16 border-b border-neutral-200 px-4 flex items-center justify-between bg-white z-30 flex-shrink-0 relative text-slate-800">
-            <div className="flex items-center gap-1.5">
+            <div 
+              onClick={handleLogoClick}
+              className="flex items-center gap-1.5 cursor-pointer select-none"
+              title="Tap 5 times for developer mode"
+            >
               <span className="font-display font-medium text-lg text-primary tracking-tight">DayFlow</span>
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               {activeTab === "today" && daySchedule.items.length > 0 && (
@@ -3659,12 +3995,12 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Tab switcher: Routines vs Insights */}
+                  {/* Tab switcher: Routines vs Goals vs Insights */}
                   <div className="flex justify-center border-b border-neutral-250/60 pb-px">
                     <div className="flex gap-8">
                       <button 
                         onClick={() => {
-                          setProfileViewTab("grid");
+                          navigate("/routines");
                           triggerHaptic(12);
                         }}
                         className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${
@@ -3678,7 +4014,21 @@ export default function App() {
                       </button>
                       <button 
                         onClick={() => {
-                          setProfileViewTab("insights");
+                          navigate("/goals");
+                          triggerHaptic(12);
+                        }}
+                        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${
+                          profileViewTab === "goals" 
+                            ? "border-primary text-primary" 
+                            : "border-transparent text-neutral-400 hover:text-neutral-650"
+                        }`}
+                      >
+                        <Target className="w-3.5 h-3.5" />
+                        <span>Goals</span>
+                      </button>
+                      <button 
+                        onClick={() => {
+                          navigate("/insights");
                           triggerHaptic(12);
                         }}
                         className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${
@@ -3694,7 +4044,7 @@ export default function App() {
                   </div>
 
                   {/* Tab Content */}
-                  {profileViewTab === "grid" ? (
+                  {profileViewTab === "grid" && (
                     <div className="space-y-6">
                       <div className="flex items-center justify-between">
                         <div className="text-left">
@@ -3793,7 +4143,9 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                  ) : (
+                  )}
+
+                  {profileViewTab === "insights" && (
                     /* CCM INSIGHTS VIEWPORT */
                     <div className="space-y-6 text-left">
                       {/* Subtitle / Calibration status indicator banner */}
@@ -4000,52 +4352,385 @@ export default function App() {
                           <p className="text-[11px] text-neutral-400 font-medium font-sans">ML-modeled failure loops detected in your historical performance</p>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-sans text-left">
-                          {calibrationProfile.procrastinationSignatures?.map((s) => {
-                            let severityBadge = "bg-neutral-50 border-neutral-200 text-neutral-500";
-                            if (s.severity === "high") {
-                              severityBadge = "bg-rose-50 border-rose-200 text-rose-700";
-                            } else if (s.severity === "medium") {
-                              severityBadge = "bg-amber-50 border-amber-200 text-amber-700";
-                            }
+                        {calibrationProfile.procrastinationSignatures && calibrationProfile.procrastinationSignatures.length > 0 ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-sans text-left">
+                            {calibrationProfile.procrastinationSignatures.map((s) => {
+                              let severityBadge = "bg-neutral-50 border-neutral-200 text-neutral-500";
+                              if (s.severity === "high") {
+                                severityBadge = "bg-rose-50 border-rose-200 text-rose-700";
+                              } else if (s.severity === "medium") {
+                                severityBadge = "bg-amber-50 border-amber-200 text-amber-700";
+                              }
 
-                            return (
-                              <div key={s.patternId} className="border border-neutral-150 bg-neutral-50/30 rounded-3xl p-4 flex flex-col justify-between space-y-3.5 text-left transition-all hover:bg-neutral-50/80">
-                                <div className="space-y-1.5 text-left">
-                                  <div className="flex items-start justify-between gap-2">
-                                    <h5 className="font-bold text-neutral-800 text-xs tracking-tight">{s.title}</h5>
-                                    <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-extrabold border shrink-0 leading-none ${severityBadge}`}>
-                                      {s.severity} loop
-                                    </span>
+                              return (
+                                <div key={s.patternId} className="border border-neutral-150 bg-neutral-50/30 rounded-3xl p-4 flex flex-col justify-between space-y-3.5 text-left transition-all hover:bg-neutral-50/80">
+                                  <div className="space-y-1.5 text-left">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <h5 className="font-bold text-neutral-800 text-xs tracking-tight">{s.title}</h5>
+                                      <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-extrabold border shrink-0 leading-none ${severityBadge}`}>
+                                        {s.severity} loop
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-neutral-500 leading-relaxed font-sans">{s.description}</p>
                                   </div>
-                                  <p className="text-[11px] text-neutral-500 leading-relaxed font-sans">{s.description}</p>
-                                </div>
 
-                                <div className="space-y-2 pt-2 border-t border-neutral-100 text-left">
-                                  <div className="flex items-center justify-between text-[10px] font-mono font-bold text-neutral-550">
-                                    <span>Success probability rate:</span>
-                                    <span className={s.completionRate < 30 ? "text-red-500" : "text-amber-600"}>
-                                      {s.completionRate}%
-                                    </span>
-                                  </div>
-                                  
-                                  {/* Recommendation banner */}
-                                  <div className="bg-white/80 border border-neutral-200 p-2.5 rounded-2xl flex items-start gap-1.5">
-                                    <Sparkles className="w-3.5 h-3.5 text-primary fill-primary/10 shrink-0 mt-0.5" />
-                                    <div className="text-left">
-                                      <span className="text-[9px] font-bold text-primary uppercase tracking-wider block font-sans">System Calibrated Action</span>
-                                      <p className="text-[10px] text-neutral-600 leading-relaxed font-sans">{s.recommendation}</p>
+                                  <div className="space-y-2 pt-2 border-t border-neutral-100 text-left">
+                                    <div className="flex items-center justify-between text-[10px] font-mono font-bold text-neutral-550">
+                                      <span>Success probability rate:</span>
+                                      <span className={s.completionRate < 30 ? "text-red-500" : "text-amber-600"}>
+                                        {s.completionRate}%
+                                      </span>
+                                    </div>
+                                    
+                                    {/* Recommendation banner */}
+                                    <div className="bg-white/80 border border-neutral-200 p-2.5 rounded-2xl flex items-start gap-1.5">
+                                      <Sparkles className="w-3.5 h-3.5 text-primary fill-primary/10 shrink-0 mt-0.5" />
+                                      <div className="text-left">
+                                        <span className="text-[9px] font-bold text-primary uppercase tracking-wider block font-sans">System Calibrated Action</span>
+                                        <p className="text-[10px] text-neutral-600 leading-relaxed font-sans">{s.recommendation}</p>
+                                      </div>
                                     </div>
                                   </div>
                                 </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 px-4 border border-dashed border-neutral-200 rounded-3xl bg-neutral-50/20 font-sans">
+                            <p className="text-xs text-neutral-500 font-medium">No behavioral failure loops detected yet.</p>
+                            <p className="text-[10px] text-neutral-400 mt-1">Continue logging task completions to calibrate your rhythm and unlock personalized performance signatures.</p>
+                          </div>
+                        )}
                       </div>
 
                     </div>
                   )}
+
+                  {profileViewTab === "goals" && (
+                    <div className="space-y-8 text-left animate-fade-in">
+                      {/* Active Goals Section */}
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="text-left">
+                            <h3 className="text-sm font-bold text-neutral-800 uppercase tracking-widest flex items-center gap-1.5">
+                              <Target className="w-4 h-4 text-primary" /> Active Milestones
+                            </h3>
+                            <p className="text-xs text-neutral-450 mt-0.5 font-sans">Track your progress toward long-term life objectives.</p>
+                          </div>
+                          <button
+                            onClick={() => handleOpenCreateGoal()}
+                            className="bg-primary hover:bg-primary-dark text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1 cursor-pointer font-display"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span>New Goal</span>
+                          </button>
+                        </div>
+
+                        {goals.length === 0 ? (
+                          <div className="py-16 text-center flex flex-col items-center justify-center bg-white border border-dashed border-neutral-200 rounded-3xl p-6 shadow-xs">
+                            <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-primary mb-3">
+                              <Target className="w-6 h-6 stroke-[1.5]" />
+                            </div>
+                            <p className="text-sm font-semibold text-neutral-700">No active goals yet</p>
+                            <p className="text-xs text-neutral-400 max-w-xs px-6 mt-1 leading-relaxed text-center font-sans">
+                              Define targets like weight logs, gym consistency, or study hours. DayFlow will track them automatically based on your Timeline tasks.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {goals.map(goal => {
+                              const prediction = predictGoalCompletion(goal);
+                              const pct = Math.min(100, Math.round((goal.currentValue / goal.targetValue) * 100));
+                              
+                              // Sparkline helper inline rendering
+                              const renderSparkline = (log: { date: string; value: number }[]) => {
+                                if (log.length < 2) return null;
+                                const values = log.map(l => l.value);
+                                const min = Math.min(...values);
+                                const max = Math.max(...values);
+                                const range = max - min || 1;
+                                const width = 90;
+                                const height = 24;
+                                const points = log.map((entry, index) => {
+                                  const x = (index / (log.length - 1)) * width;
+                                  const y = height - ((entry.value - min) / range) * height;
+                                  return `${x},${y}`;
+                                }).join(" ");
+
+                                return (
+                                  <svg className="w-24 h-6 text-emerald-500 stroke-current fill-none stroke-[2] overflow-visible">
+                                    <polyline points={points} />
+                                  </svg>
+                                );
+                              };
+
+                              return (
+                                <div key={goal.id} className={`bg-white border rounded-3xl p-5 shadow-xs transition-all flex flex-col gap-4 relative overflow-hidden group ${
+                                  goal.status === "paused" ? "opacity-65 border-neutral-200" : "border-neutral-200/80 hover:border-neutral-300"
+                                }`}>
+                                  {/* Top Row */}
+                                  <div className="flex items-start justify-between gap-3 text-left">
+                                    <div className="space-y-1 text-left">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className={`text-[10px] font-extrabold uppercase tracking-widest px-2 py-0.5 rounded-full border ${
+                                          goal.category === "fitness" ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                                          goal.category === "academic" ? "bg-violet-50 text-violet-750 border-violet-100" :
+                                          goal.category === "project" ? "bg-cyan-50 text-cyan-750 border-cyan-100" :
+                                          goal.category === "habit" ? "bg-amber-50 text-amber-700 border-amber-100" :
+                                          "bg-neutral-50 text-neutral-600 border-neutral-200"
+                                        }`}>
+                                          {goal.category}
+                                        </span>
+                                        {goal.status === "paused" && (
+                                          <span className="text-[10px] font-bold text-neutral-450 uppercase tracking-wider bg-neutral-100 px-1.5 py-0.5 rounded">Paused</span>
+                                        )}
+                                        {goal.status === "achieved" && (
+                                          <span className="text-[10px] font-extrabold text-emerald-650 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                                            <Trophy className="w-2.5 h-2.5 animate-bounce" /> Complete
+                                          </span>
+                                        )}
+                                      </div>
+                                      <h4 className="font-display font-bold text-sm text-neutral-800 tracking-tight group-hover:text-primary transition-colors">{goal.title}</h4>
+                                      {goal.description && <p className="text-xs text-neutral-450 leading-relaxed font-sans">{goal.description}</p>}
+                                    </div>
+
+                                    {/* Action Buttons */}
+                                    <div className="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button 
+                                        onClick={() => handleToggleGoalPause(goal.id)}
+                                        className="p-1.5 hover:bg-neutral-100 text-neutral-500 hover:text-neutral-800 rounded-lg cursor-pointer transition-colors"
+                                        title={goal.status === "active" ? "Pause tracking" : "Activate"}
+                                      >
+                                        {goal.status === "active" ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                                      </button>
+                                      <button 
+                                        onClick={() => handleOpenEditGoal(goal)}
+                                        className="p-1.5 hover:bg-neutral-100 text-neutral-500 hover:text-neutral-800 rounded-lg cursor-pointer transition-colors"
+                                        title="Edit goal"
+                                      >
+                                        <Edit2 className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button 
+                                        onClick={() => handleDeleteGoal(goal.id)}
+                                        className="p-1.5 hover:bg-red-50 text-neutral-400 hover:text-red-650 rounded-lg cursor-pointer transition-colors"
+                                        title="Delete goal"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Progress values & sparkline */}
+                                  <div className="flex items-end justify-between border-t border-neutral-100 pt-3">
+                                    <div className="text-left">
+                                      <span className="text-2xl font-black text-neutral-900 font-mono tracking-tight">{goal.currentValue}</span>
+                                      <span className="text-xs text-neutral-450 font-medium ml-1">/ {goal.targetValue} {goal.metricLabel}</span>
+                                    </div>
+                                    {renderSparkline(goal.progressLog)}
+                                  </div>
+
+                                  {/* Progress bar */}
+                                  <div className="space-y-1.5">
+                                    <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
+                                      <div 
+                                        className="h-full bg-gradient-to-r from-violet-500 to-emerald-400 transition-all duration-500 rounded-full" 
+                                        style={{ width: `${pct}%` }}
+                                      />
+                                    </div>
+                                    <div className="flex justify-between items-center text-[10px] text-neutral-400 font-medium font-sans">
+                                      <span>{pct}% complete</span>
+                                      {goal.status === "active" && (
+                                        <span>
+                                          {prediction.estimatedDate ? (
+                                            prediction.estimatedDate === "Done" ? "Goal target reached!" : `Est. completion: ${new Date(prediction.estimatedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+                                          ) : (
+                                            "Calibrating pace..."
+                                          )}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* AI Goal Suggestions */}
+                      {suggestGoalsFromTaskHistory(flexibleTasks, goals).length > 0 && (
+                        <div className="space-y-4">
+                          <h4 className="text-xs font-bold text-neutral-500 uppercase tracking-widest flex items-center gap-1.5 font-display">
+                            <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10" /> AI Suggestions
+                          </h4>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            {suggestGoalsFromTaskHistory(flexibleTasks, goals).map((sug, i) => (
+                              <div 
+                                key={i} 
+                                onClick={() => handleOpenCreateGoal({
+                                  title: sug.title,
+                                  category: sug.category,
+                                  keywords: sug.keywords,
+                                  targetValue: sug.targetValue,
+                                  metricLabel: sug.metricLabel
+                                })}
+                                className="bg-gradient-to-br from-violet-50 to-indigo-50/40 border border-violet-100 hover:border-violet-200 p-4.5 rounded-2xl cursor-pointer transition-all hover:-translate-y-0.5 duration-200 text-left flex gap-3 items-start group shadow-2xs"
+                              >
+                                <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0 mt-0.5">
+                                  <Sparkles className="w-4 h-4 fill-primary/10" />
+                                </div>
+                                <div className="space-y-1">
+                                  <h5 className="font-bold text-xs text-neutral-800 group-hover:text-primary transition-colors font-display">{sug.title}</h5>
+                                  <p className="text-[11px] text-neutral-500 leading-relaxed font-sans">{sug.suggestion}</p>
+                                  <span className="inline-block text-[9px] font-extrabold text-primary uppercase tracking-widest mt-1">Tap to pre-fill</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Achievements Timeline */}
+                      <div className="space-y-5">
+                        <h4 className="text-xs font-bold text-neutral-500 uppercase tracking-widest flex items-center gap-1.5 font-display">
+                          <Award className="w-4 h-4 text-emerald-600" /> Unlocked Achievements
+                        </h4>
+
+                        {achievements.length === 0 ? (
+                          <div className="py-10 text-center text-xs text-neutral-400 italic bg-white border border-neutral-200 rounded-3xl shadow-3xs p-6 font-sans">
+                            Complete task routines and reach goal milestones to unlock your first achievement badge.
+                          </div>
+                        ) : (
+                          <div className="bg-white border border-neutral-200 rounded-3xl p-6 shadow-xs relative">
+                            {/* Vertical timeline line */}
+                            <div className="absolute left-10 top-8 bottom-8 w-0.5 bg-neutral-100" />
+                            
+                            <div className="space-y-6">
+                              {[...achievements].sort((a, b) => new Date(b.earnedAt).getTime() - new Date(a.earnedAt).getTime()).map(ach => (
+                                <div key={ach.id} className="flex gap-4 items-start relative z-10 text-left group">
+                                  {/* Left earned Date */}
+                                  <div className="w-14 text-right shrink-0 mt-1">
+                                    <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block font-mono">
+                                      {new Date(ach.earnedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                    </span>
+                                  </div>
+
+                                  {/* Center badge */}
+                                  <div className="w-8 h-8 rounded-full bg-[#F5F4FF] border border-neutral-100 flex items-center justify-center shrink-0 shadow-2xs group-hover:scale-110 transition-transform duration-200 text-lg select-none">
+                                    {ach.icon}
+                                  </div>
+
+                                  {/* Right text info */}
+                                  <div className="space-y-0.5">
+                                    <h5 className="font-bold text-xs text-neutral-800 group-hover:text-primary transition-colors font-display">{ach.title}</h5>
+                                    <p className="text-[11px] text-neutral-500 font-sans">{ach.description}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Mobile App Settings (Visible only on mobile) */}
+                  <div className="md:hidden pt-8 border-t border-neutral-200/60 text-left space-y-4">
+                    <h3 className="text-sm font-bold text-neutral-800 font-display px-1">App Settings</h3>
+                    
+                    {/* Active Hours Card */}
+                    <div className="bg-white border border-neutral-200 rounded-3xl p-5 shadow-3xs space-y-3">
+                      <h4 className="text-xs font-bold text-neutral-700 uppercase tracking-wider flex items-center gap-1.5 font-display">
+                        <Clock className="w-4 h-4 text-primary" /> Active Hours
+                      </h4>
+                      <p className="text-[10px] text-neutral-450 leading-relaxed font-sans">
+                        Slotted tasks sequence within hours framework.
+                      </p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <input 
+                          type="time" 
+                          value={appSettings.day_start} 
+                          onChange={(e) => {
+                            const settings = { ...appSettings, day_start: e.target.value };
+                            setAppSettings(settings);
+                            saveSettings(settings);
+                            showToast("Active hours updated!", "info");
+                          }}
+                          className="bg-neutral-50 border border-neutral-200 text-center rounded-xl px-3 py-2 text-xs font-mono text-neutral-700 w-full focus:outline-none focus:border-primary"
+                        />
+                        <span className="text-xs text-neutral-400 font-mono">to</span>
+                        <input 
+                          type="time" 
+                          value={appSettings.day_end} 
+                          onChange={(e) => {
+                            const settings = { ...appSettings, day_end: e.target.value };
+                            setAppSettings(settings);
+                            saveSettings(settings);
+                            showToast("Active hours updated!", "info");
+                          }}
+                          className="bg-neutral-50 border border-neutral-200 text-center rounded-xl px-3 py-2 text-xs font-mono text-neutral-700 w-full focus:outline-none focus:border-primary"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Data & Privacy Card */}
+                    <div className="bg-white border border-neutral-200 rounded-3xl p-5 shadow-3xs space-y-3">
+                      <h4 className="text-xs font-bold text-neutral-700 uppercase tracking-wider flex items-center gap-1.5 font-display">
+                        <Shield className="w-4 h-4 text-primary" /> Data & Privacy
+                      </h4>
+                      <p className="text-neutral-500 text-[11px] leading-relaxed">
+                        Control offline local storage and browser notification states.
+                      </p>
+
+                      <div className="space-y-2 pt-1">
+                        {notificationPermission === "granted" ? (
+                          <div className="flex items-center justify-between text-[11px] bg-emerald-50 border border-emerald-250/20 px-3 py-2 rounded-xl text-emerald-700 font-semibold">
+                            <span className="flex items-center gap-1">
+                              <Check className="w-3.5 h-3.5" /> Notifications Active
+                            </span>
+                          </div>
+                        ) : notificationPermission === "denied" ? (
+                          <div className="flex items-center justify-between text-[11px] bg-rose-50 border border-rose-250/20 px-3 py-2 rounded-xl text-rose-700 font-semibold">
+                            <span className="flex items-center gap-1">
+                              <AlertCircle className="w-3.5 h-3.5" /> Notifications Blocked
+                            </span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleRequestNotifications}
+                            className="w-full py-2 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1 font-display"
+                          >
+                            <Bell className="w-3.5 h-3.5" /> Enable Notifications
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={exportMyData}
+                          className="w-full py-2 px-3 bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-3xs font-display"
+                        >
+                          <Download className="w-3.5 h-3.5 text-neutral-500" /> Export Data (JSON)
+                        </button>
+
+                        {showDevTools && (
+                          <div className="space-y-1 p-2.5 bg-[#F6F5FF]/50 border border-[#E0D9FF]/40 rounded-xl animate-fade-in text-left">
+                            <span className="text-[9px] font-extrabold text-[#5A4DC2] uppercase tracking-wider block mb-1 font-mono text-center">🛠️ Developer Options</span>
+                            <button
+                              type="button"
+                              onClick={handleInjectMockMLData}
+                              className="w-full py-2 px-3 bg-[#F6F5FF] border border-[#E0D9FF] hover:bg-[#EFEBFF] text-[#5A4DC2] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm font-display"
+                            >
+                              <Sparkles className="w-3.5 h-3.5 text-[#8B7EFF] fill-[#8B7EFF]/10" /> Populate Demo History
+                            </button>
+                            <p className="text-[10px] text-neutral-400 leading-relaxed font-sans text-center px-1">
+                              Adds 30 days of mock task history to instantly preview calibrated AI schedule spacing, peak focus times, and procrastination patterns in Insights.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
 
                 </div>
               </div>
@@ -4896,6 +5581,154 @@ export default function App() {
                 className="flex-1 py-3 text-sm font-bold rounded-xl bg-primary hover:bg-primary-dark text-white transition-colors cursor-pointer text-center font-display"
               >
                 Save Profile
+              </button>
+            </div>
+          </div>
+
+          {/* SHEET 7 — Goal Creator / Editor */}
+          <div 
+            className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-white/95 backdrop-blur-xl border border-white/20 shadow-2xl p-6 z-49 overflow-y-auto transform transition-all duration-300 ease-out flex flex-col text-slate-800 ${
+              activeBottomSheet === "goal" 
+                ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" 
+                : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible"
+            }`}
+          >
+            <div className="flex justify-center pb-3">
+              <span className="w-10 h-1 bg-neutral-200 rounded-full" />
+            </div>
+
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-display font-semibold text-lg text-primary flex items-center gap-1.5">
+                <Target className="w-5 h-5 text-primary shrink-0" />
+                <span>{editingGoal ? "Edit Goal" : "Create Goal"}</span>
+              </h3>
+              <button 
+                type="button" 
+                onClick={() => setActiveBottomSheet(null)}
+                className="p-1 rounded-full bg-neutral-50 hover:bg-neutral-100 text-[#5A5A7A]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#5A5A7A] leading-relaxed mb-4 font-sans">
+              Define quantifiable milestones and link them to timeline keywords to track your progress automatically.
+            </p>
+
+            <div className="space-y-4 flex-1 overflow-y-auto pr-1 pb-4">
+              <div>
+                <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Goal Title</label>
+                <input 
+                  type="text" 
+                  value={goalForm.title}
+                  onChange={(e) => setGoalForm({ ...goalForm, title: e.target.value })}
+                  placeholder="e.g. Gym Consistency, Finish Chemistry"
+                  className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Category</label>
+                  <select
+                    value={goalForm.category}
+                    onChange={(e) => setGoalForm({ ...goalForm, category: e.target.value as GoalCategory })}
+                    className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                  >
+                    <option value="fitness">💪 Fitness</option>
+                    <option value="academic">📚 Academic</option>
+                    <option value="project">🚀 Project</option>
+                    <option value="habit">⚡ Habit</option>
+                    <option value="personal">⭐ Personal</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Metric Label</label>
+                  <input 
+                    type="text" 
+                    value={goalForm.metricLabel}
+                    onChange={(e) => setGoalForm({ ...goalForm, metricLabel: e.target.value })}
+                    placeholder="e.g. sessions, pages, kg"
+                    className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Current Value</label>
+                  <input 
+                    type="number" 
+                    step="any"
+                    value={goalForm.currentValue}
+                    onChange={(e) => setGoalForm({ ...goalForm, currentValue: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Target Value</label>
+                  <input 
+                    type="number" 
+                    step="any"
+                    value={goalForm.targetValue}
+                    onChange={(e) => setGoalForm({ ...goalForm, targetValue: parseFloat(e.target.value) || 1 })}
+                    className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Target Date (Optional)</label>
+                  <input 
+                    type="date" 
+                    value={goalForm.targetDate}
+                    onChange={(e) => setGoalForm({ ...goalForm, targetDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Auto-Link Keywords (Comma Separated)</label>
+                <input 
+                  type="text" 
+                  value={goalForm.linkedTaskKeywords}
+                  onChange={(e) => setGoalForm({ ...goalForm, linkedTaskKeywords: e.target.value })}
+                  placeholder="e.g. gym, workout, run (auto-updates progress)"
+                  className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Description (Optional)</label>
+                <textarea 
+                  value={goalForm.description}
+                  onChange={(e) => setGoalForm({ ...goalForm, description: e.target.value })}
+                  placeholder="Describe your motivation or specifics..."
+                  rows={2}
+                  className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none font-sans"
+                />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-neutral-100 flex gap-2 shrink-0">
+              <button 
+                type="button"
+                onClick={() => setActiveBottomSheet(null)}
+                className="flex-1 py-3 text-sm font-bold rounded-xl border border-neutral-200 transition-colors cursor-pointer text-[#5A5A7A] hover:bg-neutral-50 text-center"
+              >
+                Discard
+              </button>
+              <button 
+                type="button"
+                onClick={handleSaveGoal}
+                className="flex-1 py-3 text-sm font-bold rounded-xl bg-primary hover:bg-primary-dark text-white transition-colors cursor-pointer text-center font-display"
+              >
+                {editingGoal ? "Save Changes" : "Create Goal"}
               </button>
             </div>
           </div>

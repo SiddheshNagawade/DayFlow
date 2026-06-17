@@ -37,6 +37,56 @@ function calculateStandardDeviation(values: number[]): number {
 export function calculateAdvancedCalibration(tasks: FlexibleTask[]): CalibrationProfile {
   const completed = tasks.filter(t => t.status === "done");
   const totalCompletions = completed.length;
+  
+  if (totalCompletions === 0) {
+    const hourlyMetrics: HourlyMetric[] = [];
+    for (let h = 0; h < 24; h++) {
+      hourlyMetrics.push({
+        hour: h,
+        completionRate: 0,
+        focusQuality: 0,
+        consistency: 0,
+        label: "Awaiting Data"
+      });
+    }
+
+    const categories: ("work" | "exercise" | "relax" | "personal")[] = ["work", "exercise", "relax", "personal"];
+    const categoryBiases: CategoryBias[] = categories.map(cat => ({
+      category: cat,
+      bias: 1.0,
+      samples: 0
+    }));
+
+    const transitionGaps: TransitionGap[] = [];
+    categories.forEach(from => {
+      categories.forEach(to => {
+        transitionGaps.push({
+          fromType: from,
+          toType: to,
+          optimalGap: 15,
+          completionRate: 0
+        });
+      });
+    });
+
+    return {
+      totalCompletions: 0,
+      phase: 1,
+      underestimateRatio: 1.0,
+      optimalWorkGap: 15,
+      exerciseRecoveryGap: 25,
+      peakFocusTime: "morning",
+      completionRate: 0,
+      hourlyMetrics,
+      categoryBiases,
+      transitionGaps,
+      procrastinationSignatures: [],
+      moodCorrelation: 0.0,
+      fatigueLimit: 3,
+      timeSavedMinutes: 0
+    };
+  }
+
   const phase = totalCompletions >= 15 ? 2 : 1;
 
   // 1. Basic completion rates & overall underestimate ratio
@@ -437,4 +487,42 @@ export function generateMockMLData(): FlexibleTask[] {
   }
 
   return mockTasks;
+}
+
+export function detectHighDelayPatterns(tasks: FlexibleTask[]): {
+  category: string;
+  problemHour: number;
+  avgDelays: number;
+}[] {
+  const completed = tasks.filter(t => 
+    t.status === "done" && 
+    t.delay_count && 
+    t.delay_count > 0 && 
+    (t.actual_start_time || t.scheduled_start_time)
+  );
+
+  const hourCategoryDelays: Record<string, number[]> = {};
+
+  for (const task of completed) {
+    const startVal = task.actual_start_time || task.scheduled_start_time!;
+    const hour = parseInt(startVal.split(":")[0]);
+    if (isNaN(hour)) continue;
+    const cat = task.category || getTaskCategory(task.title);
+    const key = `${cat}-${hour}`;
+    if (!hourCategoryDelays[key]) hourCategoryDelays[key] = [];
+    hourCategoryDelays[key].push(task.delay_count!);
+  }
+
+  return Object.entries(hourCategoryDelays)
+    .filter(([, delays]) => delays.length >= 3)
+    .map(([key, delays]) => {
+      const [category, hourStr] = key.split("-");
+      return {
+        category,
+        problemHour: parseInt(hourStr),
+        avgDelays: delays.reduce((s, d) => s + d, 0) / delays.length,
+      };
+    })
+    .filter(p => p.avgDelays > 1.5) // consistently delayed
+    .sort((a, b) => b.avgDelays - a.avgDelays);
 }

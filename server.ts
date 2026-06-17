@@ -63,7 +63,7 @@ For flexible items extract:
 - duration: number (estimated duration in minutes. If they say "2 hours", it is 120. If they don't mention a duration, estimate a reasonable amount, e.g., 30 for call, 60 for study.)
 - deadline: string or null (YYYY-MM-DD deadline format if Friday/Monday or specific day is mentioned in reference to today's date ${currentDate || '2026-06-13'}, otherwise null).
 
-Never guess a start time for flexible tasks. Please output correct JSON structure conforming exactly to the schema.`;
+Never guess a start time for flexible tasks. Please output correct JSON structure conforming exactly to the schema. Respond ONLY with a raw, valid JSON object. Do not include markdown code block characters, notes, formatting tags, or preambles.`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash",
@@ -149,24 +149,64 @@ ${scheduleContext || "(empty)"}
 Pending flexible tasks (backlog):
 ${pendingContext || "(none)"}
 
-Based on the user's input, return:
-1. A list of specific schedule changes to apply (e.g., add new tasks, move tasks to tomorrow/backlog, delete tasks, change start times, reduce durations, or insert new rest blocks).
-2. A friendly, supportive, and conversational message explaining the proposal or guiding the user. 
+Based on the user's input, return a response matching the JSON structure blueprint below.
+
+### JSON STRUCTURE BLUEPRINT:
+Your response must conform exactly to this structure. Return only keys from this template:
+{
+  "changes": [
+    {
+      "action": "delete" | "move_to_tomorrow" | "move_to_date" | "change_time" | "reduce_duration" | "add" | "cant_do_today" | "add_goal" | "update_goal",
+      "taskId": "string representing the task/goal ID to modify (empty/omit for add/add_goal)",
+      "newDate": "YYYY-MM-DD (used only for move_to_date)",
+      "newTime": "HH:MM (used for change_time to schedule/pin at specific time)",
+      "durationMultiplier": 0.5, // number (used only for reduce_duration to scale length, e.g. 0.5)
+      "newTaskTitle": "string (used only for action=add)",
+      "newTaskDuration": 30, // integer minutes (used only for action=add)
+      "insertImmediately": true | false, // boolean (used when action=add or action=change_time to pin/start a task/break immediately at the current time without doing calendar time math)
+      "goalTitle": "string (used to set/find a goal for add_goal or update_goal)",
+      "goalCategory": "fitness" | "academic" | "project" | "habit" | "personal",
+      "goalMetric": "string (e.g., 'sessions', 'hours', 'pages')",
+      "goalTarget": 10, // integer (new target count for add_goal or update_goal)
+      "goalKeywords": ["keyword1", "keyword2"], // array of keywords to auto-match task titles
+      "reasoning": "Brief explanation for the change"
+    }
+  ],
+  "message": "A supportive, conversational explanation of the changes"
+}
+
+### TIME CALCULATION RULE (AVOID HALLUCINATION):
+- DO NOT calculate start/end clock hours or absolute times yourself (e.g. do not calculate that 3:15 PM + 45 minutes = 4:00 PM).
+- For relative placements like "add a break now", "give me a rest immediately", or "do this task right now", set "insertImmediately": true on the action ("add" or "change_time") instead of guessing/calculating "newTime".
+
+### ACTION RULES:
+- "add": Propose adding a task (e.g. a rest block like title "Rest / Break" with duration 30 and "insertImmediately": true, or a new backlog item).
+- "delete": Remove task by taskId.
+- "move_to_tomorrow": Move task by taskId to tomorrow.
+- "change_time": Shift task by taskId to start at "newTime" (absolute) or right now ("insertImmediately": true).
+- "reduce_duration": Shorten task duration using "durationMultiplier".
+- "add_goal": Create a new goal.
+- "update_goal": Change target/parameters of an existing goal when user requests it (e.g., "increase workout target to 15 sessions"). Specify the goal by matching "taskId" (goal id) or "goalTitle" (goal name), and specify the new target in "goalTarget".
 
 TREAT SUBJECTIVE INPUTS/MOODS GRACEFULLY:
 - If the user says they are "tired" or "feeling lazy":
   - Express empathy and recommend a lighter schedule.
   - Propose moving demanding/optional tasks to tomorrow or the backlog (using action "move_to_tomorrow" or "delete").
   - Propose shortening remaining tasks (using action "reduce_duration" with a durationMultiplier e.g., 0.5).
-  - Propose adding a rest/break block (using action "add" with title "Rest / Break", newTime, and newTaskDuration e.g., 30).
+  - Propose adding a rest/break block (using action "add" with title "Rest / Break", "insertImmediately": true, and "newTaskDuration": 30).
 - If the user says they are "feeling very productive" or "energetic":
   - Celebrate their energy and suggest capitalizing on it.
   - Propose scheduling 1 or 2 pending tasks from the backlog (using action "add" with the backlog task's title and duration).
-- If the user just wants to add a new task, use action "add" and specify newTaskTitle and newTaskDuration.
-- If the user wants to remove/cancel something, use action "delete" on that taskId.
+
+PROACTIVE GOAL SETUP & TRACKING:
+- Proactively offer to set up a new tracking goal or streak (using action "add_goal") in the changes list if the user:
+  - Asks to set a goal or a streak (e.g., "set a gym workout goal for 10 sessions" or "track my study routine").
+  - Schedules a new recurring block or routine (e.g. gym/exercise, study sessions, reading, projects) that doesn't have a goal yet.
+  - For example, if a user schedules "gym", suggest creating a Fitness Goal of e.g. 20 sessions, and define keywords like ["gym", "workout"].
+- Mention the proposed goal or update in your message.
 
 Be concise, warm, non-judgmental, and focused on helping the user stay productive without burning out.
-Avoid aggressive exclamation marks and do not issue scary warnings.`;
+Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY with a raw, valid JSON object. Do not include markdown code block characters, notes, formatting tags, or preambles.`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash",
@@ -183,19 +223,29 @@ Avoid aggressive exclamation marks and do not issue scary warnings.`;
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  action: { type: Type.STRING, description: "One of: delete, move_to_tomorrow, move_to_date, change_time, reduce_duration, add, cant_do_today" },
-                  taskId: { type: Type.STRING, description: "Task id to modify (empty for add)" },
+                  action: { type: Type.STRING, description: "One of: delete, move_to_tomorrow, move_to_date, change_time, reduce_duration, add, cant_do_today, add_goal, update_goal" },
+                  taskId: { type: Type.STRING, description: "Task or goal id to modify (empty for add/add_goal)" },
                   newDate: { type: Type.STRING, description: "YYYY-MM-DD for move_to_date" },
                   newTime: { type: Type.STRING, description: "HH:MM for change_time" },
-                  durationMultiplier: { type: Type.NUMBER, description: "e.g. 0.5 to halve duration for reduce_duration" },
+                  durationMultiplier: { type: Type.NUMBER, description: "e.g. 0.5 to scale duration for reduce_duration" },
                   newTaskTitle: { type: Type.STRING, description: "Title for new task when action=add" },
                   newTaskDuration: { type: Type.INTEGER, description: "Minutes for new task when action=add" },
+                  insertImmediately: { type: Type.BOOLEAN, description: "Set to true if the task/break must start right now, avoiding time calculations" },
+                  goalTitle: { type: Type.STRING, description: "Title of the goal if action=add_goal or update_goal" },
+                  goalCategory: { type: Type.STRING, description: "fitness, academic, project, habit, personal if action=add_goal" },
+                  goalMetric: { type: Type.STRING, description: "Metric e.g. sessions, hours, pages if action=add_goal" },
+                  goalTarget: { type: Type.INTEGER, description: "Target count if action=add_goal or update_goal" },
+                  goalKeywords: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "Keywords to auto-match task titles, e.g. ['gym', 'workout'] if action=add_goal"
+                  },
                   reasoning: { type: Type.STRING },
                 },
                 required: ["action", "reasoning"],
               },
             },
-            message: { type: Type.STRING, description: "A short friendly summary of all changes made" },
+            message: { type: Type.STRING, description: "A short friendly summary of all changes made and any suggested goals" },
           },
           required: ["changes", "message"],
         },

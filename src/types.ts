@@ -40,6 +40,60 @@ export interface FlexibleTask {
   complexity?: number;    // 1-10 complexity
   interruptions?: number; // counter
   category?: "work" | "exercise" | "relax" | "personal";
+  notification_response?: "started" | "delayed_15" | "delayed_30" | "skipped_today";
+  delay_count?: number; // how many times this task was delayed today
+}
+
+export type GoalCategory = 
+  | "fitness"      // gym streaks, weight, running distance
+  | "academic"     // exam scores, semester completion, course finish
+  | "project"      // app launch, portfolio piece, assignment
+  | "habit"        // reading, meditation, sleep schedule
+  | "personal";    // custom
+
+export type GoalStatus = "active" | "achieved" | "abandoned" | "paused";
+
+export interface GoalMilestone {
+  id: string;
+  label: string;
+  targetValue: number;
+  achievedAt?: string;
+  celebrationShown: boolean;
+}
+
+export interface UserGoal {
+  id: string;
+  title: string;
+  category: GoalCategory;
+  description?: string;
+  metricLabel: string; // "sessions", "kg", "pages", "hours"
+  currentValue: number;
+  targetValue: number;
+  startValue?: number;
+  createdAt: string;
+  targetDate?: string; // YYYY-MM-DD
+  status: GoalStatus;
+  achievedAt?: string;
+  milestones: GoalMilestone[];
+  checkInFrequencyDays: number;
+  lastCheckInAt?: string;
+  nextCheckInAt?: string;
+  linkedTaskKeywords: string[];
+  progressLog: {
+    date: string;
+    value: number;
+    note?: string;
+  }[];
+}
+
+export interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  category: GoalCategory | "streak" | "completion";
+  earnedAt: string;
+  icon: string; // emoji
+  goalId?: string;
 }
 
 export interface HourlyMetric {
@@ -47,7 +101,7 @@ export interface HourlyMetric {
   completionRate: number;
   focusQuality: number; // Performance ratio: (actual - planned) / planned * -1
   consistency: number;  // Standard dev indicator
-  label: "Peak" | "Peak+" | "Good" | "Declining" | "Slump" | "Lowest" | "Low" | "Recovery" | "Improving" | "Moderate" | "Dropping" | "Crashed" | "Dead";
+  label: "Peak" | "Peak+" | "Good" | "Declining" | "Slump" | "Lowest" | "Low" | "Recovery" | "Improving" | "Moderate" | "Dropping" | "Crashed" | "Dead" | "Awaiting Data";
 }
 
 export interface CategoryBias {
@@ -109,6 +163,7 @@ export interface ScheduledItem {
   status: "done" | "scheduled" | "fixed";
   deadline?: string | null;
   pinned?: boolean; // true when user manually pinned the start time
+  color?: string;   // custom color theme for fixed block
 }
 
 export interface DaySchedule {
