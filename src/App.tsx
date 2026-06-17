@@ -3898,23 +3898,23 @@ export default function App() {
               <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto bg-[#F9FAFB] text-slate-800">
                 <div className="flex flex-col gap-6 md:gap-8 max-w-4xl mx-auto w-full">
                   
-                  {/* Instagram-style Profile Header */}
-                  <div className="flex flex-col md:flex-row items-center md:items-start gap-6 pb-6 border-b border-neutral-250/60 text-left">
-                    {/* Avatar Circle */}
+                  {/* Instagram-style Profile Header (Compact on mobile, horizontal row) */}
+                  <div className="flex flex-row items-start gap-4 md:gap-6 pb-6 border-b border-neutral-200 text-left">
+                    {/* Left: Avatar Circle */}
                     <div className="relative group shrink-0">
-                      <div className="w-24 h-24 md:w-28 md:h-28 rounded-full bg-gradient-to-tr from-[#7F77DD] via-[#A894FF] to-[#14B8A6] p-[3px] flex items-center justify-center shadow-lg transition-transform duration-300 hover:rotate-6">
-                        <div className="w-full h-full rounded-full bg-white flex items-center justify-center text-4xl select-none">
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 md:w-28 md:h-28 rounded-full bg-gradient-to-tr from-[#7F77DD] via-[#A894FF] to-[#14B8A6] p-[2.5px] md:p-[3px] flex items-center justify-center shadow-md transition-transform duration-300 hover:rotate-6">
+                        <div className="w-full h-full rounded-full bg-white flex items-center justify-center text-2xl sm:text-3xl md:text-4xl select-none">
                           {profileEmoji || "👨‍💻"}
                         </div>
                       </div>
                     </div>
                     
-                    {/* Bio & Details */}
-                    <div className="flex-1 text-center md:text-left space-y-3">
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                        <h2 className="text-xl font-bold tracking-tight text-neutral-800 font-display">{profileName}</h2>
-                        <div className="flex items-center justify-center gap-2">
-                          <span className="px-2.5 py-0.5 text-xs bg-neutral-100 border border-neutral-200 text-neutral-550 rounded-full font-semibold">
+                    {/* Right: Bio & Details */}
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+                        <h2 className="text-base sm:text-lg md:text-xl font-bold tracking-tight text-neutral-800 font-display truncate">{profileName}</h2>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2.5 py-0.5 text-[10px] sm:text-xs bg-neutral-100 border border-neutral-200 text-neutral-550 rounded-full font-semibold shrink-0">
                             {profileAge} yrs old
                           </span>
                           <button 
@@ -3922,7 +3922,7 @@ export default function App() {
                               navigate("/settings");
                               triggerHaptic(15);
                             }}
-                            className="px-3 py-1 bg-white hover:bg-neutral-50 border border-neutral-200 hover:border-neutral-300 text-neutral-700 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                            className="px-2 py-0.5 bg-white hover:bg-neutral-50 border border-neutral-200 hover:border-neutral-300 text-[#475569] hover:text-[#1e293b] text-[10px] sm:text-xs font-bold rounded-lg transition-colors cursor-pointer shrink-0"
                           >
                             Settings
                           </button>
@@ -3930,20 +3930,20 @@ export default function App() {
                       </div>
                       
                       {/* Stats row */}
-                      <div className="flex items-center justify-center md:justify-start gap-6 text-sm font-semibold text-neutral-750 py-1">
+                      <div className="flex items-center gap-4 md:gap-6 text-[11px] sm:text-xs md:text-sm font-semibold text-neutral-600 py-0.5">
                         <div>
-                          <span className="font-extrabold text-neutral-900">{totalCompletedTasks}</span> <span className="text-neutral-550 font-normal">tasks completed</span>
+                          <span className="font-extrabold text-neutral-900">{totalCompletedTasks}</span> <span className="text-neutral-500 font-normal">done</span>
                         </div>
                         <div>
-                          <span className="font-extrabold text-neutral-900">{profiles.length}</span> <span className="text-neutral-550 font-normal">routines</span>
+                          <span className="font-extrabold text-neutral-900">{profiles.length}</span> <span className="text-neutral-500 font-normal">routines</span>
                         </div>
                         <div>
-                          <span className="font-extrabold text-neutral-900">{completedStreak}d</span> <span className="text-neutral-550 font-normal">streak</span>
+                          <span className="font-extrabold text-neutral-900">{completedStreak}d</span> <span className="text-neutral-500 font-normal">streak</span>
                         </div>
                       </div>
 
                       {/* Bio text */}
-                      <div className="text-xs text-neutral-600 leading-relaxed font-sans max-w-md">
+                      <div className="text-[11px] sm:text-xs text-neutral-600 leading-relaxed font-sans max-w-md">
                         <p className="font-medium text-neutral-800">{profileBio || "Productivity enthusiast."}</p>
                       </div>
                     </div>
@@ -5005,7 +5005,7 @@ export default function App() {
                 title="Ask DayFlow AI Copilot"
               >
                 <Sparkles className="w-6 h-6 md:w-5 md:h-5 fill-white stroke-[2px]" />
-                <span>Ask AI</span>
+                <span>Plan</span>
               </button>
             </div>
           )}
