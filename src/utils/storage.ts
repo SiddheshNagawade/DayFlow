@@ -1,4 +1,4 @@
-import { FixedBlock, FlexibleTask, ScheduleProfile, UserGoal, Achievement, WeightEntry } from "../types";
+import { FixedBlock, FlexibleTask, ScheduleProfile, UserGoal, Achievement, WeightEntry, ReflectionEvent, TaskExecutionLog } from "../types";
 
 const FIXED_BLOCKS_KEY = "schedule_planner_fixed_blocks";
 const FLEXIBLE_TASKS_KEY = "schedule_planner_flexible_tasks";
@@ -10,6 +10,8 @@ const ACHIEVEMENTS_KEY = "dayflow_achievements";
 const STORAGE_VERSION_KEY = "dayflow_storage_version";
 const WEIGHT_LOG_KEY = "dayflow_weight_log";
 const CURRENT_VERSION = "v5-weight"; // bump this to force-wipe old data
+const REFLECTION_EVENTS_KEY = "dayflow_reflection_events";
+const TASK_EXECUTION_LOGS_KEY = "dayflow_task_execution_logs";
 
 export interface AppSettings {
   day_start: string;
@@ -97,6 +99,8 @@ export function clearAllData() {
   localStorage.removeItem(GOALS_KEY);
   localStorage.removeItem(ACHIEVEMENTS_KEY);
   localStorage.removeItem(WEIGHT_LOG_KEY);
+  localStorage.removeItem(REFLECTION_EVENTS_KEY);
+  localStorage.removeItem(TASK_EXECUTION_LOGS_KEY);
 }
 
 export function loadGoals(): UserGoal[] {
@@ -118,7 +122,7 @@ export function loadGoals(): UserGoal[] {
       })) : [],
       progressLog: Array.isArray(g.progressLog) ? g.progressLog.map((pl: any) => ({
         ...pl,
-        date: pl.date || new Date().toISOString().split("T")[0]
+        date: pl.date || new Date().toLocaleDateString("sv")
       })) : []
     }));
   } catch (e) {
@@ -164,4 +168,24 @@ export function loadWeightLog(): WeightEntry[] {
 
 export function saveWeightLog(log: WeightEntry[]) {
   localStorage.setItem(WEIGHT_LOG_KEY, JSON.stringify(log));
+}
+
+export function loadReflectionEvents(): ReflectionEvent[] {
+  const data = localStorage.getItem(REFLECTION_EVENTS_KEY);
+  if (!data) return [];
+  try { return JSON.parse(data); } catch { return []; }
+}
+
+export function saveReflectionEvents(events: ReflectionEvent[]) {
+  localStorage.setItem(REFLECTION_EVENTS_KEY, JSON.stringify(events));
+}
+
+export function loadTaskExecutionLogs(): TaskExecutionLog[] {
+  const data = localStorage.getItem(TASK_EXECUTION_LOGS_KEY);
+  if (!data) return [];
+  try { return JSON.parse(data); } catch { return []; }
+}
+
+export function saveTaskExecutionLogs(logs: TaskExecutionLog[]) {
+  localStorage.setItem(TASK_EXECUTION_LOGS_KEY, JSON.stringify(logs));
 }

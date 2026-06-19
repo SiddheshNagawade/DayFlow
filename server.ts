@@ -1,4 +1,5 @@
 import express from "express";
+import net from "net";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -7,9 +8,34 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const JSON_BODY_LIMIT = "10mb";
 
-app.use(express.json());
+async function findAvailablePort(startPort: number): Promise<number> {
+  const isPortAvailable = (port: number) =>
+    new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      server.unref();
+      server.on("error", () => resolve(false));
+      server.listen({ port, host: "0.0.0.0" }, () => {
+        server.close(() => resolve(true));
+      });
+    });
+
+  let candidate = startPort;
+  while (candidate < startPort + 20) {
+    // In development we prefer a running app over a hard crash.
+    if (await isPortAvailable(candidate)) {
+      return candidate;
+    }
+    candidate += 1;
+  }
+
+  return startPort;
+}
+
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT }));
 
 // Lazy-loaded Gemini client to handle missing API keys gracefully on startup
 let aiClient: GoogleGenAI | null = null;
@@ -30,6 +56,20 @@ function getGeminiClient(): GoogleGenAI {
     });
   }
   return aiClient;
+}
+
+function handleApiError(res: express.Response, error: any, defaultMsg: string) {
+  const statusCode = error.status || 500;
+  let clientMessage = error.message || defaultMsg;
+  try {
+    if (typeof clientMessage === "string" && clientMessage.trim().startsWith("{")) {
+      const parsed = JSON.parse(clientMessage);
+      if (parsed.error && parsed.error.message) {
+        clientMessage = parsed.error.message;
+      }
+    }
+  } catch (_) {}
+  res.status(statusCode).json({ error: clientMessage });
 }
 
 // 1. Health check routing
@@ -66,7 +106,7 @@ For flexible items extract:
 Never guess a start time for flexible tasks. Please output correct JSON structure conforming exactly to the schema. Respond ONLY with a raw, valid JSON object. Do not include markdown code block characters, notes, formatting tags, or preambles.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-flash",
       contents: `Current Date is: ${currentDate || '2026-06-13'}. User input schedule is:\n"${text}"`,
       config: {
         systemInstruction: systemPrompt,
@@ -116,14 +156,15 @@ Never guess a start time for flexible tasks. Please output correct JSON structur
     res.json(result);
   } catch (error: any) {
     console.error("Schedule Parse Error: ", error);
-    res.status(500).json({ error: error.message || "An error occurred while parsing your schedule with Gemini." });
+    handleApiError(res, error, "An error occurred while parsing your schedule with Gemini.");
   }
 });
 
 // 3. Schedule Adjustment API — user describes changes in plain text, AI returns structured modifications
 app.post("/api/adjust-schedule", async (req, res) => {
   try {
-    const { userText, currentSchedule, pendingTasks, today, image } = req.body;
+    // V3.1: Read compressed text summaries instead of raw task arrays
+    const { userText, scheduleSummary, pendingSummary, currentSchedule, pendingTasks, today, image } = req.body;
     if (!userText || typeof userText !== "string" || userText.trim() === "") {
       res.status(400).json({ error: "Change description is required" });
       return;
@@ -131,13 +172,17 @@ app.post("/api/adjust-schedule", async (req, res) => {
 
     const ai = getGeminiClient();
 
-    const scheduleContext = (currentSchedule || [])
-      .map((item: any) => `- "${item.title}" [${item.type}] ${item.start_time}–${item.end_time} id="${item.id}"`)
-      .join("\n");
-    
-    const pendingContext = (pendingTasks || [])
-      .map((t: any) => `- "${t.title}" (${t.duration_minutes}min) id="${t.id}" scheduled="${t.scheduled_date || 'backlog'}"`)
-      .join("\n");
+    // Support both legacy raw arrays and new V3.1 compressed text summaries
+    const scheduleContext = scheduleSummary ||
+      (currentSchedule || [])
+        .map((item: any) => `- "${item.title}" [${item.type}] ${item.start_time}–${item.end_time} id="${item.id}"`)
+        .join("\n");
+
+    const pendingContext = pendingSummary ||
+      (pendingTasks || [])
+        .slice(0, 15) // hard cap even for legacy path
+        .map((t: any) => `- "${t.title}" (${t.duration_minutes}min) id="${t.id}" scheduled="${t.scheduled_date || 'backlog'}"`)
+        .join("\n");
 
     const systemPrompt = `You are a personal schedule adjustment assistant and productivity coach for the DayFlow app.
 The user describes their situation, adjustments they want to make, or their current mood and feelings in plain English.
@@ -259,8 +304,12 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
     }
     contents.push({ text: `User's change request: "${userText}"` });
 
+    // V3.1 Payload logging
+    const payloadBytes = JSON.stringify({ userText, scheduleSummary: scheduleContext, pendingSummary: pendingContext }).length;
+    console.log(`[AI] /api/adjust-schedule payload: ${payloadBytes} bytes (target <12KB = ${payloadBytes < 12288 ? '✓ OK' : '⚠ OVER'})`);
+
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-flash",
       contents,
       config: {
         systemInstruction: systemPrompt,
@@ -331,7 +380,7 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
     res.json(result);
   } catch (error: any) {
     console.error("Schedule Adjust Error:", error);
-    res.status(500).json({ error: error.message || "Failed to process schedule changes." });
+    handleApiError(res, error, "Failed to process schedule changes.");
   }
 });
 
@@ -404,7 +453,7 @@ Respond ONLY with a valid JSON object conforming exactly to this structure. Do n
 
     const ai = getGeminiClient();
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-flash",
       contents: `Classify this task:\nTitle: "${title}"\nDescription: "${description || ''}"`,
       config: {
         systemInstruction: systemPrompt,
@@ -440,7 +489,7 @@ Respond ONLY with a valid JSON object conforming exactly to this structure. Do n
     res.json(result);
   } catch (error: any) {
     console.error("Task classification API error:", error);
-    res.status(500).json({ error: error.message || "Failed to classify task." });
+    handleApiError(res, error, "Failed to classify task.");
   }
 });
 
@@ -528,7 +577,7 @@ Generate the Consequence JSON:`;
 
     const ai = getGeminiClient();
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-flash",
       contents: userMessage,
       config: {
         systemInstruction: systemPrompt,
@@ -583,7 +632,111 @@ Generate the Consequence JSON:`;
     res.json(result);
   } catch (error: any) {
     console.error("Task Consequence Error:", error);
-    res.status(500).json({ error: error.message || "Failed to generate consequence insight." });
+    handleApiError(res, error, "Failed to generate consequence insight.");
+  }
+});
+
+
+
+// 5. Unified AI Reasoning API Route
+app.post("/api/ai-reasoning", async (req, res) => {
+  try {
+    const { trigger, context, userMessage } = req.body;
+    if (!trigger) {
+      res.status(400).json({ error: "trigger type is required" });
+      return;
+    }
+
+    const systemPrompt = `You are DayFlow, an intelligent behavioral scheduling coach.
+
+## Your Role (V3.1 Hybrid Intelligence)
+You are the explanation and negotiation layer. Local code has already done all the math.
+You receive compressed BehaviorSignals — not raw task lists or logs.
+Your job: interpret signals in human language, coach warmly, propose structured actions.
+
+## Critical Rules
+1. NEVER invent behavioral patterns. Only cite patterns that appear in the provided signals.
+2. ALWAYS check confidence before citing a pattern:
+   - Only reference hourly or category patterns where confidence >= 0.4
+   - If confidence < 0.4, say "I'm noticing a possible trend" not "you always..."
+3. If dataAge === "insufficient" (< 10 logs): act as a supportive default coach. Do NOT cite specific behavioral data.
+4. If reliability.verdict === "unreliable": tell the user their data may not fully reflect actual behavior. Ask them to confirm.
+5. Use evidence-based language:
+   - ❌ Bad: "You always fail after 7 PM."
+   - ✅ Good: "I noticed 4 recent failures after 7 PM — does evening fatigue affect you?"
+
+## Trigger Modes
+1. "reflection": User is reflecting on yesterday or recent stale tasks.
+   - Use staleTasksCount, burnoutRisk, procrastinationRisk from signals.
+   - Propose resolutions: carry_over (recoverable tasks), expire (non-recoverable), backlog (low urgency).
+   - If goalImpact is present, acknowledge the goal delay in your message.
+2. "drift": A task has been missed today. Check in softly.
+   - Use missedTask, todayLoadMins, overloadRisk from currentState.
+   - Propose: delay, carry_over, backlog depending on load.
+3. "copilot": User is chatting with you. Provide coach-like feedback.
+
+## Proposal Actions
+- { "type": "carry_over", "taskId": "..." } — move to today
+- { "type": "backlog", "taskId": "..." } — park for later
+- { "type": "expire", "taskId": "..." } — mark as expired (non-recoverable only)
+- { "type": "suggest", "message": "..." } — coaching suggestion, no task change
+- { "type": "ask", "question": "..." } — clarifying question before acting
+- { "type": "abstain", "reason": "..." } — use when signals are conflicting or insufficient
+
+## proposalRisk
+- "low": simple carry-overs, minor adjustments — auto-applied
+- "medium" or "high": expiring important tasks, large changes — require user confirmation
+
+Respond ONLY with a valid JSON object. No markdown, no backticks, no commentary.`;
+
+    // V3.1 Payload logging
+    const reasoningPayload = JSON.stringify({ trigger, context });
+    const reasoningBytes = reasoningPayload.length;
+    console.log(`[AI] /api/ai-reasoning payload: ${reasoningBytes} bytes (target <8KB = ${reasoningBytes < 8192 ? '✓ OK' : '⚠ OVER'})`);
+
+    const ai = getGeminiClient();
+    const userPayload = `Trigger: "${trigger}"
+User Message: "${userMessage || ''}"
+Context: ${JSON.stringify(context || {})}
+
+Generate the AIProposal response JSON:`;
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: userPayload,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.5,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            message: { type: Type.STRING },
+            proposalRisk: { type: Type.STRING, enum: ["low", "medium", "high"] },
+            proposals: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  type: { type: Type.STRING, enum: ["carry_over", "backlog", "expire", "suggest", "ask", "abstain"] },
+                  taskId: { type: Type.STRING },
+                  reason: { type: Type.STRING }
+                },
+                required: ["type", "reason"]
+              }
+            }
+          },
+          required: ["message", "proposalRisk", "proposals"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response received from AI reasoning model");
+    const result = JSON.parse(text);
+    res.json(result);
+  } catch (error: any) {
+    console.error("AI reasoning API error:", error);
+    handleApiError(res, error, "Failed to perform AI reasoning.");
   }
 });
 
@@ -591,6 +744,10 @@ Generate the Consequence JSON:`;
 
 // Vite middleware / client routing setup
 async function startServer() {
+  const listenPort = process.env.NODE_ENV !== "production"
+    ? await findAvailablePort(PORT)
+    : PORT;
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -605,8 +762,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[Server] Running and listening on http://localhost:${PORT}`);
+  app.listen(listenPort, "0.0.0.0", () => {
+    console.log(`[Server] Running and listening on http://localhost:${listenPort}`);
   });
 }
 

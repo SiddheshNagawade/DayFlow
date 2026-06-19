@@ -20,8 +20,9 @@ export function isFixedBlockActiveOnDate(block: FixedBlock, dateStr: string): bo
   if (block.repeats === "daily") return true;
   
   if (block.repeats === "weekdays") {
-    const day = new Date(dateStr).getDay(); // 0 is Sunday, 6 is Saturday
-    return day >= 1 && day <= 5;
+    const [year, month, day] = dateStr.split("-").map(Number);
+    const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+    return dayOfWeek >= 1 && dayOfWeek <= 5;
   }
   
   if (block.repeats === "none" || block.repeats === "custom") {
@@ -194,7 +195,7 @@ export function generateSchedule(
 
   // 3. Sort candidate Flexible Tasks for scheduling
   const candidateTasks = flexibleTasks.filter(
-    (t) => t.status !== "done" && (t.scheduled_date === dateStr || t.scheduled_date === null)
+    (t) => (t.status === "scheduled" || t.status === "backlog") && (t.scheduled_date === dateStr || t.scheduled_date === null)
   );
 
   // --- STEP 3a: Handle PINNED tasks first (user manually dragged to a specific time) ---
@@ -220,25 +221,47 @@ export function generateSchedule(
       duration_minutes: taskDuration,
       energy_level: task.energy_level,
       locked: false,
-      status: "scheduled",
+      status: task.status === "backlog" ? "scheduled" : task.status,
       deadline: task.deadline,
       pinned: true,
+      task_nature: task.task_nature,
+      carried_over_from: task.carried_over_from,
+      carry_over_count: task.carry_over_count,
     });
 
-    // Split/trim affected gaps
-    for (let i = 0; i < gaps.length; i++) {
-      const gap = gaps[i];
+    // Split/trim affected gaps (handles partial and full overlaps robustly)
+    const newGaps: TimeGap[] = [];
+    for (const gap of gaps) {
       const gStart = timeToMinutes(gap.start);
       const gEnd = timeToMinutes(gap.end);
-      if (pinnedStartMins >= gStart && pinnedEndMins <= gEnd) {
+      
+      // No overlap
+      if (gEnd <= pinnedStartMins || gStart >= pinnedEndMins) {
+        newGaps.push(gap);
+      } 
+      // Partial or full overlap
+      else {
         const before = pinnedStartMins - gStart;
         const after = gEnd - pinnedEndMins;
-        gaps.splice(i, 1);
-        if (after > 0) gaps.splice(i, 0, { start: minutesToTime(pinnedEndMins), end: gap.end, duration_minutes: after });
-        if (before > 0) gaps.splice(i, 0, { start: gap.start, end: minutesToTime(pinnedStartMins), duration_minutes: before });
-        break;
+        
+        if (before > 0) {
+          newGaps.push({
+            start: gap.start,
+            end: minutesToTime(pinnedStartMins),
+            duration_minutes: before
+          });
+        }
+        if (after > 0) {
+          newGaps.push({
+            start: minutesToTime(pinnedEndMins),
+            end: gap.end,
+            duration_minutes: after
+          });
+        }
       }
     }
+    gaps.length = 0;
+    gaps.push(...newGaps);
   }
 
   // --- STEP 3b: Sort unpinned tasks by priority → deadline → energy ---
@@ -370,8 +393,11 @@ export function generateSchedule(
           duration_minutes: taskDuration,
           energy_level: task.energy_level,
           locked: false,
-          status: "scheduled",
+          status: task.status === "backlog" ? "scheduled" : task.status,
           deadline: task.deadline,
+          task_nature: task.task_nature,
+          carried_over_from: task.carried_over_from,
+          carry_over_count: task.carry_over_count,
         });
 
         // Update the gap: shrink or remove
@@ -441,14 +467,15 @@ export function calculateFuturePredictions(
     return getEnergyPriority(b.energy_level) - getEnergyPriority(a.energy_level);
   });
 
-  const startDay = new Date(startDateStr);
+  const [startYear, startMonth, startDayNum] = startDateStr.split("-").map(Number);
+  const startDay = new Date(Date.UTC(startYear, startMonth - 1, startDayNum));
   let taskIndex = 0;
   
   for (let d = 0; d < 14; d++) {
     if (taskIndex >= sortedBacklog.length) break;
 
     const currentSimDate = new Date(startDay);
-    currentSimDate.setDate(startDay.getDate() + d);
+    currentSimDate.setUTCDate(startDay.getUTCDate() + d);
     const dateQueryStr = currentSimDate.toISOString().split("T")[0];
 
     const dayFixed = fixedBlocks.filter((b) => isFixedBlockActiveOnDate(b, dateQueryStr));
@@ -482,7 +509,7 @@ export function calculateFuturePredictions(
 
       if (totalCost <= dailyRemPoints || taskDuration <= dailyRemPoints) {
         const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-        const dayOfWeek = dayNames[currentSimDate.getDay()];
+        const dayOfWeek = dayNames[currentSimDate.getUTCDay()];
         
         predictions[task.id] = {
           estDate: dateQueryStr,

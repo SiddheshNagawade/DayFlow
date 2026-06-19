@@ -42,7 +42,7 @@ export function updateGoalProgressFromTask(
     const newValue = Math.round((goal.currentValue + increment) * 10) / 10;
     
     const newLog = {
-      date: new Date().toISOString().split("T")[0],
+      date: new Date().toLocaleDateString("sv"),
       value: newValue,
     };
     
@@ -198,7 +198,7 @@ export function generateCheckInPrompt(goal: UserGoal): string {
 
 // Which goals need a check-in today
 export function getGoalsDueForCheckIn(goals: UserGoal[]): UserGoal[] {
-  const today = new Date().toISOString().split("T")[0];
+  const today = new Date().toLocaleDateString("sv");
   
   return goals.filter(goal => {
     if (goal.status !== "active") return false;

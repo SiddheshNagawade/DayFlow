@@ -55,11 +55,13 @@ import {
   Maximize2,
   Minimize2
 } from "lucide-react";
-import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone, WeightEntry, ClassificationResult, TaskCategory, TaskRigidity, TaskRecoverability, TaskDependencyChain, TaskProgressType, DeadlinePressure, TaskConsequence, TaskMeta, ConsequenceIntent } from "./types";
+import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone, WeightEntry, ClassificationResult, TaskCategory, TaskRigidity, TaskRecoverability, TaskDependencyChain, TaskProgressType, DeadlinePressure, TaskConsequence, TaskMeta, ConsequenceIntent, ReflectionEvent, TaskExecutionLog, UBMInsights, AIProposal } from "./types";
 import { generateSchedule, calculateFuturePredictions, timeToMinutes, minutesToTime, isFixedBlockActiveOnDate, calculateCalibrationProfile, simulateDelayCost, getActionRisk } from "./utils/scheduler";
-import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData, loadGoals, saveGoals, loadAchievements, saveAchievements, loadWeightLog, saveWeightLog } from "./utils/storage";
+import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData, loadGoals, saveGoals, loadAchievements, saveAchievements, loadWeightLog, saveWeightLog, loadReflectionEvents, saveReflectionEvents, loadTaskExecutionLogs, saveTaskExecutionLogs } from "./utils/storage";
 import { generateMockMLData, getTaskCategory, detectHighDelayPatterns } from "./utils/mlEngine";
 import { updateGoalProgressFromTask, predictGoalCompletion, generateCheckInPrompt, getGoalsDueForCheckIn, suggestGoalsFromTaskHistory, generateMilestones, checkForGlobalAchievements } from "./utils/goalEngine";
+import { computeBehaviorSignals } from "./utils/patternEngine";
+import { buildAICompactContext, buildCopilotScheduleSummary } from "./utils/aiContextBuilder";
 
 interface Toast {
   id: string;
@@ -77,7 +79,139 @@ const triggerHaptic = (pattern: number | number[]) => {
   }
 };
 
-const TODAY = new Date().toISOString().split("T")[0];
+const getLocalTodayStr = (d = new Date()): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const date = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${date}`;
+};
+
+const TODAY = getLocalTodayStr();
+
+const extractUBMInsights = (
+  tasks: FlexibleTask[],
+  reflectionEvents: ReflectionEvent[],
+  executionLogs: TaskExecutionLog[]
+): UBMInsights => {
+  const ninetyDaysAgo = new Date();
+  ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+  const cutoffStr = ninetyDaysAgo.toISOString().split("T")[0];
+
+  // Filter logs within 90 days, taking at most 300 recent logs
+  const recentLogs = executionLogs
+    .filter(log => log.date >= cutoffStr)
+    .slice(-300);
+
+  // Time bias rolling calculation
+  let timeBias = 1.0;
+  let timeBiasCount = 0;
+  let completedCount = 0;
+
+  // Hourly and Category success trackers
+  const hourlyScheduled: Record<number, number> = {};
+  const hourlyCompleted: Record<number, number> = {};
+  const categoryScheduled: Record<string, number> = {};
+  const categoryCompleted: Record<string, number> = {};
+
+  recentLogs.forEach(log => {
+    if (log.completed) {
+      completedCount++;
+      if (log.actualDuration && log.plannedDuration > 0) {
+        timeBias += log.actualDuration / log.plannedDuration;
+        timeBiasCount++;
+      }
+    }
+
+    if (log.scheduledStartHour !== undefined) {
+      const hr = log.scheduledStartHour;
+      hourlyScheduled[hr] = (hourlyScheduled[hr] || 0) + 1;
+      if (log.completed) {
+        hourlyCompleted[hr] = (hourlyCompleted[hr] || 0) + 1;
+      }
+    }
+
+    // Lookup task to find its category
+    const task = tasks.find(t => t.id === log.taskId);
+    if (task) {
+      const cat = task.category || getTaskCategory(task.title);
+      categoryScheduled[cat] = (categoryScheduled[cat] || 0) + 1;
+      if (log.completed) {
+        categoryCompleted[cat] = (categoryCompleted[cat] || 0) + 1;
+      }
+    }
+  });
+
+  if (timeBiasCount > 0) {
+    timeBias = Math.round((timeBias / timeBiasCount) * 100) / 100;
+  } else {
+    timeBias = 1.0;
+  }
+
+  // Derive Hourly success maps
+  const hourlySuccess: Record<number, number> = {};
+  const hourlyConfidence: Record<number, number> = {};
+  for (let hr = 0; hr < 24; hr++) {
+    const sched = hourlyScheduled[hr] || 0;
+    const comp = hourlyCompleted[hr] || 0;
+    hourlySuccess[hr] = sched > 0 ? Math.round((comp / sched) * 100) / 100 : 0.5; // baseline default
+    hourlyConfidence[hr] = Math.min(1.0, sched / 5.0);
+  }
+
+  // Derive Category success maps
+  const categories = ["study", "project", "meeting", "health", "habit", "admin", "social", "creative", "personal", "misc"];
+  const categorySuccess: Record<string, number> = {};
+  const categoryConfidence: Record<string, number> = {};
+  categories.forEach(cat => {
+    const sched = categoryScheduled[cat] || 0;
+    const comp = categoryCompleted[cat] || 0;
+    categorySuccess[cat] = sched > 0 ? Math.round((comp / sched) * 100) / 100 : 0.7; // baseline default
+    categoryConfidence[cat] = Math.min(1.0, sched / 5.0);
+  });
+
+  return {
+    timeBias,
+    timeBiasConfidence: Math.min(1.0, completedCount / 10.0),
+    hourlySuccess,
+    hourlyConfidence,
+    categorySuccess,
+    categoryConfidence
+  };
+};
+
+const isTaskRecoverable = (task: FlexibleTask, goalsList: UserGoal[] = []): boolean => {
+  const title = (task.title || "").toLowerCase();
+  const desc = (task.description || "").toLowerCase();
+  
+  // We check recoverability from metadata if available
+  if (task.meta?.recoverability) {
+    return task.meta.recoverability !== "impossible";
+  }
+
+  const category = task.meta?.category || getTaskCategory(task.title);
+
+  // Live classes, fixed lectures, fixed rigidity
+  if (task.meta?.rigidity === "fixed") return false;
+  if (title.includes("lecture") || title.includes("live class") || title.includes("meeting") || title.includes("appointment")) {
+    return false;
+  }
+
+  // Non-recoverable titles / recreational / habits that should expire
+  const nonRecoverableKeywords = [
+    "time pass", "timepass", "relax", "chill", "workout", "gym", "watch tv", 
+    "tv show", "netflix", "youtube", "browse", "surfing", "idle", "sleep", 
+    "meditate", "play game", "gaming"
+  ];
+  if (nonRecoverableKeywords.some(kw => title.includes(kw) || desc.includes(kw))) {
+    return false;
+  }
+
+  // Habits / health / misc categories are date-specific or recurring, so they shouldn't carry over
+  if (category === "habit" || category === "health" || category === "misc") {
+    return false;
+  }
+
+  return true;
+};
 
 const isTaskStale = (task: FlexibleTask): boolean => {
   if (task.status === "done") return false;
@@ -265,6 +399,22 @@ const classifyTaskLocally = (
     confidence = Math.max(confidence, 0.85);
   }
 
+  let task_nature = "one_time" as "recurring" | "one_time" | "progressive";
+  const isRecurring = [
+    "gym", "workout", "run", "swim", "exercise", "training", "yoga", "meditate", "journal", 
+    "sleep", "hydrate", "read daily", "habit", "brush", "walk", "jog"
+  ].some(kw => t.includes(kw));
+
+  const isProgressive = [
+    "study", "project", "code", "design", "write", "thesis", "research", "exam", "course", "lecture"
+  ].some(kw => t.includes(kw));
+
+  if (isRecurring) {
+    task_nature = "recurring";
+  } else if (isProgressive) {
+    task_nature = "progressive";
+  }
+
   return {
     meta: {
       category,
@@ -273,7 +423,8 @@ const classifyTaskLocally = (
       recoverability,
       dependency_chain,
       progress_type,
-      deadline_pressure
+      deadline_pressure,
+      task_nature
     },
     confidence,
     source: "rules"
@@ -344,12 +495,12 @@ const generateDefaultConsequence = (
     }
   }
 
-  if (consequenceCore && consequenceCore.total_delay_minutes > 0) {
-    cascade_effect = `This creates a delay of ${consequenceCore.total_delay_minutes} minutes, compressing remaining tasks and reducing buffer times.`;
-  } else if (consequenceCore && consequenceCore.is_pushed_to_backlog) {
-    cascade_effect = `This pushes "${title}" back to the master backlog, requiring rescheduling later.`;
-  } else if (consequenceCore && consequenceCore.is_pushed_to_tomorrow) {
-    cascade_effect = `This reschedules "${title}" to tomorrow, increasing tomorrow's schedule load.`;
+  if (consequenceCore && consequenceCore.time_shift_mins > 0) {
+    cascade_effect = `This creates a delay that pushes your final tasks into sleep time by ${consequenceCore.time_shift_mins} minutes.`;
+  } else if (consequenceCore && consequenceCore.backlog_mins > 0) {
+    cascade_effect = `This shifts "${title}" to the backlog, adding ${consequenceCore.backlog_mins} minutes of pending work.`;
+  } else if (delayMins > 0) {
+    cascade_effect = `This delays "${title}" and subsequent tasks by ${delayMins} minutes.`;
   } else {
     cascade_effect = "Your timeline holds sufficient buffer gaps to absorb this shift without cascading tasks.";
   }
@@ -458,6 +609,44 @@ export default function App() {
   const [fixedBlocks, setFixedBlocks] = useState<FixedBlock[]>([]);
   const [flexibleTasks, setFlexibleTasks] = useState<FlexibleTask[]>([]);
   const [appSettings, setAppSettings] = useState({ day_start: "07:00", day_end: "23:00" });
+
+  // Behavioral Memory States
+  const [reflectionEvents, setReflectionEvents] = useState<ReflectionEvent[]>([]);
+  const [taskExecutionLogs, setTaskExecutionLogs] = useState<TaskExecutionLog[]>([]);
+  const [lastReflectedDate, setLastReflectedDate] = useState(() => localStorage.getItem("dayflow_last_reflected_date") || "");
+
+  // Drift Prompt tracking
+  const [lastDriftPromptAt, setLastDriftPromptAt] = useState(() => Number(localStorage.getItem("dayflow_last_drift_prompt_at")) || 0);
+  const [driftPromptCountToday, setDriftPromptCountToday] = useState(() => {
+    const todayStr = getLocalTodayStr();
+    const storedDate = localStorage.getItem("dayflow_drift_prompt_date");
+    if (storedDate === todayStr) {
+      return Number(localStorage.getItem("dayflow_drift_prompt_count")) || 0;
+    }
+    return 0;
+  });
+
+  // Derived UBM Insights (still used for internal calibration UI charts)
+  const ubmInsights = useMemo(() => {
+    return extractUBMInsights(flexibleTasks, reflectionEvents, taskExecutionLogs);
+  }, [flexibleTasks, reflectionEvents, taskExecutionLogs]);
+
+  // V3.1 Pattern Engine — compressed behavioral signals for AI Brain
+  // NOTE: This — not ubmInsights — is what gets sent to AI.
+  const behaviorSignals = useMemo(() => {
+    return computeBehaviorSignals(flexibleTasks, taskExecutionLogs);
+  }, [flexibleTasks, taskExecutionLogs]);
+
+  // AI Reasoning overlay and reflection states
+  const [aiReasoningResult, setAiReasoningResult] = useState<{
+    message: string;
+    proposalRisk: "low" | "medium" | "high";
+    proposals: AIProposal[];
+  } | null>(null);
+  const [showConfirmationOverlay, setShowConfirmationOverlay] = useState(false);
+  const [isProcessingAIReasoning, setIsProcessingAIReasoning] = useState(false);
+  const [selectedCause, setSelectedCause] = useState<string>("");
+  const [reflectionNotes, setReflectionNotes] = useState<string>("");
 
   // Onboarding
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -791,6 +980,12 @@ export default function App() {
   ): { success: boolean; changes: any[]; message: string } => {
     const text = inputText.toLowerCase().trim();
 
+    // Do not intercept complex conversational queries or long routine descriptions locally.
+    // Short local shortcut commands are typically under 12 words or 80 characters.
+    if (text.split(/\s+/).length > 12 || text.length > 80) {
+      return { success: false, changes: [], message: "" };
+    }
+
     const findTaskLocal = (keywords: string[]) => {
       let bestMatch: any = null;
       let maxMatches = 0;
@@ -1101,6 +1296,7 @@ export default function App() {
   // Vision image attachment for copilot
   const [copilotImage, setCopilotImage] = useState<{ base64: string; mimeType: string; previewUrl: string } | null>(null);
   const copilotImageInputRef = useRef<HTMLInputElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   // Inline task card expansion state
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
@@ -1250,6 +1446,20 @@ export default function App() {
     };
   }, [isResizing, resize, stopResizing]);
 
+  // Automatically scroll chat to bottom when history or processing state changes
+  useEffect(() => {
+    if (activeBottomSheet === "assistant" && chatContainerRef.current) {
+      setTimeout(() => {
+        if (chatContainerRef.current) {
+          chatContainerRef.current.scrollTo({
+            top: chatContainerRef.current.scrollHeight,
+            behavior: "smooth"
+          });
+        }
+      }, 80);
+    }
+  }, [chatHistory, isProcessingCopilot, activeBottomSheet]);
+
   // Emergency block removed
 
   // 1. Initial Storage Bootstrap
@@ -1261,6 +1471,8 @@ export default function App() {
     const goalsLoaded = loadGoals();
     const achievementsLoaded = loadAchievements();
     const weightLogLoaded = loadWeightLog();
+    const loadedReflections = loadReflectionEvents();
+    const loadedLogs = loadTaskExecutionLogs();
 
     // Migrate/populate consequence and flexibility fields on legacy tasks
     let migrated = false;
@@ -1295,6 +1507,8 @@ export default function App() {
     setGoals(goalsLoaded);
     setAchievements(achievementsLoaded);
     setWeightLog(weightLogLoaded);
+    setReflectionEvents(loadedReflections);
+    setTaskExecutionLogs(loadedLogs);
 
     // Show onboarding if first time
     if (!isOnboardingComplete()) {
@@ -1385,6 +1599,28 @@ export default function App() {
     saveFixedBlocks(newBlocks);
   };
 
+  const recordTaskExecutionLog = (taskId: string, completed: boolean, skipped: boolean, actualDur?: number, dateVal?: string) => {
+    const task = flexibleTasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    const scheduledItem = daySchedule.items.find(i => i.id === taskId);
+    const startHour = scheduledItem?.start_time ? parseInt(scheduledItem.start_time.split(":")[0], 10) : undefined;
+
+    const newLog: TaskExecutionLog = {
+      taskId,
+      date: dateVal || task.scheduled_date || TODAY,
+      plannedDuration: task.duration_minutes,
+      actualDuration: actualDur,
+      scheduledStartHour: startHour,
+      completed,
+      skipped
+    };
+
+    const updatedLogs = [...taskExecutionLogs, newLog];
+    setTaskExecutionLogs(updatedLogs);
+    saveTaskExecutionLogs(updatedLogs);
+  };
+
   // Update flexibleTasks wrapper
   const handleUpdateFlexible = (newTasks: FlexibleTask[], isSilent = false) => {
     // Find newly completed tasks (comparing with previous state)
@@ -1429,6 +1665,203 @@ export default function App() {
     setFlexibleTasks(newTasks);
     saveFlexibleTasks(newTasks);
   };
+
+  const executeAIProposals = (proposals: AIProposal[]) => {
+    let updatedTasks = [...flexibleTasks];
+    const logsToRecord: TaskExecutionLog[] = [];
+
+    proposals.forEach(proposal => {
+      if (proposal.type === "abstain") return;
+      if (proposal.type === "suggest" || proposal.type === "ask") {
+        return;
+      }
+
+      const taskId = (proposal as any).taskId;
+      if (!taskId) return;
+
+      const taskIndex = updatedTasks.findIndex(t => t.id === taskId);
+      if (taskIndex === -1) return;
+
+      const task = updatedTasks[taskIndex];
+
+      // DETERMINISTIC GUARDRAILS:
+      // 1. Cannot modify fixed calendar events
+      if (task.meta?.rigidity === "fixed") {
+        console.warn(`Guardrail: Cannot modify fixed task ${task.title}`);
+        showToast(`Guardrail: Fixed event "${task.title}" cannot be changed.`, "warning");
+        return;
+      }
+
+      // 2. Cannot expire critical tasks
+      if (proposal.type === "expire" && (task.meta?.importance === "critical" || task.importance === "critical")) {
+        console.warn(`Guardrail: Cannot expire critical task ${task.title}. Backlogging instead.`);
+        showToast(`Guardrail: "${task.title}" is critical. Backlogged instead of expired.`, "info");
+        updatedTasks[taskIndex] = {
+          ...task,
+          status: "backlog",
+          scheduled_date: null
+        };
+        return;
+      }
+
+      if (proposal.type === "expire") {
+        updatedTasks[taskIndex] = {
+          ...task,
+          status: "expired"
+        };
+        logsToRecord.push({
+          taskId: task.id,
+          date: task.scheduled_date || TODAY,
+          plannedDuration: task.duration_minutes,
+          completed: false,
+          skipped: true
+        });
+      } else if (proposal.type === "backlog") {
+        updatedTasks[taskIndex] = {
+          ...task,
+          status: "backlog",
+          scheduled_date: null
+        };
+      } else if (proposal.type === "carry_over") {
+        const currentCarries = task.carry_over_count || 0;
+        if (currentCarries >= 3) {
+          const coachingQuestion = `The task "${task.title}" has been deferred repeatedly. Is it too large, unclear, or no longer important?`;
+          setChatHistory(prev => [
+            ...prev,
+            {
+              sender: "ai",
+              text: coachingQuestion,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            }
+          ]);
+          setActiveBottomSheet("assistant");
+          showToast(`Coaching: "${task.title}" needs reflection. Chat opened.`, "info");
+        }
+
+        updatedTasks[taskIndex] = {
+          ...task,
+          status: "scheduled",
+          scheduled_date: TODAY,
+          carried_over_from: task.carried_over_from || task.scheduled_date || undefined,
+          carry_over_count: currentCarries + 1
+        };
+      }
+    });
+
+    setFlexibleTasks(updatedTasks);
+    saveFlexibleTasks(updatedTasks);
+
+    if (logsToRecord.length > 0) {
+      const newLogs = [...taskExecutionLogs, ...logsToRecord];
+      setTaskExecutionLogs(newLogs);
+      saveTaskExecutionLogs(newLogs);
+    }
+  };
+
+  const runLocalResolution = (staleTasksList: FlexibleTask[] = staleTasks) => {
+    // V3.1: Safe defaults only. No keyword heuristics, no behavioral judgment.
+    // Execution Engine enforces hard constraints; AI handles intent.
+    // Offline: carry_over everything unless the task is explicitly non-recoverable.
+    const proposals: AIProposal[] = staleTasksList.map(task => {
+      if (
+        task.meta?.rigidity === "fixed" ||
+        task.meta?.recoverability === "impossible"
+      ) {
+        return { type: "expire" as const, taskId: task.id, reason: "Offline: non-recoverable constraint — expired." };
+      }
+      return { type: "carry_over" as const, taskId: task.id, reason: "Offline safe default: carried forward." };
+    });
+
+    executeAIProposals(proposals);
+    showToast("Offline mode: tasks safely carried forward.", "info");
+    setLastReflectedDate(TODAY);
+    localStorage.setItem("dayflow_last_reflected_date", TODAY);
+  };
+
+  const runAIResolution = async (triggerType: "reflection" | "drift", userNotesVal = "", causeVal = "planning") => {
+    setIsProcessingAIReasoning(true);
+    try {
+      // V3.1: Build compact context — no raw arrays sent to AI
+      const backlogTaskCount = flexibleTasks.filter(
+        t => t.scheduled_date === null && t.status !== "done"
+      ).length;
+
+      const compactContext = buildAICompactContext(
+        triggerType,
+        behaviorSignals,
+        staleTasks,
+        daySchedule.items,
+        goals,
+        triggerType === "drift" ? driftedTask : null,
+        backlogTaskCount,
+        userNotesVal
+      );
+
+      const payload = {
+        trigger: triggerType,
+        context: compactContext
+      };
+
+      const response = await fetch("/api/ai-reasoning", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error("AI reasoning route failed");
+      }
+
+      const result = await response.json();
+      setAiReasoningResult(result);
+
+      if (result.proposalRisk === "low") {
+        executeAIProposals(result.proposals);
+        showToast(result.message || "Proposals applied.", "success");
+        if (triggerType === "reflection") {
+          setLastReflectedDate(TODAY);
+          localStorage.setItem("dayflow_last_reflected_date", TODAY);
+        } else if (triggerType === "drift") {
+          const nextCount = driftPromptCountToday + 1;
+          setDriftPromptCountToday(nextCount);
+          localStorage.setItem("dayflow_drift_prompt_count", String(nextCount));
+          localStorage.setItem("dayflow_drift_prompt_date", TODAY);
+          setLastDriftPromptAt(Date.now());
+          localStorage.setItem("dayflow_last_drift_prompt_at", String(Date.now()));
+        }
+      } else {
+        setShowConfirmationOverlay(true);
+      }
+    } catch (e) {
+      console.error("AI resolution failed, falling back to local resolver:", e);
+      showToast("AI reasoning failed. Using local fallback.", "warning");
+      if (triggerType === "reflection") {
+        runLocalResolution();
+      } else {
+        if (driftedTask) {
+          handleDelayTask15Minutes(driftedTask.id, driftedTask.start_time);
+          const nextCount = driftPromptCountToday + 1;
+          setDriftPromptCountToday(nextCount);
+          localStorage.setItem("dayflow_drift_prompt_count", String(nextCount));
+          localStorage.setItem("dayflow_drift_prompt_date", TODAY);
+          setLastDriftPromptAt(Date.now());
+          localStorage.setItem("dayflow_last_drift_prompt_at", String(Date.now()));
+        }
+      }
+    } finally {
+      setIsProcessingAIReasoning(false);
+    }
+  };
+
+  const yesterdayCompletionRate = useMemo(() => {
+    const yesterdayDate = new Date();
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const yesterdayStr = getLocalTodayStr(yesterdayDate);
+    const yesterdayTasks = flexibleTasks.filter(t => t.scheduled_date === yesterdayStr);
+    if (yesterdayTasks.length === 0) return 1.0;
+    const completedCount = yesterdayTasks.filter(t => t.status === "done").length;
+    return completedCount / yesterdayTasks.length;
+  }, [flexibleTasks]);
 
   // Toast Dispatcher Helper
   const showToast = (message: string, type: "success" | "info" | "warning" = "success") => {
@@ -1497,12 +1930,35 @@ export default function App() {
   }, [flexibleTasks]);
 
   const staleTasks = useMemo(() => {
-    return flexibleTasks.filter(t => isTaskStale(t));
-  }, [flexibleTasks]);
+    return flexibleTasks.filter(t => 
+      t.scheduled_date !== null && 
+      t.scheduled_date < TODAY && 
+      t.status !== "done" && 
+      t.status !== "skipped" && 
+      t.status !== "expired"
+    );
+  }, [flexibleTasks, TODAY]);
+
+  const showReflectionCard = useMemo(() => {
+    if (lastReflectedDate === TODAY) return false;
+    // V3.1: No hardcoded completion-rate thresholds — AI decides urgency.
+    // Show the reflection card if reflection hasn't been done today AND:
+    //   - there are any stale tasks, OR
+    //   - it's evening (>= 18:00) — natural end-of-day moment
+    // AI receives BehaviorSignals and reasons about what to do.
+    const hourNow = new Date().getHours();
+    const hasAnyStaleTasks = staleTasks.length > 0;
+    const isEvening = hourNow >= 18;
+    return hasAnyStaleTasks || isEvening;
+  }, [staleTasks, lastReflectedDate, TODAY]);
 
   const calibrationProfile = useMemo(() => {
-    return calculateCalibrationProfile(flexibleTasks);
-  }, [flexibleTasks]);
+    const base = calculateCalibrationProfile(flexibleTasks);
+    return {
+      ...base,
+      underestimateRatio: ubmInsights.timeBias
+    };
+  }, [flexibleTasks, ubmInsights]);
 
   const calibrationPercentage = useMemo(() => {
     return Math.min(Math.round((calibrationProfile.totalCompletions / 15) * 100), 100);
@@ -1521,7 +1977,7 @@ export default function App() {
     return detectHighDelayPatterns(flexibleTasks);
   }, [flexibleTasks]);
 
-  // Daily Schedule Calculations (uses effectiveFixedBlocks which merges profile + manual blocks)
+  
   const daySchedule = useMemo(() => {
     return generateSchedule(
       selectedDate,
@@ -1535,6 +1991,41 @@ export default function App() {
       delayPatterns
     );
   }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile, delayPatterns]);
+
+  // These memos depend on daySchedule — must be declared AFTER daySchedule
+  const driftedTask = useMemo(() => {
+    if (selectedDate !== TODAY) return null;
+    const now = new Date();
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+
+    const pastUnmodified = daySchedule.items.find(item => {
+      if (item.type !== "flexible") return false;
+      if (item.status !== "scheduled") return false;
+      
+      const endMins = timeToMinutes(item.end_time);
+      return nowMins > endMins;
+    });
+
+    return pastUnmodified || null;
+  }, [daySchedule.items, selectedDate, currentTimeMins]);
+
+  const showDriftBanner = useMemo(() => {
+    if (!driftedTask) return false;
+    const nowMs = Date.now();
+    const ninetyMinsMs = 90 * 60 * 1000;
+    if (nowMs - lastDriftPromptAt <= ninetyMinsMs) return false;
+    if (driftPromptCountToday >= 3) return false;
+    return true;
+  }, [driftedTask, lastDriftPromptAt, driftPromptCountToday]);
+
+  const totalPlannedDurationMins = useMemo(() => {
+    return daySchedule.items.reduce((acc, item) => {
+      if (item.type === "flexible") {
+        return acc + item.duration_minutes;
+      }
+      return acc;
+    }, 0);
+  }, [daySchedule.items]);
 
   // Run predictions for all backlog items
   const futurePredictions = useMemo(() => {
@@ -1831,6 +2322,9 @@ export default function App() {
     const energyVal = flexibleForm.energy_level;
     const scheduledDateVal = flexibleForm.scheduled_date || null;
 
+    const localResult = classifyTaskLocally(titleVal, "", goals);
+    const task_nature = localResult.meta.task_nature || "one_time";
+
     const meta: TaskMeta = {
       category: flexibleForm.category,
       rigidity: flexibleForm.rigidity,
@@ -1838,7 +2332,8 @@ export default function App() {
       recoverability: flexibleForm.recoverability,
       dependency_chain: flexibleForm.dependency_chain,
       progress_type: flexibleForm.progress_type,
-      deadline_pressure: flexibleForm.deadline_pressure
+      deadline_pressure: flexibleForm.deadline_pressure,
+      task_nature
     };
 
     // Save this mapping into vocabulary memory database
@@ -1863,6 +2358,7 @@ export default function App() {
               scheduled_date: scheduledDateVal,
               importance: flexibleForm.importance,
               task_flexibility: flexibleForm.task_flexibility,
+              task_nature,
               meta,
               blocked_by: flexibleForm.blocked_by,
               blocks: flexibleForm.blocks
@@ -1882,6 +2378,7 @@ export default function App() {
         scheduled_date: scheduledDateVal,
         importance: flexibleForm.importance,
         task_flexibility: flexibleForm.task_flexibility,
+        task_nature,
         meta,
         blocked_by: flexibleForm.blocked_by,
         blocks: flexibleForm.blocks
@@ -1931,7 +2428,19 @@ export default function App() {
 
     let greeting = "";
     
-    if (timeOfDay === "evening") {
+    // Proactive greeting mentioning stale tasks and UBM insights when category confidence is high
+    const firstStale = staleTasks[0];
+    if (firstStale) {
+      const cat = firstStale.category || getTaskCategory(firstStale.title);
+      const conf = ubmInsights.categoryConfidence[cat] || 0;
+      const successRate = ubmInsights.categorySuccess[cat] || 1;
+      
+      if (conf > 0.6 && successRate < 0.5) {
+        greeting = `Good ${timeOfDay}! 👋\n\nI noticed "${firstStale.title}" is stale. Since you've struggled with "${cat}" tasks recently (completion rate: ${Math.round(successRate * 100)}%), would you like to backlog this task or break it into smaller steps today?`;
+      } else {
+        greeting = `Good ${timeOfDay}! 👋\n\nWelcome back. You have some outstanding items from yesterday, including "${firstStale.title}". Should we schedule it for today or park it back in the backlog?`;
+      }
+    } else if (timeOfDay === "evening") {
       // Evening check: check for incomplete items
       const incomplete = todayTasks.filter(item => item.type === "flexible" && item.status !== "done");
       if (incomplete.length > 0) {
@@ -1994,7 +2503,20 @@ export default function App() {
     const backlogCount = flexibleTasks.filter(t => t.status !== "done" && t.scheduled_date === null).length;
 
     let greeting = "";
-    if (scheduledCount === 0) {
+    
+    // Proactive greeting mentioning stale tasks and UBM insights when category confidence is high
+    const firstStale = staleTasks[0];
+    if (firstStale) {
+      const cat = firstStale.category || getTaskCategory(firstStale.title);
+      const conf = ubmInsights.categoryConfidence[cat] || 0;
+      const successRate = ubmInsights.categorySuccess[cat] || 1;
+      
+      if (conf > 0.6 && successRate < 0.5) {
+        greeting = `Good ${timeOfDay}! 👋\n\nI noticed "${firstStale.title}" is stale. Since you've struggled with "${cat}" tasks recently (completion rate: ${Math.round(successRate * 100)}%), would you like to backlog this task or break it into smaller steps today?`;
+      } else {
+        greeting = `Good ${timeOfDay}! 👋\n\nWelcome back. You have some outstanding items from yesterday, including "${firstStale.title}". Should we schedule it for today or park it back in the backlog?`;
+      }
+    } else if (scheduledCount === 0) {
       greeting = `Good ${timeOfDay}! ☀️\n\nYou're all clear today! No tasks scheduled. What would you like to do?\n\n• Schedule something new\n• Or just relax`;
     } else if (scheduledCount > 4) {
       const totalMins = daySchedule.items.reduce((acc, item) => {
@@ -2206,14 +2728,20 @@ export default function App() {
       }, getTimeoutForOperation("copilot"));
 
       try {
+        // V3.1: Replace raw task arrays with compact text summaries
+        const { scheduleSummary, pendingSummary } = buildCopilotScheduleSummary(
+          daySchedule.items,
+          flexibleTasks.filter(t => t.status !== "done"),
+          selectedDate
+        );
         const response = await fetch("/api/adjust-schedule", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
           body: JSON.stringify({
             userText: messageText || "Please analyze the attached image and extract schedule/workout/weight info.",
-            currentSchedule: daySchedule.items,
-            pendingTasks: flexibleTasks.filter(t => t.status !== "done"),
+            scheduleSummary,
+            pendingSummary,
             today: selectedDate,
             image: imagePayload
           })
@@ -2257,11 +2785,9 @@ export default function App() {
         } else {
           console.warn("AI Copilot API failed:", err);
           recordAIFailure();
-          data = {
-            changes: [],
-            message: `I encountered an error trying to process your request: "${err.message}".`
-          };
-          setCopilotError(`DayFlow AI service failed: ${err.message}`);
+          const offlineRes = adjustScheduleOffline(messageText, daySchedule.items, flexibleTasks, selectedDate);
+          data = offlineRes;
+          setCopilotError(offlineRes.changes.length > 0 ? null : `DayFlow AI service failed: ${err.message}`);
           break;
         }
       } finally {
@@ -2550,14 +3076,20 @@ Please create the specified number of backlog tasks representing the project pha
       }, getTimeoutForOperation("project_wizard"));
 
       try {
+        // V3.1: Replace raw task arrays with compact text summaries
+        const { scheduleSummary: wizardScheduleSummary, pendingSummary: wizardPendingSummary } = buildCopilotScheduleSummary(
+          daySchedule.items,
+          flexibleTasks.filter(t => t.status !== "done"),
+          selectedDate
+        );
         const response = await fetch("/api/adjust-schedule", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
           body: JSON.stringify({
             userText: promptForAI,
-            currentSchedule: daySchedule.items,
-            pendingTasks: flexibleTasks.filter(t => t.status !== "done"),
+            scheduleSummary: wizardScheduleSummary,
+            pendingSummary: wizardPendingSummary,
             today: selectedDate
           })
         });
@@ -2600,11 +3132,26 @@ Please create the specified number of backlog tasks representing the project pha
         } else {
           console.warn("AI Plan generator failed:", err);
           recordAIFailure();
-          data = {
-            changes: [],
-            message: `I encountered an error trying to process your request: "${err.message}".`
-          };
-          setCopilotError(`DayFlow AI service failed: ${err.message}`);
+          let offlineData;
+          if (msg.questionnaire.type === "workout_plan") {
+            offlineData = generateLocalFitnessPlan(
+              answers["workout_type"] || "",
+              answers["weight_goal"] || "",
+              answers["goal_details"] || "",
+              answers["frequency"] || ""
+            );
+          } else if (msg.questionnaire.type === "project_plan") {
+            offlineData = generateLocalProjectPlan(
+              answers["project_type"] || "",
+              answers["session_count"] || "",
+              answers["session_duration"] || "",
+              answers["project_goal_name"] || ""
+            );
+          } else {
+            offlineData = adjustScheduleOffline(promptForAI, daySchedule.items, flexibleTasks, selectedDate);
+          }
+          data = offlineData;
+          setCopilotError(offlineData.changes.length > 0 ? null : `DayFlow AI service failed: ${err.message}`);
           break;
         }
       } finally {
@@ -2798,7 +3345,10 @@ Please create the specified number of backlog tasks representing the project pha
         } else if (isFixed) {
           updatedFixed = updatedFixed.map(b => b.id === taskId ? {
             ...b,
-            start_time: pinTime || b.start_time
+            start_time: pinTime || b.start_time,
+            end_time: pinTime
+              ? minutesToTime(timeToMinutes(pinTime) + Math.max(30, timeToMinutes(b.end_time) - timeToMinutes(b.start_time)))
+              : b.end_time
           } : b);
           appliedCount++;
         }
@@ -3749,6 +4299,10 @@ Please create the specified number of backlog tasks representing the project pha
         } : t
       );
       handleUpdateFlexible(updated);
+      const dateKey = matched.scheduled_date || TODAY;
+      const filteredLogs = taskExecutionLogs.filter(log => log.taskId !== taskId || log.date !== dateKey);
+      setTaskExecutionLogs(filteredLogs);
+      saveTaskExecutionLogs(filteredLogs);
       return;
     }
 
@@ -3811,6 +4365,7 @@ Please create the specified number of backlog tasks representing the project pha
     );
 
     handleUpdateFlexible(updated);
+    recordTaskExecutionLog(taskId, true, false, inferredDuration);
     checkDayComplete(updated);
     showToast("Done! Keep going.", "success");
     triggerHaptic(40);
@@ -3833,7 +4388,8 @@ Please create the specified number of backlog tasks representing the project pha
   // Navigation Calendar dates helper list
   const nextTwoWeeks = useMemo(() => {
     const days = [];
-    const base = new Date(selectedDate);
+    const [year, monthVal, dayVal] = selectedDate.split("-").map(Number);
+    const base = new Date(year, monthVal - 1, dayVal, 12, 0, 0);
     // Let's generate a beautiful weekly stripe (Centered around active date)
     const startOfWeek = new Date(base);
     startOfWeek.setDate(base.getDate() - 3); // 3 days back, 11 days forward
@@ -3843,7 +4399,7 @@ Please create the specified number of backlog tasks representing the project pha
       nextDay.setDate(startOfWeek.getDate() + i);
       const label = nextDay.toLocaleDateString("en-US", { weekday: "short" });
       const num = nextDay.getDate();
-      const isoStr = nextDay.toISOString().split("T")[0];
+      const isoStr = getLocalTodayStr(nextDay);
       
       const dayFixed = fixedBlocks.filter(b => isFixedBlockActiveOnDate(b, isoStr));
       const dayFlexible = flexibleTasks.filter(t => t.scheduled_date === isoStr);
@@ -3852,7 +4408,7 @@ Please create the specified number of backlog tasks representing the project pha
         label,
         num,
         isoStr,
-        isToday: isoStr === new Date().toISOString().split("T")[0],
+        isToday: isoStr === TODAY,
         hasFixed: dayFixed.length > 0,
         hasFlex: dayFlexible.length > 0,
         totalItems: dayFixed.length + dayFlexible.length
@@ -3863,10 +4419,9 @@ Please create the specified number of backlog tasks representing the project pha
 
   // Calendar monthly dates generator
   const currentMonthGrid = useMemo(() => {
-    const cursor = new Date(selectedDate);
-    cursor.setDate(1); // First of the month
+    const [year, monthVal, dayVal] = selectedDate.split("-").map(Number);
+    const cursor = new Date(year, monthVal - 1, 1, 12, 0, 0); // First of the month at noon
     const month = cursor.getMonth();
-    const year = cursor.getFullYear();
 
     // Start of grid (Sunday block offset)
     const dayOfWeek = cursor.getDay();
@@ -3878,7 +4433,7 @@ Please create the specified number of backlog tasks representing the project pha
     for (let i = 0; i < 35; i++) {
       const day = new Date(gridStart);
       day.setDate(gridStart.getDate() + i);
-      const dStr = day.toISOString().split("T")[0];
+      const dStr = getLocalTodayStr(day);
 
       const dayFixed = fixedBlocks.filter(b => isFixedBlockActiveOnDate(b, dStr));
       const dayFlexible = flexibleTasks.filter(t => t.scheduled_date === dStr);
@@ -3887,7 +4442,7 @@ Please create the specified number of backlog tasks representing the project pha
         num: day.getDate(),
         dateStr: dStr,
         isCurrentMonth: day.getMonth() === month,
-        isToday: dStr === new Date().toISOString().split("T")[0],
+        isToday: dStr === TODAY,
         isSelected: dStr === selectedDate,
         hasFixed: dayFixed.length > 0,
         hasFlex: dayFlexible.length > 0
@@ -3898,9 +4453,10 @@ Please create the specified number of backlog tasks representing the project pha
 
   // Handle month jump
   const handleMonthChange = (direction: "prev" | "next") => {
-    const current = new Date(selectedDate);
+    const [year, monthVal, dayVal] = selectedDate.split("-").map(Number);
+    const current = new Date(year, monthVal - 1, dayVal, 12, 0, 0);
     current.setMonth(current.getMonth() + (direction === "next" ? 1 : -1));
-    setSelectedDate(current.toISOString().split("T")[0]);
+    setSelectedDate(getLocalTodayStr(current));
   };
 
   // Filter Backlog items
@@ -4075,7 +4631,6 @@ Please create the specified number of backlog tasks representing the project pha
         g.linkedTaskKeywords.some(kw => task.title.toLowerCase().includes(kw.toLowerCase()))
       );
       // Find recent completions of similar tasks
-      const { getTaskCategory } = await import("./utils/mlEngine");
       const category = task.meta?.category || getTaskCategory(task.title);
       const recentSimilar = flexibleTasks
         .filter(t => t.status === "done" && (t.meta?.category || getTaskCategory(t.title)) === category && t.completed_at)
@@ -4897,7 +5452,7 @@ Please create the specified number of backlog tasks representing the project pha
               <span className="font-display font-black text-lg md:text-xl text-[#0F172A] tracking-tight">{pageTitle}</span>
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               {activeTab === "today" && daySchedule.items.length > 0 && (
-                <span className="text-[11px] font-bold font-mono px-2 py-0.5 bg-indigo-500/10 text-indigo-400 rounded-full ml-1 animate-fade-in">
+                <span className="text-[11px] font-bold font-mono px-2 py-0.5 bg-indigo-500/10 text-indigo-400 rounded-full ml-1">
                   {totalCompletedScheduledCount}
                 </span>
               )}
@@ -5053,12 +5608,197 @@ Please create the specified number of backlog tasks representing the project pha
                   </div>
                 )}
                 
+                {/* Drift Detection Soft Banner */}
+                {showDriftBanner && driftedTask && (
+                  <div className="mx-4 mb-3 p-3 bg-amber-50/70 border border-amber-100 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs text-amber-800 animate-fade-in shadow-xs text-left">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                      <div>
+                        <span className="font-semibold text-amber-900">Did the schedule drift?</span>
+                        <p className="text-[11px] text-amber-700 mt-0.5">
+                          "{driftedTask.title}" was scheduled to end at {driftedTask.end_time}.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 self-end md:self-auto">
+                      <button 
+                        onClick={() => {
+                          handleToggleTaskDone(driftedTask.id);
+                          const nextCount = driftPromptCountToday + 1;
+                          setDriftPromptCountToday(nextCount);
+                          localStorage.setItem("dayflow_drift_prompt_count", String(nextCount));
+                          localStorage.setItem("dayflow_drift_prompt_date", TODAY);
+                          setLastDriftPromptAt(Date.now());
+                          localStorage.setItem("dayflow_last_drift_prompt_at", String(Date.now()));
+                        }}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px]"
+                      >
+                        Complete
+                      </button>
+                      <button 
+                        onClick={() => {
+                          handleDelayTask15Minutes(driftedTask.id, driftedTask.start_time);
+                          const nextCount = driftPromptCountToday + 1;
+                          setDriftPromptCountToday(nextCount);
+                          localStorage.setItem("dayflow_drift_prompt_count", String(nextCount));
+                          localStorage.setItem("dayflow_drift_prompt_date", TODAY);
+                          setLastDriftPromptAt(Date.now());
+                          localStorage.setItem("dayflow_last_drift_prompt_at", String(Date.now()));
+                        }}
+                        className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px]"
+                      >
+                        Delay 15m
+                      </button>
+                      <button 
+                        onClick={() => runAIResolution("drift")}
+                        className="bg-primary hover:bg-primary-dark text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] flex items-center gap-1"
+                        disabled={isProcessingAIReasoning}
+                      >
+                        {isProcessingAIReasoning && <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />}
+                        <Sparkles className="w-3 h-3" /> Adjust via AI
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
 
                 {/* Grid container giving dual layout on desktop, standard layout on mobile */}
                 <div className="flex-1 lg:grid lg:grid-cols-12 lg:gap-6 lg:p-6 overflow-y-auto lg:overflow-hidden h-full">
                   
                   {/* Left Column (Timeline blocks) */}
                   <div className="lg:col-span-8 flex flex-col h-full lg:overflow-y-auto pb-24 lg:pb-6 lg:pr-3">
+                    
+                    {/* Daily Reflection Card */}
+                    {showReflectionCard && (
+                      <div className="mx-3.5 mb-5 p-5 bg-white border border-indigo-100 rounded-3xl shadow-md text-left space-y-4 animate-slide-up">
+                        <div className="flex items-center gap-2.5">
+                          <div className="p-2 bg-[#EEEDFE] rounded-xl text-primary shrink-0">
+                            <Sparkles className="w-5 h-5 fill-primary/10" />
+                          </div>
+                          <div>
+                            <h4 className="text-sm font-bold text-neutral-800">
+                              {yesterdayCompletionRate >= 0.7 ? "🎉 Celebrate Yesterday" : "💡 Adjust & Align"}
+                            </h4>
+                            <p className="text-xs text-neutral-500">
+                              {yesterdayCompletionRate >= 0.7 
+                                ? `Excellent work! You completed ${Math.round(yesterdayCompletionRate * 100)}% of yesterday's tasks. What helped you win?` 
+                                : `Yesterday you completed ${Math.round(yesterdayCompletionRate * 100)}% of tasks. What caused the slip?`}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Cause selection grid */}
+                        <div className="grid grid-cols-2 gap-2">
+                          {yesterdayCompletionRate >= 0.7 ? (
+                            <>
+                              {[
+                                { key: "success_planning", label: "📋 Good Planning" },
+                                { key: "success_sleep", label: "💤 Restful Sleep" },
+                                { key: "success_focus", label: "🎯 Deep Focus" },
+                                { key: "success_load", label: "⚖️ Calm Workload" }
+                              ].map(opt => (
+                                <button
+                                  key={opt.key}
+                                  onClick={() => setSelectedCause(opt.key)}
+                                  className={`p-2.5 rounded-2xl border text-xs font-semibold text-center transition-all cursor-pointer ${
+                                    selectedCause === opt.key
+                                      ? "bg-primary border-primary text-white shadow-sm shadow-primary/25"
+                                      : "bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-200"
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </>
+                          ) : (
+                            <>
+                              {[
+                                { key: "planning", label: "📋 Over-planning" },
+                                { key: "energy", label: "⚡ Low Energy" },
+                                { key: "discipline", label: "⏳ Procrastinating" },
+                                { key: "interruption", label: "🔊 Interruptions" }
+                              ].map(opt => (
+                                <button
+                                  key={opt.key}
+                                  onClick={() => setSelectedCause(opt.key)}
+                                  className={`p-2.5 rounded-2xl border text-xs font-semibold text-center transition-all cursor-pointer ${
+                                    selectedCause === opt.key
+                                      ? "bg-primary border-primary text-white shadow-sm shadow-primary/25"
+                                      : "bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-200"
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </>
+                          )}
+                        </div>
+
+                        {/* Quick Notes Text Area */}
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Quick Notes</label>
+                          <textarea
+                            value={reflectionNotes}
+                            onChange={(e) => setReflectionNotes(e.target.value)}
+                            placeholder="Optional. Write down what happened or how you feel..."
+                            className="w-full text-xs p-3 rounded-2xl border border-neutral-200 bg-neutral-50/50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 transition-all resize-none h-16"
+                          />
+                        </div>
+
+                        {/* Submit Actions */}
+                        <div className="flex items-center justify-end gap-2.5">
+                          <button
+                            onClick={() => {
+                              runLocalResolution();
+                            }}
+                            className="text-xs text-neutral-400 hover:text-neutral-600 font-bold px-3 py-2 cursor-pointer transition-colors"
+                          >
+                            Skip
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const finalCause = selectedCause || (yesterdayCompletionRate >= 0.7 ? "success_planning" : "planning");
+                              
+                              const newEvent: ReflectionEvent = {
+                                id: Math.random().toString(36).substring(2, 9),
+                                date: TODAY,
+                                completionRate: yesterdayCompletionRate,
+                                type: yesterdayCompletionRate >= 0.7 ? "success" : "failure",
+                                cause: finalCause as any,
+                                notes: reflectionNotes
+                              };
+                              const updatedEvents = [...reflectionEvents, newEvent];
+                              setReflectionEvents(updatedEvents);
+                              saveReflectionEvents(updatedEvents);
+
+                              const hasHighPressure = staleTasks.some(t => 
+                                t.meta?.deadline_pressure === "high" || 
+                                t.meta?.deadline_pressure === "critical"
+                              );
+
+                              if (staleTasks.length <= 2 && !hasHighPressure) {
+                                runLocalResolution();
+                              } else {
+                                await runAIResolution("reflection", reflectionNotes, finalCause);
+                              }
+                            }}
+                            className="text-xs bg-primary text-white font-bold px-4 py-2.5 rounded-xl hover:bg-primary-dark shadow-md cursor-pointer transition-all active:scale-95 flex items-center gap-1.5"
+                            disabled={isProcessingAIReasoning}
+                          >
+                            {isProcessingAIReasoning && <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />}
+                            Reflect & Resolve
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Passive Overload Annotation */}
+                    {totalPlannedDurationMins > 240 && (
+                      <div className="mx-3.5 mb-3 p-3 bg-indigo-50/40 border border-indigo-100/30 rounded-2xl text-[11px] text-indigo-700/80 font-medium text-left flex items-center gap-1.5 animate-fade-in animate-pulse">
+                        <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                        <span>Calm note: {(totalPlannedDurationMins / 60).toFixed(1)} hours planned today. High overload probability. Pace yourself.</span>
+                      </div>
+                    )}
                     
                     {/* 2. Morning AI Copilot invite card (On mobile only) */}
                     <div className="p-3 lg:hidden">
@@ -5128,6 +5868,8 @@ Please create the specified number of backlog tasks representing the project pha
                         const isFixedType = item.type === "fixed";
                         const isEmergencyItem = item.id.includes("emergency_block") || item.title.includes("Emergency");
                         const isCompleted = item.status === "done";
+                        const isSkipped = item.status === "skipped";
+                        const isExpired = item.status === "expired";
                         const isPinned = !!(item as any).pinned;
                         const isDragging = draggedTaskId === item.id;
                         const isDragOver = dragOverTaskId === item.id;
@@ -5156,7 +5898,7 @@ Please create the specified number of backlog tasks representing the project pha
                           <div
                             key={`${item.id}-${idx}`}
                             className="relative mb-5 last:mb-3 group"
-                            draggable={!isFixedType && !isEmergencyItem && !isCompleted}
+                            draggable={!isFixedType && !isEmergencyItem && !isCompleted && !isSkipped && !isExpired}
                             onDragStart={() => !isFixedType && handleDragStart(item.id)}
                             onDragOver={(e) => !isFixedType && handleDragOver(e, item.id)}
                             onDrop={(e) => !isFixedType && handleDrop(e, item.id)}
@@ -5178,6 +5920,8 @@ Please create the specified number of backlog tasks representing the project pha
                                   ? "bg-[#E24B4A] border-red-200"
                                   : isCompleted
                                   ? "bg-emerald-500 border-emerald-600"
+                                  : isSkipped || isExpired
+                                  ? "bg-neutral-400 border-neutral-500"
                                   : "bg-[#1D9E75] border-emerald-100"
                               }`} 
                             />
@@ -5190,12 +5934,15 @@ Please create the specified number of backlog tasks representing the project pha
                                 isActiveNow ? "bg-white border-primary/30 ring-2 ring-primary/15 shadow-md shadow-primary/10" :
                                 isUpNext ? "bg-white border-neutral-200 border-dashed" :
                                 isCompleted ? "opacity-60 bg-[#F0FDF4] border-neutral-150" :
+                                isSkipped || isExpired ? "opacity-50 bg-neutral-100/70 border-neutral-200" :
                                 "bg-white border-neutral-150 hover:scale-[1.005] hover:shadow-sm hover:border-neutral-200/80"
                               }`}
                               style={{
                                 borderLeft: `3px solid ${
                                   isCompleted
                                     ? "#16A34A"
+                                    : isSkipped || isExpired
+                                    ? "#9CA3AF"
                                     : isEmergencyItem
                                     ? "var(--color-emergency-color)"
                                     : isFixedType
@@ -5237,6 +5984,16 @@ Please create the specified number of backlog tasks representing the project pha
                                       {isUpNext && (
                                         <span className="text-neutral-500 bg-neutral-100 px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0">
                                           Next →
+                                        </span>
+                                      )}
+                                      {isSkipped && (
+                                        <span className="text-neutral-500 bg-neutral-200/80 px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0">
+                                          🚫 Skipped
+                                        </span>
+                                      )}
+                                      {isExpired && (
+                                        <span className="text-neutral-500 bg-neutral-200/80 px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0">
+                                          ⏳ Expired
                                         </span>
                                       )}
                                       {isEmergencyItem ? (
@@ -5287,7 +6044,7 @@ Please create the specified number of backlog tasks representing the project pha
                                       )}
                                     </div>
 
-                                    <h4 className={`text-sm font-semibold tracking-tight leading-snug font-display mt-1 ${isCompleted ? "line-through text-neutral-400/70 opacity-50" : "text-neutral-800"}`}>
+                                    <h4 className={`text-sm font-semibold tracking-tight leading-snug font-display mt-1 ${isCompleted || isSkipped || isExpired ? "line-through text-neutral-400/70 opacity-50" : "text-neutral-800"}`}>
                                       {item.title}
                                     </h4>
 
@@ -5391,7 +6148,7 @@ Please create the specified number of backlog tasks representing the project pha
 
                                   {/* Controls: complete + edit + remove */}
                                   <div className="flex items-center gap-1 shrink-0">
-                                    {!isFixedType && (
+                                    {!isFixedType && !isSkipped && !isExpired && (
                                       <button 
                                         onClick={() => {
                                           if (isCompleted) {
@@ -5419,7 +6176,7 @@ Please create the specified number of backlog tasks representing the project pha
                                     )}
 
                                     <div className="flex items-center gap-0.5">
-                                      {!isCompleted && !isEmergencyItem && (
+                                      {!isCompleted && !isSkipped && !isExpired && !isEmergencyItem && (
                                         <button 
                                           onClick={() => isFixedType
                                             ? handleOpenEditFixed(fixedBlocks.find(b => b.id === item.id)!)
@@ -7993,7 +8750,7 @@ Please create the specified number of backlog tasks representing the project pha
                     <Sparkles className="w-5 h-5 text-primary fill-primary/10 shrink-0" />
                     <span>DayFlow AI Copilot</span>
                     {isCopilotFullScreen && (
-                      <span className="text-[10px] bg-indigo-50 text-primary font-bold px-2 py-0.5 rounded-full ml-1 animate-fade-in font-display">
+                      <span className="text-[10px] bg-indigo-50 text-primary font-bold px-2 py-0.5 rounded-full ml-1 font-display">
                         Expanded
                       </span>
                     )}
@@ -8025,7 +8782,7 @@ Please create the specified number of backlog tasks representing the project pha
                     <button
                       type="button"
                       onClick={handleResetCopilotChat}
-                      className="px-2 py-1 text-[10px] font-bold border border-neutral-200 text-neutral-500 hover:text-neutral-755 hover:bg-neutral-50 rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200 disabled:opacity-50"
+                      className="px-2 py-1 text-[10px] font-bold border border-neutral-200 text-neutral-500 hover:text-neutral-700 hover:bg-neutral-50 rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200 disabled:opacity-50"
                       title="Reset chat context and troubleshooting"
                     >
                       <RefreshCw className="w-3 h-3 text-neutral-400 group-hover:rotate-180 transition-transform" />
@@ -8043,17 +8800,20 @@ Please create the specified number of backlog tasks representing the project pha
                       <span>Summarize & Plan</span>
                     </button>
 
-                    {/* Exit/Close Chat button for desktop/fullscreen */}
-                    {isCopilotFullScreen && (
-                      <button
-                        type="button"
-                        onClick={() => setActiveBottomSheet(null)}
-                        className="p-1 rounded-full border border-neutral-200 hover:bg-neutral-50 text-neutral-450 hover:text-neutral-650 cursor-pointer active:scale-95 duration-200 shrink-0 ml-1"
-                        title="Close Copilot"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    )}
+                    {/* Exit/Close Chat button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveBottomSheet(null);
+                        setCopilotInput("");
+                        setProposedChanges(null);
+                        setChatHistory([]);
+                      }}
+                      className="p-1.5 rounded-full border border-neutral-200 hover:bg-neutral-50 text-neutral-500 hover:text-neutral-700 cursor-pointer active:scale-95 duration-200 shrink-0 ml-1"
+                      title="Close Copilot"
+                    >
+                      <X className="w-4.5 h-4.5" />
+                    </button>
                   </div>
                 </div>
 
@@ -8061,7 +8821,7 @@ Please create the specified number of backlog tasks representing the project pha
             <div className="space-y-5 flex-1 flex flex-col min-h-0">
               
               {/* Copilot Chat Message Area */}
-              <div className={`space-y-3 flex-1 overflow-y-auto pr-1 flex flex-col ${
+              <div ref={chatContainerRef} className={`space-y-3 flex-1 overflow-y-auto pr-1 flex flex-col ${
                 isCopilotFullScreen ? "max-h-none" : "max-h-[50vh]"
               }`}>
                 {copilotError && (
@@ -8266,7 +9026,7 @@ Please create the specified number of backlog tasks representing the project pha
                   <div className="flex items-center justify-between gap-2 text-xs text-[#94A3B8] font-bold p-3 bg-neutral-50 rounded-2xl border border-neutral-100 animate-pulse">
                     <div className="flex items-center gap-2">
                       <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary" />
-                      <span className="text-neutral-600 font-medium transition-all duration-300 animate-fade-in">
+                      <span className="text-neutral-600 font-medium transition-all duration-300">
                         {copilotRetryAttempt === 1 ? (
                           <span className="text-amber-600 font-semibold flex items-center gap-1.5">
                             ⚡ AI servers are crowded. Holding your schedule safely...
@@ -8510,44 +9270,28 @@ Please create the specified number of backlog tasks representing the project pha
               </div>
 
               {/* Bottom Actions Area */}
-              <div className="flex gap-2.5">
-                {proposedChanges ? (
-                  <>
-                    <button 
-                      type="button"
-                      onClick={() => {
-                        setProposedChanges(null);
-                        setChatHistory(prev => [...prev, { sender: "ai", text: "Got it, let's adjust. What would you like to change?" }]);
-                      }}
-                      className="flex-1 py-3 text-xs font-bold rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-300 text-neutral-800 transition-colors cursor-pointer text-center font-display animate-fade-in"
-                    >
-                      Revise Request
-                    </button>
-                    <button 
-                      type="button"
-                      onClick={handleConfirmAIChanges}
-                      className="flex-1 py-3 text-xs font-bold rounded-xl bg-primary hover:bg-primary-dark text-white transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm shadow-primary/20 text-center font-display animate-fade-in"
-                    >
-                      <Check className="w-4 h-4" />
-                      <span>Confirm Changes</span>
-                    </button>
-                  </>
-                ) : (
+              {proposedChanges && proposedChanges.length > 0 && (
+                <div className="flex gap-2.5">
                   <button 
                     type="button"
                     onClick={() => {
-                      setActiveBottomSheet(null);
-                      setCopilotInput("");
                       setProposedChanges(null);
-                      setChatHistory([]);
+                      setChatHistory(prev => [...prev, { sender: "ai", text: "Got it, let's adjust. What would you like to change?" }]);
                     }}
-                    className="w-full py-3 text-xs font-bold rounded-xl border border-neutral-200 transition-colors cursor-pointer text-[#475569] hover:bg-neutral-50 text-center font-display"
-                    disabled={isProcessingCopilot}
+                    className="flex-1 py-3 text-xs font-bold rounded-xl bg-neutral-100 hover:bg-neutral-200 border border-neutral-300 text-neutral-800 transition-colors cursor-pointer text-center font-display animate-fade-in"
                   >
-                    Close
+                    Revise Request
                   </button>
-                )}
-              </div>
+                  <button 
+                    type="button"
+                    onClick={handleConfirmAIChanges}
+                    className="flex-1 py-3 text-xs font-bold rounded-xl bg-primary hover:bg-primary-dark text-white transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm shadow-primary/20 text-center font-display animate-fade-in"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>Confirm Changes</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
           );
@@ -9029,6 +9773,100 @@ Please create the specified number of backlog tasks representing the project pha
               </button>
             </div>
           </div>
+
+          {/* AI PROPOSAL CONFIRMATION OVERLAY */}
+          {showConfirmationOverlay && aiReasoningResult && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-white rounded-3xl p-6 max-w-md w-full border border-neutral-150 shadow-2xl text-left space-y-4 animate-scale-up">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 bg-indigo-50 rounded-2xl text-primary shrink-0">
+                    <Sparkles className="w-5 h-5 fill-primary/10" />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-black text-md text-[#1A1A2E]">AI Schedule Proposals</h3>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md ${
+                        aiReasoningResult.proposalRisk === "high" 
+                          ? "bg-rose-500/10 text-rose-500" 
+                          : "bg-amber-500/10 text-amber-500"
+                      }`}>
+                        {aiReasoningResult.proposalRisk} Risk
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-xs text-neutral-600 leading-relaxed bg-neutral-50 p-3.5 rounded-2xl border border-neutral-100">
+                  {aiReasoningResult.message}
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Proposed Actions</label>
+                  <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                    {aiReasoningResult.proposals.map((p, idx) => {
+                      if (p.type === "abstain") {
+                        return (
+                          <div key={idx} className="p-2.5 bg-neutral-50 rounded-xl text-xs text-neutral-500 italic border border-neutral-100">
+                            Abstain: {p.reason}
+                          </div>
+                        );
+                      }
+                      if (p.type === "suggest" || p.type === "ask") {
+                        return (
+                          <div key={idx} className="p-2.5 bg-indigo-50/50 rounded-xl text-xs text-indigo-700 border border-indigo-100/50">
+                            💡 Coaching Suggestion: {p.type === "ask" ? (p as any).question : (p as any).message}
+                          </div>
+                        );
+                      }
+                      
+                      const targetTask = flexibleTasks.find(t => t.id === (p as any).taskId);
+                      return (
+                        <div key={idx} className="flex items-start gap-2.5 p-3 bg-white border border-neutral-150 rounded-2xl text-xs">
+                          <div className="mt-0.5 font-bold uppercase text-[9px] px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-600 shrink-0">
+                            {p.type.replace("_", " ")}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-semibold text-neutral-800 truncate">
+                              {targetTask ? targetTask.title : "Unknown task"}
+                            </div>
+                            <div className="text-[11px] text-neutral-500 mt-0.5">
+                              {(p as any).reason}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowConfirmationOverlay(false);
+                      setAiReasoningResult(null);
+                    }}
+                    className="flex-1 py-3 text-xs font-bold rounded-2xl border border-neutral-200 text-neutral-500 hover:bg-neutral-50 transition-colors cursor-pointer text-center"
+                  >
+                    Reject
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      executeAIProposals(aiReasoningResult.proposals);
+                      setShowConfirmationOverlay(false);
+                      setAiReasoningResult(null);
+                      setLastReflectedDate(TODAY);
+                      localStorage.setItem("dayflow_last_reflected_date", TODAY);
+                    }}
+                    className="flex-1 py-3 text-xs font-bold rounded-2xl bg-primary hover:bg-primary-dark text-white transition-colors cursor-pointer text-center font-display"
+                  >
+                    Apply proposals
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* DAY SUMMARY POPUP REMINDER */}
           {showDaySummaryReminder && (

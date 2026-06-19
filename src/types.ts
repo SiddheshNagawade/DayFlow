@@ -1,6 +1,6 @@
 export type RepeatType = "daily" | "weekdays" | "custom" | "none";
 export type EnergyLevel = "high" | "medium" | "low";
-export type TaskStatus = "backlog" | "scheduled" | "done";
+export type TaskStatus = "backlog" | "scheduled" | "done" | "skipped" | "expired";
 export type ProfileAppliesTo = "weekdays" | "weekends" | "everyday" | "manual";
 
 export interface FixedBlock {
@@ -32,6 +32,7 @@ export interface TaskMeta {
   dependency_chain: TaskDependencyChain;
   progress_type: TaskProgressType;
   deadline_pressure: DeadlinePressure;
+  task_nature?: "recurring" | "one_time" | "progressive";
 }
 
 export interface ClassificationResult {
@@ -86,6 +87,11 @@ export interface FlexibleTask {
   scheduled_date: string | null; // "YYYY-MM-DD" or null
   scheduled_start_time?: string; // slotted start e.g. "14:00"
   scheduled_end_time?: string;   // slotted end e.g. "16:00"
+
+  // Carry-over metadata
+  carried_over_from?: string; // YYYY-MM-DD original scheduled date
+  task_nature?: "recurring" | "one_time" | "progressive";
+  carry_over_count?: number;
 
   // Manual override: user dragged/pinned this task to a specific start time
   pinned_start_time?: string;    // "HH:MM" - overrides auto-schedule for this day
@@ -254,11 +260,127 @@ export interface ScheduledItem {
   duration_minutes: number;
   energy_level?: EnergyLevel;
   locked: boolean;
-  status: "done" | "scheduled" | "fixed";
+  status: "done" | "scheduled" | "fixed" | "skipped" | "expired";
   deadline?: string | null;
   pinned?: boolean;       // true when user manually pinned the start time
   color?: string;         // custom color theme for fixed block
   description?: string;   // multi-line detail for inline expansion
+  task_nature?: "recurring" | "one_time" | "progressive";
+  carried_over_from?: string;
+  carry_over_count?: number;
+}
+
+// ─── Behavioral memory logs ───────────────────────────────────────────────────
+
+export interface TaskExecutionLog {
+  taskId: string;
+  date: string; // YYYY-MM-DD
+  plannedDuration: number;
+  actualDuration?: number;
+  scheduledStartHour?: number;
+  completed: boolean;
+  skipped: boolean;
+}
+
+export interface ReflectionEvent {
+  id: string;
+  date: string; // YYYY-MM-DD
+  completionRate: number;
+  type: "success" | "failure";
+  cause: "planning" | "energy" | "discipline" | "interruption" | "success_sleep" | "success_planning" | "success_focus" | "success_load";
+  notes?: string;
+}
+
+export interface UBMInsights {
+  timeBias: number;
+  timeBiasConfidence: number;
+  hourlySuccess: Record<number, number>; // Hour (0-23) -> Completion rate (0.0 to 1.0)
+  hourlyConfidence: Record<number, number>; // Hour (0-23) -> Confidence (0.0 to 1.0)
+  categorySuccess: Record<string, number>; // Category name -> Completion rate (0.0 to 1.0)
+  categoryConfidence: Record<string, number>; // Category name -> Confidence (0.0 to 1.0)
+}
+
+export type AIProposal =
+  | { type: "carry_over"; taskId: string }
+  | { type: "backlog"; taskId: string }
+  | { type: "expire"; taskId: string }
+  | { type: "suggest"; message: string }
+  | { type: "ask"; question: string }
+  | { type: "abstain"; reason: string };
+
+// ─── V3.1 Pattern Engine / AI Payload Minimization ───────────────────────────
+
+/**
+ * DataReliability: computed trust score for the user's behavioral data.
+ * Low scores indicate the Pattern Engine output should be treated with skepticism.
+ */
+export interface DataReliability {
+  /** 0–1: ratio of tasks explicitly resolved (done|skipped|expired) vs total scheduled last 30d */
+  loggingConsistency: number;
+  /** 0–1: how trustworthy completion data is; drops if loggingConsistency is low */
+  completionConfidence: number;
+  /** 0–1: ratio of completed tasks that have actual_start_time recorded */
+  scheduleAccuracy: number;
+  /** Weighted composite of the three above */
+  overallScore: number;
+  /** Human-readable verdict for AI prompt injection */
+  verdict: "trusted" | "partial" | "unreliable";
+}
+
+/**
+ * BehaviorSignals: compressed behavioral model output from the Pattern Engine.
+ * This — and ONLY this — is what gets sent to the AI Brain.
+ * No raw task arrays, no raw log arrays.
+ */
+export interface BehaviorSignals {
+  // Planning accuracy
+  planningBias: number;            // 1.34 = tasks take 34% longer than estimated on average
+  planningBiasConfidence: number;  // 0–1; based on number of completed logs with actualDuration
+
+  // Time-of-day patterns (only hours with real data — no circadian defaults)
+  bestHours: number[];             // hours where success >= 0.75 AND confidence >= 0.4
+  worstHours: number[];            // hours where success < 0.4 AND confidence >= 0.4
+  hourlySuccessMap: Record<number, { rate: number; confidence: number }>;
+
+  // Category performance
+  categorySuccessRates: Record<string, { rate: number; confidence: number }>;
+  weakCategories: string[];        // categories where rate < 0.5 and confidence >= 0.4
+
+  // Carry-over / procrastination
+  averageCarryOverCount: number;   // rolling avg carries per task in last 30 days
+  procrastinationRisk: number;     // 0–1 derived from carry-over rate + stale task age
+
+  // Load / burnout
+  recentLoadMins: number;          // total planned minutes over last 7 days
+  avgDailyCompletionRate: number;  // 7-day rolling, 0–1
+  burnoutRisk: number;             // 0–1 derived from load + completion drop trend
+
+  // Data confidence
+  totalLoggedTasks: number;
+  dataAge: "insufficient" | "early" | "mature"; // <10 | 10-50 | >50 logs
+  reliability: DataReliability;
+}
+
+/**
+ * AICompactContext: the lean envelope sent to /api/ai-reasoning and /api/adjust-schedule.
+ * Rule: no raw FlexibleTask[], no raw ScheduledItem[], no raw log arrays.
+ */
+export interface AICompactContext {
+  trigger: "drift" | "reflection" | "copilot";
+  behaviorSignals: BehaviorSignals;
+  currentState: {
+    staleTasksCount: number;
+    todayLoadMins: number;
+    missedTask?: string;        // title of the drifted task, if any
+    overloadRisk: number;       // 0–1; ratio of todayLoadMins / sustainable capacity (480 min)
+    backlogCount: number;
+    upcomingTaskTitles: string[]; // next 3 scheduled task titles only
+  };
+  goalImpact?: Array<{
+    goalTitle: string;
+    delayDays: number;           // math-computed locally, AI explains it
+  }>;
+  userMessage?: string;
 }
 
 export interface DaySchedule {
