@@ -51,10 +51,12 @@ import {
   Award,
   TrendingUp,
   Play,
-  Pause
+  Pause,
+  Maximize2,
+  Minimize2
 } from "lucide-react";
-import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone, WeightEntry } from "./types";
-import { generateSchedule, calculateFuturePredictions, timeToMinutes, minutesToTime, isFixedBlockActiveOnDate, calculateCalibrationProfile } from "./utils/scheduler";
+import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone, WeightEntry, ClassificationResult, TaskCategory, TaskRigidity, TaskRecoverability, TaskDependencyChain, TaskProgressType, DeadlinePressure, TaskConsequence, TaskMeta, ConsequenceIntent } from "./types";
+import { generateSchedule, calculateFuturePredictions, timeToMinutes, minutesToTime, isFixedBlockActiveOnDate, calculateCalibrationProfile, simulateDelayCost, getActionRisk } from "./utils/scheduler";
 import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData, loadGoals, saveGoals, loadAchievements, saveAchievements, loadWeightLog, saveWeightLog } from "./utils/storage";
 import { generateMockMLData, getTaskCategory, detectHighDelayPatterns } from "./utils/mlEngine";
 import { updateGoalProgressFromTask, predictGoalCompletion, generateCheckInPrompt, getGoalsDueForCheckIn, suggestGoalsFromTaskHistory, generateMilestones, checkForGlobalAchievements } from "./utils/goalEngine";
@@ -97,7 +99,359 @@ const isTaskStale = (task: FlexibleTask): boolean => {
   return false;
 };
 
+function getStringSimilarity(str1: string, str2: string): number {
+  const s1 = str1.toLowerCase().replace(/\s+/g, "");
+  const s2 = str2.toLowerCase().replace(/\s+/g, "");
+  
+  if (s1 === s2) return 1.0;
+  if (s1.includes(s2) || s2.includes(s1)) return 0.8;
+  if (s1.length < 2 || s2.length < 2) return 0.0;
 
+  const getBigrams = (str: string) => {
+    const bigrams = new Set<string>();
+    for (let i = 0; i < str.length - 1; i++) {
+      bigrams.add(str.substring(i, i + 2));
+    }
+    return bigrams;
+  };
+
+  const b1 = getBigrams(s1);
+  const b2 = getBigrams(s2);
+  let intersection = 0;
+  
+  b1.forEach(b => {
+    if (b2.has(b)) intersection++;
+  });
+
+  return (2 * intersection) / (b1.size + b2.size);
+}
+
+const classifyTaskLocally = (
+  title: string,
+  description = "",
+  goalsList: UserGoal[] = []
+): ClassificationResult => {
+  const t = title.toLowerCase().trim();
+  const d = (description || "").toLowerCase().trim();
+
+  // 1. Check custom vocabulary database mapping from localStorage
+  try {
+    const vocabStr = localStorage.getItem("dayflow_vocab_map");
+    if (vocabStr) {
+      const vocab = JSON.parse(vocabStr);
+      // Exact check
+      if (vocab[t]) {
+        return {
+          meta: vocab[t],
+          confidence: 1.0,
+          source: "memory"
+        };
+      }
+      // Fuzzy check against vocabulary keys
+      for (const key of Object.keys(vocab)) {
+        if (getStringSimilarity(t, key) > 0.85) {
+          return {
+            meta: vocab[key],
+            confidence: 0.9,
+            source: "memory"
+          };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Error checking vocabulary map:", e);
+  }
+
+  // 2. Default initial classification properties
+  let category = "personal" as TaskCategory;
+  let rigidity = "flexible" as TaskRigidity;
+  let importance = "important" as "critical" | "important" | "optional";
+  let recoverability = "easy" as TaskRecoverability;
+  let dependency_chain = "none" as TaskDependencyChain;
+  let progress_type = "binary" as TaskProgressType;
+  let deadline_pressure = "none" as DeadlinePressure;
+  let confidence = 0.5;
+
+  // Key matching rules (Layer 1)
+  const isStudy = [
+    "study", "exam", "prep", "revision", "assignment", "homework", "lecture", "class", "course", "learn", "read",
+    "math", "science", "history", "english", "physics", "chemistry", "biology", "coding", "uceed", "sat"
+  ].some(kw => t.includes(kw));
+
+  const isProject = [
+    "project", "portfolio", "code", "design", "write", "draft", "presentation", "meeting", "interview", "review"
+  ].some(kw => t.includes(kw));
+
+  const isHealth = [
+    "gym", "workout", "run", "swim", "exercise", "training", "sport", "yoga", "stretch", "cardio", "walk", "jog"
+  ].some(kw => t.includes(kw));
+
+  const isHabit = [
+    "habit", "meditate", "sleep", "journal", "read", "daily", "hydrate", "water"
+  ].some(kw => t.includes(kw));
+
+  const isSocial = [
+    "social", "friend", "party", "dinner", "hangout", "call mom", "family", "call dad", "date"
+  ].some(kw => t.includes(kw));
+
+  const isChore = [
+    "clean", "laundry", "tidy", "wash", "organize", "vacuum", "buy", "shop", "grocer", "soap", "milk", "food", "bill", "rent"
+  ].some(kw => t.includes(kw));
+
+  // Determine Category
+  if (isStudy) {
+    category = "study";
+    confidence = 0.95;
+  } else if (isProject) {
+    category = "project";
+    confidence = 0.95;
+  } else if (isHealth) {
+    category = "health";
+    confidence = 0.95;
+  } else if (isHabit) {
+    category = "habit";
+    confidence = 0.9;
+  } else if (isChore) {
+    category = "admin";
+    confidence = 0.9;
+  } else if (isSocial) {
+    category = "social";
+    confidence = 0.85;
+  }
+
+  // Determine Rigidity
+  if (t.includes("lecture") || t.includes("class") || t.includes("exam") || t.includes("meeting") || t.includes("appointment") || t.includes("interview")) {
+    rigidity = "fixed";
+    confidence = Math.max(confidence, 0.9);
+  } else if (category === "study" || category === "project" || category === "health" || t.includes("revision") || t.includes("workout")) {
+    rigidity = "semi_flexible";
+  }
+
+  // Determine Importance
+  if (t.includes("exam") || t.includes("interview") || t.includes("deadline") || t.includes("urgent") || t.includes("critical") || t.includes("presentation")) {
+    importance = "critical";
+  } else if (category === "admin" || category === "misc" || isChore) {
+    importance = "optional";
+  }
+
+  // Determine Recoverability
+  if (rigidity === "fixed") {
+    recoverability = "impossible";
+  } else if (category === "study" || category === "project" || t.includes("sketch") || t.includes("code")) {
+    recoverability = "hard";
+  }
+
+  // Determine Dependency Chain
+  if (t.includes("research") || t.includes("draft") || t.includes("pre-") || t.includes("outline") || t.includes("setup")) {
+    dependency_chain = "strong";
+  } else if (category === "project" || category === "study") {
+    dependency_chain = "weak";
+  }
+
+  // Determine Progress Type
+  if (category === "habit" || isHabit || t.includes("streak") || t.includes("daily")) {
+    progress_type = "streak";
+  } else if (category === "study" || category === "project" || category === "health" || category === "creative") {
+    progress_type = "compound";
+  }
+
+  // Determine Goal Context link
+  const hasGoal = goalsList.some(g =>
+    g.linkedTaskKeywords && g.linkedTaskKeywords.some(kw => t.includes(kw.toLowerCase()))
+  );
+  if (hasGoal) {
+    importance = importance === "optional" ? "important" : importance;
+    progress_type = "compound";
+    confidence = Math.max(confidence, 0.85);
+  }
+
+  return {
+    meta: {
+      category,
+      rigidity,
+      importance,
+      recoverability,
+      dependency_chain,
+      progress_type,
+      deadline_pressure
+    },
+    confidence,
+    source: "rules"
+  };
+};
+
+const generateDefaultConsequence = (
+  task: Partial<FlexibleTask>, 
+  goalsList: UserGoal[],
+  intent: string = "skip",
+  delayMins: number = 0,
+  consequenceCore: any = {}
+): { consequence: TaskConsequence; isHighContext: boolean } => {
+  const title = task.title || "";
+  const meta = task.meta || classifyTaskLocally(title, task.description || "", goalsList).meta;
+  const category = meta.category || "personal";
+  const progressType = meta.progress_type || "binary";
+  const importance = meta.importance || "important";
+  
+  let immediate_effect = "This task shifts today's schedule slightly.";
+  let cascade_effect = "Pushes subsequent tasks downstream.";
+  let goal_effect = "Slightly reduces today's consistency progress.";
+  let emotional_weight: TaskConsequence["emotional_weight"] = "none";
+  let primary_message_slot: TaskConsequence["primary_message_slot"] = "immediate";
+  let best_action = `Complete "${title}" inside today's timeline.`;
+  let minimum_viable_progress = `Do 15-20 minutes of "${title}" instead of full duration.`;
+  
+  if (importance === "critical") {
+    emotional_weight = "critical";
+  } else if (importance === "important") {
+    emotional_weight = "medium";
+  }
+
+  if (intent === "skip") {
+    if (category === "health") {
+      immediate_effect = `Skipping "${title}" breaks your training rhythm and delays your fitness recovery cycle.`;
+      best_action = "Perform a shortened, lighter workout today rather than skipping completely.";
+      minimum_viable_progress = "Do a quick 10-minute active stretch to keep the habit slot warm.";
+      emotional_weight = importance === "critical" ? "high" : "medium";
+      primary_message_slot = "cascade";
+    } else if (category === "study") {
+      immediate_effect = `Skipping "${title}" leaves study material unreviewed, creating dynamic catch-up gaps.`;
+      best_action = "Schedule a block tomorrow to cover these notes.";
+      minimum_viable_progress = "Skim the lecture slides for 5 minutes right now.";
+      emotional_weight = importance === "critical" ? "critical" : "high";
+      primary_message_slot = "cascade";
+    } else if (category === "project") {
+      immediate_effect = `Skipping "${title}" stalls your active design and development milestones today.`;
+      best_action = "Split the task into smaller sub-tasks and do the first one now.";
+      minimum_viable_progress = "Set up your workspace and tools so you are ready to write code tomorrow.";
+      emotional_weight = "high";
+      primary_message_slot = "immediate";
+    } else if (category === "habit") {
+      immediate_effect = `Skipping "${title}" breaks consistency, increasing the friction to restart.`;
+      best_action = "Execute a micro-session of this habit today.";
+      minimum_viable_progress = "Do a 2-minute version of the habit (e.g. read 1 page).";
+      emotional_weight = "medium";
+      primary_message_slot = "immediate";
+    } else {
+      immediate_effect = `Skipping "${title}" frees up time now but adds tasks to your future queue.`;
+    }
+  } else if (intent === "delay") {
+    immediate_effect = `Delaying "${title}" by ${delayMins} minutes shifts your active focus window later into the day.`;
+    if (category === "health") {
+      best_action = "Ensure your late gym session does not conflict with dinner or wind-down schedules.";
+    } else if (category === "study" || category === "project") {
+      best_action = "Be mindful of reduced mental focus as you push this work into the evening.";
+    }
+  }
+
+  if (consequenceCore && consequenceCore.total_delay_minutes > 0) {
+    cascade_effect = `This creates a delay of ${consequenceCore.total_delay_minutes} minutes, compressing remaining tasks and reducing buffer times.`;
+  } else if (consequenceCore && consequenceCore.is_pushed_to_backlog) {
+    cascade_effect = `This pushes "${title}" back to the master backlog, requiring rescheduling later.`;
+  } else if (consequenceCore && consequenceCore.is_pushed_to_tomorrow) {
+    cascade_effect = `This reschedules "${title}" to tomorrow, increasing tomorrow's schedule load.`;
+  } else {
+    cascade_effect = "Your timeline holds sufficient buffer gaps to absorb this shift without cascading tasks.";
+  }
+
+  const linkedGoal = goalsList.find(g =>
+    g.linkedTaskKeywords.some(kw => title.toLowerCase().includes(kw.toLowerCase()))
+  );
+  if (linkedGoal) {
+    if (intent === "skip") {
+      goal_effect = `This delays progress toward your goal "${linkedGoal.title}" (${linkedGoal.currentValue}/${linkedGoal.targetValue}).`;
+    } else {
+      goal_effect = `This preserves your progress path toward your goal "${linkedGoal.title}".`;
+    }
+  } else if (progressType === "streak") {
+    goal_effect = `This puts your current task consistency streak at risk of resetting.`;
+  } else if (progressType === "compound") {
+    goal_effect = `This delays compounding progress towards your skill development goals.`;
+  } else {
+    goal_effect = `Consistency is key. Small choices compound over time into massive productivity shifts.`;
+  }
+
+  const isHighContext = (
+    importance === "critical" ||
+    importance === "important" ||
+    meta.deadline_pressure !== "none" ||
+    category === "study" ||
+    category === "project" ||
+    category === "health"
+  );
+
+  return {
+    consequence: {
+      immediate_effect,
+      cascade_effect,
+      goal_effect,
+      emotional_weight,
+      primary_message_slot,
+      recommendation: {
+        best_action,
+        minimum_viable_progress
+      },
+      negotiation_options: [
+        {
+          strategy: "reduce_scope",
+          label: "Do 20 mins now",
+          consequence_delta: "Saves time, preserves streak",
+          command: {
+            type: "shorten_duration",
+            params: { reduced_duration: Math.max(20, Math.round((task.duration_minutes || 45) * 0.4)) }
+          }
+        },
+        {
+          strategy: "reschedule",
+          label: "Move later",
+          consequence_delta: "Shifts task to next gap",
+          command: {
+            type: "move_to_gap"
+          }
+        }
+      ]
+    },
+    isHighContext
+  };
+};
+
+const getScheduleHash = (task: FlexibleTask, items: ScheduledItem[], streak: number, date: string): string => {
+  const nearbyData = items.map(item => [
+    item.id,
+    item.start_time,
+    item.end_time,
+    item.status
+  ]);
+  
+  const payload = [
+    task.scheduled_start_time || "",
+    task.scheduled_end_time || "",
+    nearbyData,
+    streak,
+    date
+  ];
+  
+  const str = JSON.stringify(payload);
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash |= 0; // Convert to 32bit integer
+  }
+  return hash.toString(16);
+};
+
+const getConsequenceCacheKey = (
+  task: FlexibleTask,
+  intent: string,
+  delayMins: number,
+  items: ScheduledItem[],
+  streak: number,
+  date: string
+): string => {
+  const hashVal = getScheduleHash(task, items, streak, date);
+  return `${task.id}_${intent}_${delayMins}_${hashVal}`;
+};
 
 export default function App() {
   // 1. Core Application State
@@ -252,7 +606,18 @@ export default function App() {
     hasDeadline: false,
     deadline: "",
     energy_level: "medium" as EnergyLevel,
-    scheduled_date: ""
+    scheduled_date: "",
+    importance: "important" as "critical" | "important" | "optional",
+    task_flexibility: "movable" as "fixed" | "movable" | "optional",
+    // New CIE metadata fields:
+    category: "personal" as TaskCategory,
+    rigidity: "flexible" as TaskRigidity,
+    recoverability: "easy" as TaskRecoverability,
+    dependency_chain: "none" as TaskDependencyChain,
+    progress_type: "binary" as TaskProgressType,
+    deadline_pressure: "none" as DeadlinePressure,
+    blocked_by: [] as string[],
+    blocks: [] as string[]
   });
 
 
@@ -261,7 +626,476 @@ export default function App() {
   const [isProcessingCopilot, setIsProcessingCopilot] = useState(false);
   const [copilotError, setCopilotError] = useState<string | null>(null);
   const [proposedChanges, setProposedChanges] = useState<any[] | null>(null);
-  const [chatHistory, setChatHistory] = useState<{ sender: "ai" | "user"; text: string }[]>([]);
+  const [chatHistory, setChatHistory] = useState<{ sender: "ai" | "user"; text: string; questionnaire?: any; questionnaireSubmitted?: boolean }[]>([]);
+  const [copilotLoadingPhase, setCopilotLoadingPhase] = useState("Analyzing task constraints...");
+  const copilotLoadingIntervalRef = useRef<any>(null);
+  const [copilotRetryAttempt, setCopilotRetryAttempt] = useState(0);
+
+  // Circuit Breaker State
+  const [aiServiceState, setAiServiceState] = useState<"healthy" | "degraded" | "down">("healthy");
+  const consecutiveFailuresRef = useRef<number>(0);
+  const circuitBreakerRecoveryTimeRef = useRef<number | null>(null);
+
+  const recordAISuccess = () => {
+    consecutiveFailuresRef.current = 0;
+    setAiServiceState("healthy");
+  };
+
+  const recordAIFailure = () => {
+    consecutiveFailuresRef.current += 1;
+    if (consecutiveFailuresRef.current >= 8) {
+      setAiServiceState("down");
+      circuitBreakerRecoveryTimeRef.current = Date.now() + 180000; // 3 minutes lockout
+    } else if (consecutiveFailuresRef.current >= 3) {
+      setAiServiceState("degraded");
+    }
+  };
+
+  const isAIServiceAvailable = () => {
+    if (aiServiceState === "down" && circuitBreakerRecoveryTimeRef.current) {
+      if (Date.now() > circuitBreakerRecoveryTimeRef.current) {
+        consecutiveFailuresRef.current = 0;
+        setAiServiceState("healthy");
+        circuitBreakerRecoveryTimeRef.current = null;
+        return true;
+      }
+      return false;
+    }
+    return true;
+  };
+
+  const getTimeoutForOperation = (opType: "copilot" | "project_wizard" | "consequence" | "classification"): number => {
+    switch (opType) {
+      case "copilot": return 20000;
+      case "project_wizard": return 90000;
+      case "consequence": return 25000;
+      case "classification": return 8000;
+    }
+    return 30000;
+  };
+
+  const generateLocalConsequenceFallback = (
+    task: FlexibleTask,
+    intent: string,
+    delayMins: number,
+    consequenceCore: any,
+    goals: any[]
+  ) => {
+    const meta = task.meta || classifyTaskLocally(task.title, task.description || "", goals).meta;
+    const category = meta.category || "personal";
+    const progressType = meta.progress_type || "binary";
+    const importance = meta.importance || "important";
+    
+    let immediate_effect = "";
+    let cascade_effect = "";
+    let goal_effect = "";
+    let emotional_weight = "low";
+    let recommendation = {
+      best_action: "Complete this task as soon as possible to keep momentum.",
+      minimum_viable_progress: "Do 10–15 minutes of low-friction progress to stay active."
+    };
+    
+    if (importance === "critical") {
+      emotional_weight = "critical";
+    } else if (importance === "important") {
+      emotional_weight = "medium";
+    }
+
+    if (intent === "skip") {
+      if (category === "health") {
+        immediate_effect = `Skipping "${task.title}" breaks your training rhythm and delays your fitness recovery cycle.`;
+        recommendation.best_action = "Perform a shortened, lighter workout today rather than skipping completely.";
+        recommendation.minimum_viable_progress = "Do a quick 10-minute active stretch to keep the habit slot warm.";
+      } else if (category === "study") {
+        immediate_effect = `Skipping "${task.title}" leaves study material unreviewed, creating dynamic catch-up gaps.`;
+        recommendation.best_action = "Schedule a block tomorrow to cover these notes.";
+        recommendation.minimum_viable_progress = "Skim the lecture slides for 5 minutes right now.";
+      } else if (category === "project") {
+        immediate_effect = `Skipping "${task.title}" stalls your active design and development milestones today.`;
+        recommendation.best_action = "Split the task into smaller sub-tasks and do the first one now.";
+        recommendation.minimum_viable_progress = "Set up your workspace and tools so you are ready to write code tomorrow.";
+      } else if (category === "habit") {
+        immediate_effect = `Skipping "${task.title}" breaks consistency, increasing the friction to restart.`;
+        recommendation.best_action = "Execute a micro-session of this habit today.";
+        recommendation.minimum_viable_progress = "Do a 2-minute version of the habit (e.g. read 1 page).";
+      } else {
+        immediate_effect = `Skipping "${task.title}" frees up time now but adds tasks to your future queue.`;
+      }
+    } else if (intent === "delay") {
+      immediate_effect = `Delaying "${task.title}" by ${delayMins} minutes shifts your active focus window later into the day.`;
+      if (category === "health") {
+        recommendation.best_action = "Ensure your late gym session does not conflict with dinner or wind-down schedules.";
+      } else if (category === "study" || category === "project") {
+        recommendation.best_action = "Be mindful of reduced mental focus as you push this work into the evening.";
+      }
+    } else {
+      immediate_effect = `Reviewing "${task.title}" schedule constraints for potential conflict resolutions.`;
+    }
+
+    if (consequenceCore.total_delay_minutes > 0) {
+      cascade_effect = `This creates a delay of ${consequenceCore.total_delay_minutes} minutes, compressing remaining tasks and reducing buffer times.`;
+    } else if (consequenceCore.is_pushed_to_backlog) {
+      cascade_effect = `This pushes "${task.title}" back to the master backlog, requiring rescheduling later.`;
+    } else if (consequenceCore.is_pushed_to_tomorrow) {
+      cascade_effect = `This reschedules "${task.title}" to tomorrow, increasing tomorrow's schedule load.`;
+    } else {
+      cascade_effect = "Your timeline holds sufficient buffer gaps to absorb this shift without cascading tasks.";
+    }
+
+    const linkedGoal = goals.find(g =>
+      g.linkedTaskKeywords.some((kw: string) => task.title.toLowerCase().includes(kw.toLowerCase()))
+    );
+    if (linkedGoal) {
+      if (intent === "skip") {
+        goal_effect = `This delays progress toward your goal "${linkedGoal.title}" (${linkedGoal.currentValue}/${linkedGoal.targetValue}).`;
+      } else {
+        goal_effect = `This preserves your progress path toward your goal "${linkedGoal.title}".`;
+      }
+    } else if (progressType === "streak") {
+      goal_effect = `This puts your current task consistency streak at risk of resetting.`;
+    } else if (progressType === "compound") {
+      goal_effect = `This delays compounding progress towards your skill development goals.`;
+    } else {
+      goal_effect = `Consistency is key. Small choices compound over time into massive productivity shifts.`;
+    }
+
+    return {
+      immediate_effect,
+      cascade_effect,
+      goal_effect,
+      emotional_weight,
+      primary_message_slot: intent === "skip" ? "immediate" : "cascade",
+      recommendation,
+      negotiation_options: [
+        {
+          strategy: "reduce_scope",
+          label: "Do 20 mins now",
+          consequence_delta: "Reduces length by half, preserves momentum",
+          command: { type: "shorten_duration", params: {} }
+        },
+        {
+          strategy: "reschedule",
+          label: "Move to first gap",
+          consequence_delta: "Finds the first available empty slot today",
+          command: { type: "move_to_gap", params: {} }
+        }
+      ]
+    };
+  };
+
+  const parseDeterministicCommand = (
+    inputText: string,
+    currentSchedule: any[],
+    flexibleTasks: any[],
+    selectedDate: string
+  ): { success: boolean; changes: any[]; message: string } => {
+    const text = inputText.toLowerCase().trim();
+
+    const findTaskLocal = (keywords: string[]) => {
+      let bestMatch: any = null;
+      let maxMatches = 0;
+      
+      for (const t of flexibleTasks) {
+        let matches = 0;
+        const tTitle = t.title.toLowerCase();
+        for (const kw of keywords) {
+          if (tTitle.includes(kw)) matches++;
+        }
+        if (matches > maxMatches) {
+          maxMatches = matches;
+          bestMatch = { ...t, isFlex: true };
+        }
+      }
+      
+      for (const item of currentSchedule) {
+        let matches = 0;
+        const iTitle = item.title.toLowerCase();
+        for (const kw of keywords) {
+          if (iTitle.includes(kw)) matches++;
+        }
+        if (matches > maxMatches) {
+          maxMatches = matches;
+          bestMatch = { ...item, isFixed: true };
+        }
+      }
+      
+      return maxMatches > 0 ? bestMatch : null;
+    };
+
+    const getCleanKeywords = (phrase: string) => {
+      return phrase
+        .replace(/(?:move|shift|postpone|delete|cancel|remove|pin|schedule|change|at|to|tomorrow|today|later|for|minutes|mins|hours|h|pm|am)/ig, "")
+        .split(/\s+/)
+        .map(w => w.trim())
+        .filter(w => w.length > 1);
+    };
+
+    const addRegex = /^(?:add\s+task|add|create\s+task|create|new\s+task)\s+(.+?)(?:\s+(?:for|duration)\s+(\d+)\s*(?:min|minute|mins|hour|hours|h))?$/i;
+    const addMatch = text.match(addRegex);
+    if (addMatch && !text.includes("why") && !text.includes("consequence") && !text.includes("negotiate")) {
+      const title = addMatch[1].trim();
+      let duration = 45;
+      const durValStr = addMatch[2];
+      if (durValStr) {
+        duration = parseInt(durValStr, 10);
+        if (text.includes("hour") || text.includes(" h")) {
+          duration *= 60;
+        }
+      }
+      return {
+        success: true,
+        changes: [{
+          action: "add",
+          newTaskTitle: title.charAt(0).toUpperCase() + title.slice(1),
+          newTaskDuration: duration,
+          reasoning: "Local Command: Add task"
+        }],
+        message: `I've added "${title}" (${duration} min) to your schedule.`
+      };
+    }
+
+    const deleteRegex = /^(?:delete|cancel|remove)\s+(.+)$/i;
+    const deleteMatch = text.match(deleteRegex);
+    if (deleteMatch) {
+      const targetQuery = deleteMatch[1].trim();
+      const keywords = getCleanKeywords(targetQuery);
+      const target = findTaskLocal(keywords);
+      if (target) {
+        return {
+          success: true,
+          changes: [{
+            action: "delete",
+            taskId: target.id,
+            reasoning: "Local Command: Cancel/Delete item"
+          }],
+          message: `I've removed "${target.title}" from your schedule.`
+        };
+      }
+    }
+
+    if (text.includes("tomorrow") || text.includes("postpone") || text.includes("later") || text.includes("delay")) {
+      const shiftMatch = text.match(/(?:postpone|delay|shift)\s+(.+?)\s+by\s+(\d+)\s*(?:min|minute|mins)/i);
+      if (shiftMatch) {
+        const targetQuery = shiftMatch[1].trim();
+        const mins = parseInt(shiftMatch[2], 10);
+        const keywords = getCleanKeywords(targetQuery);
+        const target = findTaskLocal(keywords);
+        if (target) {
+          if (target.isFlex && target.scheduled_start_time) {
+            const startMins = timeToMinutes(target.scheduled_start_time);
+            const newTime = minutesToTime(startMins + mins);
+            return {
+              success: true,
+              changes: [{
+                action: "change_time",
+                taskId: target.id,
+                newTime: newTime,
+                reasoning: `Local Command: Shift start by ${mins} mins`
+              }],
+              message: `I've postponed "${target.title}" by ${mins} minutes to ${newTime}.`
+            };
+          }
+        }
+      }
+
+      const keywords = getCleanKeywords(text);
+      const target = findTaskLocal(keywords);
+      if (target && target.isFlex) {
+        return {
+          success: true,
+          changes: [{
+            action: "move_to_tomorrow",
+            taskId: target.id,
+            reasoning: "Local Command: Reschedule to tomorrow"
+          }],
+          message: `I've moved "${target.title}" to tomorrow.`
+        };
+      }
+    }
+
+    const timeSlotRegex = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|until|-)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i;
+    const timeAtRegex = /(?:at|from|to|at)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i;
+
+    const slotMatch = text.match(timeSlotRegex);
+    const atMatch = text.match(timeAtRegex);
+
+    if (slotMatch) {
+      const startHr = parseInt(slotMatch[1], 10);
+      const startMinStr = slotMatch[2] || "00";
+      const startAmPm = slotMatch[3] || slotMatch[6];
+      const endHr = parseInt(slotMatch[4], 10);
+      const endMinStr = slotMatch[5] || "00";
+      const endAmPm = slotMatch[6];
+
+      const parseHr = (hr: number, ampm?: string): number => {
+        let h = hr;
+        const lower = ampm ? ampm.toLowerCase() : "";
+        if (lower === "pm" && h < 12) h += 12;
+        if (lower === "am" && h === 12) h = 0;
+        return h;
+      };
+
+      const startHour = parseHr(startHr, startAmPm);
+      const endHour = parseHr(endHr, endAmPm);
+      const startTimeStr = `${startHour.toString().padStart(2, "0")}:${startMinStr.padStart(2, "0")}`;
+      const endTimeStr = `${endHour.toString().padStart(2, "0")}:${endMinStr.padStart(2, "0")}`;
+      
+      const targetQuery = text.replace(timeSlotRegex, "").trim();
+      const keywords = getCleanKeywords(targetQuery);
+      const target = findTaskLocal(keywords);
+      
+      if (target) {
+        const startMins = timeToMinutes(startTimeStr);
+        const endMins = timeToMinutes(endTimeStr);
+        const diffMins = endMins - startMins;
+        
+        const listChanges = [
+          {
+            action: "change_time",
+            taskId: target.id,
+            newTime: startTimeStr,
+            reasoning: `Local Command: Schedule at ${startTimeStr}`
+          }
+        ];
+        if (diffMins > 0) {
+          listChanges.push({
+            action: "reduce_duration",
+            taskId: target.id,
+            durationMultiplier: diffMins / (target.duration_minutes || 60),
+            newTaskDuration: diffMins,
+            reasoning: `Local Command: Adjust duration to ${diffMins} min`
+          } as any);
+        }
+
+        return {
+          success: true,
+          changes: listChanges,
+          message: `I've scheduled "${target.title}" from ${startTimeStr} to ${endTimeStr}.`
+        };
+      }
+    } else if (atMatch) {
+      const hr = parseInt(atMatch[1], 10);
+      const minStr = atMatch[2] || "00";
+      const ampm = atMatch[3];
+      
+      let hour = hr;
+      const lower = ampm ? ampm.toLowerCase() : "";
+      if (lower === "pm" && hour < 12) hour += 12;
+      if (lower === "am" && hour === 12) hour = 0;
+      const timeStr = `${hour.toString().padStart(2, "0")}:${minStr.padStart(2, "0")}`;
+
+      const targetQuery = text.replace(timeAtRegex, "").trim();
+      const keywords = getCleanKeywords(targetQuery);
+      const target = findTaskLocal(keywords);
+      
+      if (target) {
+        return {
+          success: true,
+          changes: [{
+            action: "change_time",
+            taskId: target.id,
+            newTime: timeStr,
+            reasoning: `Local Command: Pin time to ${timeStr}`
+          }],
+          message: `I've scheduled "${target.title}" to start at ${timeStr}.`
+        };
+      }
+    }
+
+    return { success: false, changes: [], message: "" };
+  };
+
+  const startCopilotLoadingSimulation = () => {
+    setCopilotRetryAttempt(0);
+    if (copilotLoadingIntervalRef.current) {
+      clearInterval(copilotLoadingIntervalRef.current);
+    }
+    const LOADING_PHASES = [
+      "Analyzing task constraints and buffer gaps...",
+      "Checking whether your timeline balance is realistic...",
+      "Trying to preserve deep focus and recovery blocks...",
+      "Avoiding back-to-back burnout sessions...",
+      "Simulating smart circadian slotting...",
+      "Formulating strategic negotiation options...",
+      "Finalizing timeline updates..."
+    ];
+    setCopilotLoadingPhase(LOADING_PHASES[0]);
+    let phaseIdx = 0;
+    copilotLoadingIntervalRef.current = setInterval(() => {
+      phaseIdx = (phaseIdx + 1) % LOADING_PHASES.length;
+      setCopilotLoadingPhase(LOADING_PHASES[phaseIdx]);
+    }, 2500);
+  };
+
+  const stopCopilotLoadingSimulation = () => {
+    setCopilotRetryAttempt(0);
+    if (copilotLoadingIntervalRef.current) {
+      clearInterval(copilotLoadingIntervalRef.current);
+      copilotLoadingIntervalRef.current = null;
+    }
+  };
+
+  const handleTriggerOfflineFallback = () => {
+    setCopilotError(null);
+    triggerHaptic(25);
+
+    let questionnaireMsg: any = null;
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+      if (chatHistory[i].questionnaire) {
+        questionnaireMsg = chatHistory[i];
+        break;
+      }
+    }
+
+    if (questionnaireMsg && questionnaireMsg.questionnaireSubmitted) {
+      const answers = questionnaireMsg.questionnaire.questions.reduce((acc: any, q: any) => {
+        acc[q.id] = q.value;
+        return acc;
+      }, {} as Record<string, string>);
+
+      let data;
+      if (questionnaireMsg.questionnaire.type === "workout_plan") {
+        data = generateLocalFitnessPlan(
+          answers["workout_type"] || "",
+          answers["weight_goal"] || "",
+          answers["goal_details"] || "",
+          answers["frequency"] || ""
+        );
+      } else if (questionnaireMsg.questionnaire.type === "project_plan") {
+        data = generateLocalProjectPlan(
+          answers["project_type"] || "",
+          answers["session_count"] || "",
+          answers["session_duration"] || "",
+          answers["project_goal_name"] || ""
+        );
+      } else {
+        const lastUserMsg = [...chatHistory].reverse().find(m => m.sender === "user");
+        const userText = lastUserMsg ? lastUserMsg.text : "";
+        data = adjustScheduleOffline(userText, daySchedule.items, flexibleTasks, selectedDate);
+      }
+
+      if (data.changes && data.changes.length > 0) {
+        setProposedChanges(data.changes);
+      }
+      setChatHistory(prev => [...prev, {
+        sender: "ai",
+        text: `${data.message} (Offline Mode Fallback)`
+      }]);
+      return;
+    }
+
+    const lastUserMsg = [...chatHistory].reverse().find(m => m.sender === "user");
+    const userText = lastUserMsg ? lastUserMsg.text : "";
+    const data = adjustScheduleOffline(userText, daySchedule.items, flexibleTasks, selectedDate);
+    if (data.changes && data.changes.length > 0) {
+      setProposedChanges(data.changes);
+    }
+    setChatHistory(prev => [...prev, { 
+      sender: "ai", 
+      text: `${data.message} (Offline Mode Fallback)` 
+    }]);
+  };
+
   const [greetingMessage, setGreetingMessage] = useState("");
 
   // Vision image attachment for copilot
@@ -273,6 +1107,11 @@ export default function App() {
 
   // Frictionless completion dialog
   const [effortDialogTaskId, setEffortDialogTaskId] = useState<string | null>(null);
+
+  // Hybrid Classifier UI feedback states
+  const [classificationFeedback, setClassificationFeedback] = useState<{ category: TaskCategory; confidence: number; source: "rules" | "memory" | "ai" } | null>(null);
+  const [isMetadataOpen, setIsMetadataOpen] = useState(false);
+  const [consequenceCache, setConsequenceCache] = useState<Record<string, import("./types").TaskConsequence>>({});
 
   // Weight log
   const [weightLog, setWeightLog] = useState<WeightEntry[]>([]);
@@ -349,6 +1188,30 @@ export default function App() {
   const [eodDismissed, setEodDismissed] = useState(false);
   const [showDaySummaryReminder, setShowDaySummaryReminder] = useState(false);
 
+  // Copilot control states: Abort controller, Undo changes history, and Message editing
+  const copilotAbortControllerRef = useRef<AbortController | null>(null);
+  const [copilotUndoState, setCopilotUndoState] = useState<{ flexibleTasks: any[]; fixedBlocks: any[]; goals: any[]; weightLog: any[] } | null>(null);
+  const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState("");
+  const [copilotMinimized, setCopilotMinimized] = useState(false);
+
+  // ── Execution Engine State ─────────────────────────────────────────────────
+  // Which task has its action tray open (Done / Break / Move / Skip)
+  const [actionTrayTaskId, setActionTrayTaskId] = useState<string | null>(null);
+  // Active consequence card state (pre-decision gate for high-risk actions)
+  const [consequenceState, setConsequenceState] = useState<{
+    taskId: string;
+    mode: "break" | "skip";
+    breakMins?: number;         // set for break actions
+    result: import("./types").DelayCostResult;
+  } | null>(null);
+  // Move slot picker: which task is being moved
+  const [moveSheetTaskId, setMoveSheetTaskId] = useState<string | null>(null);
+  // Consequence insight loading state: which task is fetching its AI narrative
+  const [loadingInsightTaskId, setLoadingInsightTaskId] = useState<string | null>(null);
+  // Which task has its consequence insight panel open
+  const [openInsightTaskId, setOpenInsightTaskId] = useState<string | null>(null);
+
   // Sidebar adjustability states
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     const saved = localStorage.getItem("dayflow_sidebar_width");
@@ -393,13 +1256,45 @@ export default function App() {
   useEffect(() => {
     const blocks = loadFixedBlocks();
     const tasks = loadFlexibleTasks();
+    const appSettingsLoaded = loadSettings();
+    const profilesLoaded = loadProfiles();
+    const goalsLoaded = loadGoals();
+    const achievementsLoaded = loadAchievements();
+    const weightLogLoaded = loadWeightLog();
+
+    // Migrate/populate consequence and flexibility fields on legacy tasks
+    let migrated = false;
+    const migratedTasks = tasks.map(t => {
+      let changed = false;
+      const updatedTask = { ...t };
+      if (!updatedTask.task_flexibility) {
+        updatedTask.task_flexibility = "movable";
+        changed = true;
+      }
+      if (!updatedTask.consequence_teaser || !updatedTask.consequence_insight) {
+        const def = generateDefaultConsequence(updatedTask, goalsLoaded);
+        updatedTask.consequence_teaser = def.consequence.immediate_effect;
+        updatedTask.consequence_insight = def.consequence.immediate_effect + " " + def.consequence.cascade_effect + " " + def.consequence.goal_effect;
+        if (!def.isHighContext && !updatedTask.consequence_generated_at) {
+          updatedTask.consequence_generated_at = new Date().toISOString();
+        }
+        changed = true;
+      }
+      if (changed) migrated = true;
+      return updatedTask;
+    });
+
+    if (migrated) {
+      saveFlexibleTasks(migratedTasks);
+    }
+
     setFixedBlocks(blocks);
-    setFlexibleTasks(tasks);
-    setAppSettings(loadSettings());
-    setProfiles(loadProfiles());
-    setGoals(loadGoals());
-    setAchievements(loadAchievements());
-    setWeightLog(loadWeightLog());
+    setFlexibleTasks(migratedTasks);
+    setAppSettings(appSettingsLoaded);
+    setProfiles(profilesLoaded);
+    setGoals(goalsLoaded);
+    setAchievements(achievementsLoaded);
+    setWeightLog(weightLogLoaded);
 
     // Show onboarding if first time
     if (!isOnboardingComplete()) {
@@ -875,26 +1770,53 @@ export default function App() {
   // Add/Edit Flexible Task flow
   const handleOpenAddFlexible = (defaultToToday = false) => {
     setEditingTask(null);
+    setClassificationFeedback(null);
+    setIsMetadataOpen(false);
     setFlexibleForm({
       title: "",
       duration_minutes: 45,
       hasDeadline: false,
       deadline: "",
       energy_level: "medium",
-      scheduled_date: defaultToToday ? selectedDate : ""
+      scheduled_date: defaultToToday ? selectedDate : "",
+      importance: "important",
+      task_flexibility: "movable",
+      category: "personal",
+      rigidity: "flexible",
+      recoverability: "easy",
+      dependency_chain: "none",
+      progress_type: "binary",
+      deadline_pressure: "none",
+      blocked_by: [],
+      blocks: []
     });
     setActiveBottomSheet("flexible");
   };
 
   const handleOpenEditFlexible = (task: FlexibleTask) => {
     setEditingTask(task);
+    setClassificationFeedback(null);
+    setIsMetadataOpen(false);
+    const result = classifyTaskLocally(task.title, task.description || "", goals);
+    const meta = task.meta || result.meta;
+
     setFlexibleForm({
       title: task.title,
       duration_minutes: task.duration_minutes,
       hasDeadline: !!task.deadline,
       deadline: task.deadline || "",
       energy_level: task.energy_level,
-      scheduled_date: task.scheduled_date || ""
+      scheduled_date: task.scheduled_date || "",
+      importance: meta.importance || task.importance || "important",
+      task_flexibility: meta.rigidity === "fixed" ? "fixed" : meta.rigidity === "flexible" ? "optional" : "movable",
+      category: meta.category,
+      rigidity: meta.rigidity,
+      recoverability: meta.recoverability,
+      dependency_chain: meta.dependency_chain,
+      progress_type: meta.progress_type,
+      deadline_pressure: meta.deadline_pressure,
+      blocked_by: task.blocked_by || [],
+      blocks: task.blocks || []
     });
     setActiveBottomSheet("flexible");
   };
@@ -903,34 +1825,69 @@ export default function App() {
     e.preventDefault();
     if (!flexibleForm.title.trim()) return;
 
+    const titleVal = flexibleForm.title.trim();
+    const durationVal = Number(flexibleForm.duration_minutes);
+    const deadlineVal = flexibleForm.hasDeadline ? flexibleForm.deadline : null;
+    const energyVal = flexibleForm.energy_level;
+    const scheduledDateVal = flexibleForm.scheduled_date || null;
+
+    const meta: TaskMeta = {
+      category: flexibleForm.category,
+      rigidity: flexibleForm.rigidity,
+      importance: flexibleForm.importance,
+      recoverability: flexibleForm.recoverability,
+      dependency_chain: flexibleForm.dependency_chain,
+      progress_type: flexibleForm.progress_type,
+      deadline_pressure: flexibleForm.deadline_pressure
+    };
+
+    // Save this mapping into vocabulary memory database
+    try {
+      const vocabStr = localStorage.getItem("dayflow_vocab_map") || "{}";
+      const vocab = JSON.parse(vocabStr);
+      vocab[titleVal.toLowerCase()] = meta;
+      localStorage.setItem("dayflow_vocab_map", JSON.stringify(vocab));
+    } catch (err) {
+      console.warn("Failed to write to vocabulary map:", err);
+    }
+
     if (editingTask) {
       const updated = flexibleTasks.map((t) => 
         t.id === editingTask.id 
           ? { 
               ...t, 
-              title: flexibleForm.title.trim(), 
-              duration_minutes: Number(flexibleForm.duration_minutes), 
-              deadline: flexibleForm.hasDeadline ? flexibleForm.deadline : null, 
-              energy_level: flexibleForm.energy_level,
-              scheduled_date: flexibleForm.scheduled_date || null
+              title: titleVal, 
+              duration_minutes: durationVal, 
+              deadline: deadlineVal, 
+              energy_level: energyVal,
+              scheduled_date: scheduledDateVal,
+              importance: flexibleForm.importance,
+              task_flexibility: flexibleForm.task_flexibility,
+              meta,
+              blocked_by: flexibleForm.blocked_by,
+              blocks: flexibleForm.blocks
             }
           : t
       );
       handleUpdateFlexible(updated);
       showToast("Flexible task updated!", "success");
     } else {
-      const scheduledDate = flexibleForm.scheduled_date ? flexibleForm.scheduled_date : null;
       const newTask: FlexibleTask = {
         id: `flex-${Date.now()}`,
-        title: flexibleForm.title.trim(),
-        duration_minutes: Number(flexibleForm.duration_minutes),
-        deadline: flexibleForm.hasDeadline ? flexibleForm.deadline : null,
-        energy_level: flexibleForm.energy_level,
-        status: scheduledDate ? "scheduled" : "backlog",
-        scheduled_date: scheduledDate
+        title: titleVal,
+        duration_minutes: durationVal,
+        deadline: deadlineVal,
+        energy_level: energyVal,
+        status: scheduledDateVal ? "scheduled" : "backlog",
+        scheduled_date: scheduledDateVal,
+        importance: flexibleForm.importance,
+        task_flexibility: flexibleForm.task_flexibility,
+        meta,
+        blocked_by: flexibleForm.blocked_by,
+        blocks: flexibleForm.blocks
       };
       handleUpdateFlexible([...flexibleTasks, newTask]);
-      showToast(scheduledDate ? `Task added to today's schedule!` : "Task added to backlog!", "success");
+      showToast(scheduledDateVal ? `Task added to today's schedule!` : "Task added to backlog!", "success");
     }
     triggerHaptic(35);
     setActiveBottomSheet(null);
@@ -1006,16 +1963,226 @@ export default function App() {
     setCopilotInput("");
     setCopilotError(null);
     setProposedChanges(null);
+    setCopilotMinimized(false);
     setActiveBottomSheet("assistant");
   };
 
-  const handleSendCopilotMessage = async (textOverride?: any) => {
+  const handleStopCopilot = () => {
+    if (copilotAbortControllerRef.current) {
+      copilotAbortControllerRef.current.abort();
+      copilotAbortControllerRef.current = null;
+    }
+    setIsProcessingCopilot(false);
+    stopCopilotLoadingSimulation();
+    triggerHaptic(20);
+  };
+
+  const handleResetCopilotChat = () => {
+    if (copilotAbortControllerRef.current) {
+      copilotAbortControllerRef.current.abort();
+      copilotAbortControllerRef.current = null;
+    }
+    setIsProcessingCopilot(false);
+    stopCopilotLoadingSimulation();
+    setCopilotError(null);
+    setProposedChanges(null);
+    setCopilotMinimized(false);
+
+    const hour = new Date().getHours();
+    const timeOfDay = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+    const scheduledCount = daySchedule.items.length;
+    const backlogCount = flexibleTasks.filter(t => t.status !== "done" && t.scheduled_date === null).length;
+
+    let greeting = "";
+    if (scheduledCount === 0) {
+      greeting = `Good ${timeOfDay}! ☀️\n\nYou're all clear today! No tasks scheduled. What would you like to do?\n\n• Schedule something new\n• Or just relax`;
+    } else if (scheduledCount > 4) {
+      const totalMins = daySchedule.items.reduce((acc, item) => {
+        const startVal = timeToMinutes(item.start_time);
+        const endVal = timeToMinutes(item.end_time);
+        return acc + Math.max(30, endVal - startVal);
+      }, 0);
+      const totalHours = (totalMins / 60).toFixed(1);
+      greeting = `Good ${timeOfDay}! 👋\n\nYou have a packed day:\n• ${scheduledCount} tasks scheduled (~${totalHours} hours)\n• ${backlogCount} pending tasks in your backlog.\n\nWant to squeeze any in today, or just focus on what you already have?`;
+    } else if (scheduledCount < 4 && backlogCount > 0) {
+      greeting = `Good ${timeOfDay}! 💪\n\nYou have some breathing room today:\n• ${scheduledCount} tasks scheduled\n• ${backlogCount} pending tasks waiting.\n\nFeeling productive? Want to knock some of these out? Or prefer to keep it light?`;
+    } else {
+      greeting = `Good ${timeOfDay}! 👋\n\nHow's your day going? Let me know if you want to add a task, reschedule something, or clear your schedule!`;
+    }
+
+    setChatHistory([{ sender: "ai", text: greeting }]);
+    setCopilotInput("");
+    triggerHaptic(10);
+  };
+
+  const handleSendCopilotMessage = async (textOverride?: any, historyOverride?: { sender: "user" | "ai"; text: string; questionnaire?: any; questionnaireSubmitted?: boolean }[]) => {
     const isOverride = typeof textOverride === "string";
     const messageText = isOverride ? textOverride.trim() : copilotInput.trim();
     if (!messageText && !copilotImage) return;
 
     const displayText = messageText || (copilotImage ? "[Image attached]" : "");
-    setChatHistory(prev => [...prev, { sender: "user", text: displayText }]);
+
+    // Intercept gym / workout / project plan requests to show the interactive wizard offline or quick
+    const lowerText = messageText.toLowerCase();
+    const isWorkoutPlanRequest = 
+      lowerText.includes("workout plan") || 
+      lowerText.includes("gym plan") || 
+      lowerText.includes("exercise plan") || 
+      lowerText.includes("fitness plan") || 
+      (lowerText.includes("create") && lowerText.includes("workout"));
+
+    const isProjectPlanRequest = 
+      lowerText.includes("project plan") || 
+      lowerText.includes("study plan") || 
+      lowerText.includes("exam plan") || 
+      lowerText.includes("course plan") || 
+      lowerText.includes("landing page plan") || 
+      lowerText.includes("case study plan") || 
+      (lowerText.includes("create") && (lowerText.includes("plan") || lowerText.includes("schedule")));
+
+    if ((isWorkoutPlanRequest || isProjectPlanRequest) && !historyOverride) {
+      if (historyOverride) {
+        setChatHistory([...historyOverride, { sender: "user", text: displayText }]);
+      } else {
+        setChatHistory(prev => [...prev, { sender: "user", text: displayText }]);
+      }
+      setCopilotInput("");
+      setCopilotImage(null);
+
+      const questionnaireMsg = isWorkoutPlanRequest ? {
+        sender: "ai" as const,
+        text: "Sure! Let's tailor a customized fitness and scheduling plan for you. Please answer these quick questions to generate your specific workouts and goal targets:",
+        questionnaire: {
+          type: "workout_plan",
+          title: "Personalized Fitness Plan Builder",
+          questions: [
+            {
+              id: "workout_type",
+              label: "What kind of workout plan do you want?",
+              type: "select" as const,
+              options: ["Strength & Muscle Gaining", "Weight Loss & Cardio", "General Fitness & Health", "Yoga & Flexibility"],
+              value: "Strength & Muscle Gaining"
+            },
+            {
+              id: "weight_goal",
+              label: "What is your primary weight or body goal?",
+              type: "select" as const,
+              options: ["Build Muscle", "Burn Fat / Lose Weight", "Improve Endurance", "Maintain & Tone"],
+              value: "Build Muscle"
+            },
+            {
+              id: "goal_details",
+              label: "What is your target goal details? (e.g. lose 10 lbs)",
+              type: "text" as const,
+              placeholder: "e.g. bench press 80kg, lose 5kg, run 10k",
+              value: ""
+            },
+            {
+              id: "frequency",
+              label: "How many days per week do you want to workout?",
+              type: "select" as const,
+              options: ["2 days/week", "3 days/week", "4 days/week", "5 days/week"],
+              value: "3 days/week"
+            }
+          ]
+        }
+      } : {
+        sender: "ai" as const,
+        text: "I can help you build a structured milestone plan for that. Let's configure your task preferences first:",
+        questionnaire: {
+          type: "project_plan",
+          title: "Personalized Project Plan Builder",
+          questions: [
+            {
+              id: "project_type",
+              label: "What category does this project/study fall under?",
+              type: "select" as const,
+              options: ["Design & Figma Layout", "Coding & Frontend Dev", "Writing & Case Studies", "Exam prep & Study review"],
+              value: "Design & Figma Layout"
+            },
+            {
+              id: "session_count",
+              label: "How many sub-task sessions should we break it into?",
+              type: "select" as const,
+              options: ["2 sub-tasks", "3 sub-tasks", "4 sub-tasks"],
+              value: "3 sub-tasks"
+            },
+            {
+              id: "session_duration",
+              label: "How long should each task session be?",
+              type: "select" as const,
+              options: ["30 minutes", "45 minutes", "60 minutes", "90 minutes"],
+              value: "45 minutes"
+            },
+            {
+              id: "project_goal_name",
+              label: "What is the primary goal metric or target?",
+              type: "text" as const,
+              placeholder: "e.g. Finish portfolio site, submit thesis, score 90%",
+              value: ""
+            }
+          ]
+        }
+      };
+
+      setTimeout(() => {
+        setChatHistory(prev => [...prev, questionnaireMsg]);
+      }, 500);
+      return;
+    }
+
+    // Layer 0: Local Deterministic Parser
+    const localResult = parseDeterministicCommand(messageText || "", daySchedule.items, flexibleTasks, selectedDate);
+    if (localResult.success) {
+      if (historyOverride) {
+        setChatHistory([...historyOverride, { sender: "user", text: displayText }]);
+      } else {
+        setChatHistory(prev => [...prev, { sender: "user", text: displayText }]);
+      }
+      if (!isOverride) {
+        setCopilotInput("");
+      }
+      setCopilotImage(null);
+      setProposedChanges(localResult.changes);
+      setChatHistory(prev => [...prev, {
+        sender: "ai",
+        text: localResult.message
+      }]);
+      setIsProcessingCopilot(false);
+      triggerHaptic(25);
+      return;
+    }
+
+    // Layer 3: Circuit Breaker Availability check
+    if (!isAIServiceAvailable()) {
+      if (historyOverride) {
+        setChatHistory([...historyOverride, { sender: "user", text: displayText }]);
+      } else {
+        setChatHistory(prev => [...prev, { sender: "user", text: displayText }]);
+      }
+      if (!isOverride) {
+        setCopilotInput("");
+      }
+      setCopilotImage(null);
+      
+      const offlineRes = adjustScheduleOffline(messageText || "", daySchedule.items, flexibleTasks, selectedDate);
+      if (offlineRes.changes && offlineRes.changes.length > 0) {
+        setProposedChanges(offlineRes.changes);
+      }
+      setChatHistory(prev => [...prev, {
+        sender: "ai",
+        text: `${offlineRes.message} (Local Scheduler Mode — AI is temporarily offline due to high demand)`
+      }]);
+      setIsProcessingCopilot(false);
+      return;
+    }
+
+    if (historyOverride) {
+      setChatHistory([...historyOverride, { sender: "user", text: displayText }]);
+    } else {
+      setChatHistory(prev => [...prev, { sender: "user", text: displayText }]);
+    }
+
     if (!isOverride) {
       setCopilotInput("");
     }
@@ -1024,43 +2191,470 @@ export default function App() {
     setIsProcessingCopilot(true);
     setCopilotError(null);
     setProposedChanges(null);
+    startCopilotLoadingSimulation();
 
     let data;
-    try {
-      const response = await fetch("/api/adjust-schedule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userText: messageText || "Please analyze the attached image and extract schedule/workout/weight info.",
-          currentSchedule: daySchedule.items,
-          pendingTasks: flexibleTasks.filter(t => t.status !== "done"),
-          today: selectedDate,
-          image: imagePayload
-        })
-      });
+    let success = false;
+    let attempt = 0;
+    const MAX_RETRIES = 3;
 
-      if (!response.ok) {
-        throw new Error("API failed");
+    while (attempt < MAX_RETRIES) {
+      const controller = new AbortController();
+      copilotAbortControllerRef.current = controller;
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, getTimeoutForOperation("copilot"));
+
+      try {
+        const response = await fetch("/api/adjust-schedule", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            userText: messageText || "Please analyze the attached image and extract schedule/workout/weight info.",
+            currentSchedule: daySchedule.items,
+            pendingTasks: flexibleTasks.filter(t => t.status !== "done"),
+            today: selectedDate,
+            image: imagePayload
+          })
+        });
+        clearTimeout(timeoutId);
+
+        if (response.status === 503 || response.status === 429) {
+          throw { name: "RetriableError", status: response.status, message: `Status ${response.status}` };
+        }
+
+        if (!response.ok) {
+          let errMsg = "API failed";
+          try {
+            const errData = await response.json();
+            errMsg = errData.error || errMsg;
+          } catch (_) {}
+          throw new Error(errMsg);
+        }
+
+        data = await response.json();
+        success = true;
+        recordAISuccess();
+        break; // break retry loop
+      } catch (err: any) {
+        clearTimeout(timeoutId);
+        if (err.name === "AbortError") {
+          console.warn("AI Copilot request aborted.");
+          data = {
+            changes: [],
+            message: "Request cancelled by user."
+          };
+          setCopilotError("Plan formulation request was stopped. How can I help you next?");
+          break;
+        } else if ((err.name === "RetriableError" || err.status === 503 || err.status === 429) && attempt < MAX_RETRIES - 1) {
+          attempt++;
+          setCopilotRetryAttempt(attempt);
+          const backoff = 1500 * attempt + Math.random() * 800;
+          console.warn(`Retrying AI Copilot request in ${Math.round(backoff)}ms (Attempt ${attempt}/${MAX_RETRIES})...`);
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          continue;
+        } else {
+          console.warn("AI Copilot API failed:", err);
+          recordAIFailure();
+          data = {
+            changes: [],
+            message: `I encountered an error trying to process your request: "${err.message}".`
+          };
+          setCopilotError(`DayFlow AI service failed: ${err.message}`);
+          break;
+        }
+      } finally {
+        copilotAbortControllerRef.current = null;
       }
-
-      data = await response.json();
-    } catch (err: any) {
-      console.warn("AI Copilot API failed. Falling back to local offline rule adjuster.");
-      data = adjustScheduleOffline(messageText, daySchedule.items, flexibleTasks, selectedDate);
     }
 
     setIsProcessingCopilot(false);
+    stopCopilotLoadingSimulation();
     
-    if (data.changes && data.changes.length > 0) {
-      setProposedChanges(data.changes);
+    if (data.clarificationNeeded && data.clarificationQuestions && data.clarificationQuestions.length > 0) {
+      const questionnaireMsg = {
+        sender: "ai" as const,
+        text: data.message || "I need a few clarifications to structure a customized plan. Please answer these quick questions:",
+        questionnaire: {
+          type: "general",
+          title: "Plan Setup Wizard",
+          questions: data.clarificationQuestions.map((q: any) => ({
+            id: q.id,
+            label: q.label,
+            type: q.type || "text",
+            options: q.options || [],
+            placeholder: q.placeholder || "",
+            value: q.type === "select" ? (q.options?.[0] || "") : ""
+          }))
+        }
+      };
+      setChatHistory(prev => [...prev, questionnaireMsg]);
+    } else {
+      if (data.changes && data.changes.length > 0) {
+        setProposedChanges(data.changes);
+      }
+      setChatHistory(prev => [...prev, { sender: "ai", text: data.message || "I couldn't figure out any adjustments for that request. Try saying something like 'add task gym' or 'postpone work'." }]);
+    }
+    triggerHaptic(25);
+  };
+
+  const generateLocalFitnessPlan = (
+    workoutType: string,
+    weightGoal: string,
+    goalDetails: string,
+    frequency: string
+  ) => {
+    const changes: any[] = [];
+    const numDays = parseInt(frequency) || 3;
+    
+    // 1. Create a Goal
+    const goalTitle = `Streak: ${workoutType}`;
+    changes.push({
+      action: "add_goal",
+      goalTitle: goalTitle,
+      goalCategory: "fitness",
+      goalMetric: "sessions",
+      goalTarget: numDays * 4, // 4 weeks
+      goalKeywords: ["workout", "gym", "stretch", "run", "yoga"],
+      reasoning: `Created tracking goal for your ${workoutType} plan.`
+    });
+
+    // 2. Create the workout tasks based on the type
+    if (workoutType.includes("Strength")) {
+      const routines = [
+        { title: "🏋️ Push Day (Chest/Shoulders/Triceps)", desc: "Dumbbell Bench Press: 3x10\nOverhead Press: 3x8\nTricep Pushdowns: 3x12\nLateral Raises: 3x15" },
+        { title: "🏋️ Pull Day (Back/Biceps)", desc: "Lat Pulldowns: 3x10\nBarbell Rows: 3x8\nBicep Curls: 3x12\nFace Pulls: 3x15" },
+        { title: "🏋️ Leg Day (Squats/Hamstrings)", desc: "Squats: 3x10\nRomanian Deadlifts: 3x10\nLeg Extensions: 3x12\nCalf Raises: 4x15" }
+      ];
+      for (let i = 0; i < Math.min(numDays, routines.length); i++) {
+        changes.push({
+          action: "add",
+          newTaskTitle: routines[i].title,
+          newTaskDuration: 60,
+          newTaskDescription: routines[i].desc,
+          reasoning: `Strength training routine #${i+1}`
+        });
+      }
+    } else if (workoutType.includes("Weight Loss")) {
+      const routines = [
+        { title: "🏃 HIIT Cardio Workout", desc: "Treadmill Sprints: 5 rounds\nJumping Jacks: 3x45s\nBurpees: 3x30s\nMountain Climbers: 3x45s" },
+        { title: "🔥 Full Body Conditioning", desc: "Kettlebell Swings: 3x15\nPush-ups: 3x12\nBodyweight Squats: 3x20\nPlank: 3x60s" },
+        { title: "🏃 Active Recovery Cardio", desc: "Light Jog / Incline Walk: 30 mins\nFoam Rolling & Stretching: 10 mins" }
+      ];
+      for (let i = 0; i < Math.min(numDays, routines.length); i++) {
+        changes.push({
+          action: "add",
+          newTaskTitle: routines[i].title,
+          newTaskDuration: 45,
+          newTaskDescription: routines[i].desc,
+          reasoning: `Cardio conditioning routine #${i+1}`
+        });
+      }
+    } else if (workoutType.includes("Yoga")) {
+      const routines = [
+        { title: "🧘 Vinyasa Yoga Flow", desc: "Sun Salutations: 5 rounds\nWarrior poses: 10 mins\nBalance poses (Tree/Crow): 5 mins\nSavasana deep rest: 5 mins" },
+        { title: "🧘 Deep Stretch & Mobility", desc: "Hamstring stretch: 2 mins per side\nHip openers (Pigeon pose): 3 mins per side\nSpinal twists: 2 mins" }
+      ];
+      for (let i = 0; i < Math.min(numDays, routines.length); i++) {
+        changes.push({
+          action: "add",
+          newTaskTitle: routines[i].title,
+          newTaskDuration: 30,
+          newTaskDescription: routines[i].desc,
+          reasoning: `Flexibility and mobility flow #${i+1}`
+        });
+      }
+    } else {
+      // General Fitness
+      const routines = [
+        { title: "💪 Functional Strength & Core", desc: "Goblet Squats: 3x12\nDumbbell Rows: 3x10\nPlank: 3x45s\nDeadbugs: 3x12" },
+        { title: "🏃 Cardio & Agility Training", desc: "Light Jog: 20 mins\nAgility Ladder / Jump Rope: 10 mins\nStretching: 5 mins" }
+      ];
+      for (let i = 0; i < Math.min(numDays, routines.length); i++) {
+        changes.push({
+          action: "add",
+          newTaskTitle: routines[i].title,
+          newTaskDuration: 50,
+          newTaskDescription: routines[i].desc,
+          reasoning: `General fitness routine #${i+1}`
+        });
+      }
     }
 
-    setChatHistory(prev => [...prev, { sender: "ai", text: data.message || "I couldn't figure out any adjustments for that request. Try saying something like 'add task gym' or 'postpone work'." }]);
+    return {
+      changes,
+      message: `I've mapped out a local ${workoutType} routine targeting your ${weightGoal} goals. You will find your newly generated specific workout items in the proposed changes below, ready to be added to your schedule/backlog.`
+    };
+  };
+
+  const generateLocalProjectPlan = (
+    projectType: string,
+    sessionCountStr: string,
+    sessionDurationStr: string,
+    goalName: string
+  ) => {
+    const changes: any[] = [];
+    const numSessions = parseInt(sessionCountStr) || 3;
+    const duration = parseInt(sessionDurationStr) || 45;
+    const targetGoal = goalName || "Project milestones";
+
+    // 1. Create a Goal
+    changes.push({
+      action: "add_goal",
+      goalTitle: `Milestones: ${targetGoal}`,
+      goalCategory: projectType.includes("Study") || projectType.includes("Exam") ? "academic" : "project",
+      goalMetric: "sessions",
+      goalTarget: numSessions,
+      goalKeywords: ["design", "figma", "code", "dev", "portfolio", "write", "thesis", "study", "exam", "prep"],
+      reasoning: `Goal tracker created for your ${projectType} plan.`
+    });
+
+    // 2. Add sub-task sessions
+    const subTasks = projectType.includes("Design") ? [
+      { title: "🎨 Layout Wireframing & Inspiration", desc: "Collect design components\nSketch layout wireframes on paper or Figma" },
+      { title: "🎨 High-Fidelity UI Design Mockup", desc: "Design color palette & fonts\nCreate main components and frames" },
+      { title: "🎨 Feedback & Design Hand-off", desc: "Check spacing & margins\nExport assets for development" }
+    ] : projectType.includes("Coding") ? [
+      { title: "💻 Setup Project & Core UI Structure", desc: "Initialize boilerplate\nBuild HTML semantic markup & basic stylesheet" },
+      { title: "💻 Component Logic & Dynamic Interactions", desc: "Implement state handlers\nVerify local interactions & click paths" },
+      { title: "💻 Testing & Responsive CSS Refinements", desc: "Check layout on mobile viewports\nRun build & lint checks" }
+    ] : projectType.includes("Writing") ? [
+      { title: "✍️ Outline Structure & Gathering Data", desc: "List key takeaways & problems solved\nOrganize drafts and raw notes" },
+      { title: "✍️ Write Core Content & Case Analysis", desc: "Draft solution descriptions\nAdd screenshots or mockups" },
+      { title: "✍️ Final Proofreading & Polishing", desc: "Check grammar & style\nFormat for portfolio listing" }
+    ] : [
+      // Exam prep / Study
+      { title: "📚 Review Lecture Material & Concepts", desc: "Read notes & slides\nHighlight formulas or core keywords" },
+      { title: "📚 Practice Problems & Core Drills", desc: "Attempt 3-5 practice questions\nIdentify topics needing review" },
+      { title: "📚 Summary Cards & Final Recall", desc: "Create flashcards or notes summary\nSelf-test on major concepts" }
+    ];
+
+    for (let i = 0; i < Math.min(numSessions, subTasks.length); i++) {
+      changes.push({
+        action: "add",
+        newTaskTitle: subTasks[i].title,
+        newTaskDuration: duration,
+        newTaskDescription: subTasks[i].desc,
+        reasoning: `${projectType} phase #${i+1}`
+      });
+    }
+
+    return {
+      changes,
+      message: `I've prepared a local ${projectType} milestone outline. The specific tasks have been structured and are presented below, ready to be scheduled.`
+    };
+  };
+
+  const handleSubmitQuestionnaire = async (msgIdx: number) => {
+    const msg = chatHistory[msgIdx];
+    if (!msg || !msg.questionnaire) return;
+
+    // Mark it as submitted
+    const updatedHistory = [...chatHistory];
+    updatedHistory[msgIdx] = { ...msg, questionnaireSubmitted: true };
+    setChatHistory(updatedHistory);
+    
+    // Gather selections
+    const answers = msg.questionnaire.questions.reduce((acc: any, q: any) => {
+      acc[q.id] = q.value;
+      return acc;
+    }, {} as Record<string, string>);
+
+    let userSummary = "";
+    let promptForAI = "";
+    
+    if (msg.questionnaire.type === "workout_plan") {
+      const workoutType = answers["workout_type"];
+      const weightGoal = answers["weight_goal"];
+      const goalDetails = answers["goal_details"] || "General fitness";
+      const frequency = answers["frequency"];
+      userSummary = `Configured: ${workoutType} plan, focusing on ${weightGoal} (${goalDetails}) for ${frequency}.`;
+      promptForAI = `Generate a customized fitness schedule plan. User options:
+- Type: ${workoutType}
+- Focus: ${weightGoal}
+- Details: ${goalDetails}
+- Frequency: ${frequency}
+
+Please create 3 or 4 relevant scheduled/backlog tasks representing these specific workout sessions (e.g. Upper Body, Lower Body) with 45-60 min duration and individual workout exercises inside the description (one per line). Also add a target goal for tracking fitness progress.`;
+    } else if (msg.questionnaire.type === "project_plan") {
+      const projectType = answers["project_type"];
+      const sessionCount = answers["session_count"];
+      const sessionDuration = answers["session_duration"];
+      const goalName = answers["project_goal_name"] || "General milestone";
+      userSummary = `Configured: ${projectType} milestone plan, scheduling ${sessionCount} tasks at ${sessionDuration} each, targeting ${goalName}.`;
+      promptForAI = `Generate a customized project plan. User options:
+- Type: ${projectType}
+- Sessions: ${sessionCount}
+- Duration: ${sessionDuration}
+- Goal: ${goalName}
+
+Please create the specified number of backlog tasks representing the project phases with the given duration. Include descriptions detailing steps. Also create a tracking goal.`;
+    } else {
+      // General online AI clarification answers compilation
+      const answersList = msg.questionnaire.questions.map((q: any) => `- ${q.label}: ${answers[q.id]}`).join("\n");
+      userSummary = "Completed setup responses.";
+      promptForAI = `Here are my answers to your clarification questions:\n${answersList}\n\nPlease formulate the detailed schedule adjustment plan now based on this context.`;
+    }
+    
+    // Circuit Breaker check
+    if (!isAIServiceAvailable()) {
+      setChatHistory(prev => [...prev, { sender: "user", text: `I completed the setup: ${userSummary}` }]);
+      let offlineData;
+      if (msg.questionnaire.type === "workout_plan") {
+        offlineData = generateLocalFitnessPlan(
+          answers["workout_type"] || "",
+          answers["weight_goal"] || "",
+          answers["goal_details"] || "",
+          answers["frequency"] || ""
+        );
+      } else if (msg.questionnaire.type === "project_plan") {
+        offlineData = generateLocalProjectPlan(
+          answers["project_type"] || "",
+          answers["session_count"] || "",
+          answers["session_duration"] || "",
+          answers["project_goal_name"] || ""
+        );
+      } else {
+        offlineData = {
+          changes: [],
+          message: "The AI service is temporarily offline. Please use the manual controls to update your schedule."
+        };
+      }
+
+      if (offlineData.changes && offlineData.changes.length > 0) {
+        setProposedChanges(offlineData.changes);
+      }
+      setChatHistory(prev => [...prev, {
+        sender: "ai",
+        text: `${offlineData.message} (Local Scheduler Mode — AI is temporarily offline due to high demand)`
+      }]);
+      setIsProcessingCopilot(false);
+      return;
+    }
+
+    setChatHistory(prev => [...prev, { sender: "user", text: `I completed the setup: ${userSummary}` }]);
+    setIsProcessingCopilot(true);
+    startCopilotLoadingSimulation();
+
+    let data;
+    let success = false;
+    let attempt = 0;
+    const MAX_RETRIES = 3;
+
+    while (attempt < MAX_RETRIES) {
+      const controller = new AbortController();
+      copilotAbortControllerRef.current = controller;
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, getTimeoutForOperation("project_wizard"));
+
+      try {
+        const response = await fetch("/api/adjust-schedule", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            userText: promptForAI,
+            currentSchedule: daySchedule.items,
+            pendingTasks: flexibleTasks.filter(t => t.status !== "done"),
+            today: selectedDate
+          })
+        });
+        clearTimeout(timeoutId);
+
+        if (response.status === 503 || response.status === 429) {
+          throw { name: "RetriableError", status: response.status, message: `Status ${response.status}` };
+        }
+
+        if (!response.ok) {
+          let errMsg = "API failed";
+          try {
+            const errData = await response.json();
+            errMsg = errData.error || errMsg;
+          } catch (_) {}
+          throw new Error(errMsg);
+        }
+
+        data = await response.json();
+        success = true;
+        recordAISuccess();
+        break; // break retry loop
+      } catch (err: any) {
+        clearTimeout(timeoutId);
+        if (err.name === "AbortError") {
+          console.warn("AI Plan generator request aborted.");
+          data = {
+            changes: [],
+            message: "Request cancelled by user."
+          };
+          setCopilotError("Plan formulation request was stopped. How can I help you next?");
+          break;
+        } else if ((err.name === "RetriableError" || err.status === 503 || err.status === 429) && attempt < MAX_RETRIES - 1) {
+          attempt++;
+          setCopilotRetryAttempt(attempt);
+          const backoff = 1500 * attempt + Math.random() * 800;
+          console.warn(`Retrying AI Plan generator request in ${Math.round(backoff)}ms (Attempt ${attempt}/${MAX_RETRIES})...`);
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          continue;
+        } else {
+          console.warn("AI Plan generator failed:", err);
+          recordAIFailure();
+          data = {
+            changes: [],
+            message: `I encountered an error trying to process your request: "${err.message}".`
+          };
+          setCopilotError(`DayFlow AI service failed: ${err.message}`);
+          break;
+        }
+      } finally {
+        copilotAbortControllerRef.current = null;
+      }
+    }
+
+    setIsProcessingCopilot(false);
+    stopCopilotLoadingSimulation();
+    
+    if (data.clarificationNeeded && data.clarificationQuestions && data.clarificationQuestions.length > 0) {
+      const questionnaireMsg = {
+        sender: "ai" as const,
+        text: data.message || "I need a few clarifications to structure a customized plan. Please answer these quick questions:",
+        questionnaire: {
+          type: "general",
+          title: "Plan Setup Wizard",
+          questions: data.clarificationQuestions.map((q: any) => ({
+            id: q.id,
+            label: q.label,
+            type: q.type || "text",
+            options: q.options || [],
+            placeholder: q.placeholder || "",
+            value: q.type === "select" ? (q.options?.[0] || "") : ""
+          }))
+        }
+      };
+      setChatHistory(prev => [...prev, questionnaireMsg]);
+    } else {
+      if (data.changes && data.changes.length > 0) {
+        setProposedChanges(data.changes);
+      }
+      setChatHistory(prev => [...prev, { 
+        sender: "ai", 
+        text: data.message || "I couldn't figure out any adjustments for that request. Try saying something like 'add task gym' or 'postpone work'." 
+      }]);
+    }
     triggerHaptic(25);
   };
 
   const handleConfirmAIChanges = () => {
     if (!proposedChanges) return;
+
+    // Save previous state for Undo support
+    setCopilotUndoState({
+      flexibleTasks: JSON.parse(JSON.stringify(flexibleTasks)),
+      fixedBlocks: JSON.parse(JSON.stringify(fixedBlocks)),
+      goals: JSON.parse(JSON.stringify(goals)),
+      weightLog: JSON.parse(JSON.stringify(weightLog))
+    });
 
     let updatedFlexible = [...flexibleTasks];
     let updatedFixed = [...fixedBlocks];
@@ -1241,6 +2835,19 @@ export default function App() {
     setCopilotInput("");
     setProposedChanges(null);
     setChatHistory([]);
+  };
+
+  const handleUndoAIChanges = () => {
+    if (!copilotUndoState) return;
+    handleUpdateFlexible(copilotUndoState.flexibleTasks);
+    handleUpdateFixed(copilotUndoState.fixedBlocks);
+    setGoals(copilotUndoState.goals);
+    saveGoals(copilotUndoState.goals);
+    setWeightLog(copilotUndoState.weightLog);
+    saveWeightLog(copilotUndoState.weightLog);
+    setCopilotUndoState(null);
+    showToast("AI adjustments undone! ↩️", "success");
+    triggerHaptic(35);
   };
 
   // Local offline regex-based parser fallback
@@ -2329,6 +3936,383 @@ export default function App() {
     return `${completed.length} of ${scheduled.length} complete`;
   }, [daySchedule]);
 
+  // ── Execution Engine Computed Values ─────────────────────────────────────────
+  // Task that is happening RIGHT NOW (for the glow ring)
+  const activeNowTask = useMemo(() => {
+    if (selectedDate !== TODAY) return null;
+    return daySchedule.items.find(item =>
+      item.type === "flexible" &&
+      item.status !== "done" &&
+      timeToMinutes(item.start_time) <= currentTimeMins &&
+      currentTimeMins < timeToMinutes(item.end_time)
+    ) || null;
+  }, [daySchedule.items, currentTimeMins, selectedDate]);
+
+  // Very next upcoming task (for the "Next →" chip)
+  const upNextTask = useMemo(() => {
+    if (selectedDate !== TODAY) return null;
+    return daySchedule.items.find(item =>
+      item.type === "flexible" &&
+      item.status !== "done" &&
+      timeToMinutes(item.start_time) > currentTimeMins
+    ) || null;
+  }, [daySchedule.items, currentTimeMins, selectedDate]);
+
+  // Named execution score (flexible tasks only)
+  const executionScore = useMemo(() => {
+    const todayFlex = daySchedule.items.filter(i => i.type === "flexible");
+    if (todayFlex.length === 0) return null;
+    const done = todayFlex.filter(i => i.status === "done").length;
+    return { score: Math.round((done / todayFlex.length) * 100), done, total: todayFlex.length };
+  }, [daySchedule.items]);
+
+  // Momentum state derived from streak + today's score
+  const momentumState = useMemo((): "high" | "stable" | "low" => {
+    const score = executionScore?.score ?? 0;
+    if (completedStreak >= 5 && score >= 75) return "high";
+    if (completedStreak >= 2 && score >= 50) return "stable";
+    return "low";
+  }, [completedStreak, executionScore]);
+
+  // Hybrid Classifier Funnel (Rules -> Vocabulary Map -> AI Fallback)
+  const classifyTaskHybrid = useCallback(async (title: string, description = "") => {
+    if (!title.trim()) return null;
+    
+    // 1. Run local rules + vocabulary mapping classifier
+    const localResult = classifyTaskLocally(title, description, goals);
+    
+    // If local rules match with high confidence, return immediately
+    if (localResult.confidence >= 0.75) {
+      return localResult;
+    }
+    
+    // 2. Fall back to AI classification endpoint on low confidence
+    try {
+      const res = await fetch("/api/classify-task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, description }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.meta && data.confidence !== undefined) {
+          return {
+            meta: data.meta,
+            confidence: data.confidence,
+            source: data.source || "ai"
+          } as ClassificationResult;
+        }
+      }
+    } catch (err) {
+      console.warn("Backend classification failed, falling back to local rules:", err);
+    }
+    
+    return localResult;
+  }, [goals]);
+
+  const handleTitleBlur = useCallback(async () => {
+    const title = flexibleForm.title.trim();
+    if (!title) return;
+    const result = await classifyTaskHybrid(title, "");
+    if (result) {
+      setFlexibleForm(prev => ({
+        ...prev,
+        category: result.meta.category,
+        rigidity: result.meta.rigidity,
+        importance: result.meta.importance,
+        recoverability: result.meta.recoverability,
+        dependency_chain: result.meta.dependency_chain,
+        progress_type: result.meta.progress_type,
+        deadline_pressure: result.meta.deadline_pressure,
+        task_flexibility: result.meta.rigidity === "fixed" ? "fixed" : result.meta.rigidity === "flexible" ? "optional" : "movable"
+      }));
+      setClassificationFeedback({
+        category: result.meta.category,
+        confidence: result.confidence,
+        source: result.source
+      });
+      if (result.confidence < 0.7) {
+        setIsMetadataOpen(true);
+      }
+    }
+  }, [flexibleForm.title, classifyTaskHybrid]);
+
+  // Fetch AI consequence insight for a task (lazy, cached in consequenceCache)
+  const fetchConsequenceInsight = useCallback(async (
+    task: FlexibleTask,
+    intent: import("./types").ConsequenceIntent = "skip",
+    delayMins = 0
+  ) => {
+    // Find todayFlexCount for streak break calculation
+    const todayFlexCount = daySchedule.items.filter(i => i.type === "flexible").length;
+    
+    // Calculate consequence core locally
+    const delayResult = simulateDelayCost(
+      daySchedule.items,
+      task.id,
+      delayMins,
+      appSettings.day_end,
+      todayFlexCount,
+      flexibleTasks,
+      completedStreak
+    );
+    const consequenceCore = delayResult.core;
+    
+    // Construct cache key
+    const cacheKey = getConsequenceCacheKey(task, intent, delayMins, daySchedule.items, completedStreak, selectedDate);
+    
+    // Check consequenceCache state
+    if (consequenceCache[cacheKey]) {
+      setOpenInsightTaskId(task.id);
+      return consequenceCache[cacheKey];
+    }
+    
+    setLoadingInsightTaskId(task.id);
+    setOpenInsightTaskId(task.id);
+    try {
+      // Find linked goal context
+      const linkedGoal = goals.find(g =>
+        g.linkedTaskKeywords.some(kw => task.title.toLowerCase().includes(kw.toLowerCase()))
+      );
+      // Find recent completions of similar tasks
+      const { getTaskCategory } = await import("./utils/mlEngine");
+      const category = task.meta?.category || getTaskCategory(task.title);
+      const recentSimilar = flexibleTasks
+        .filter(t => t.status === "done" && (t.meta?.category || getTaskCategory(t.title)) === category && t.completed_at)
+        .sort((a, b) => new Date(b.completed_at!).getTime() - new Date(a.completed_at!).getTime())
+        .slice(0, 3)
+        .map(t => {
+          const daysAgo = Math.round((Date.now() - new Date(t.completed_at!).getTime()) / 86400000);
+          return `${t.title} — ${daysAgo} day${daysAgo !== 1 ? "s" : ""} ago`;
+        });
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, getTimeoutForOperation("consequence"));
+
+      try {
+        const res = await fetch("/api/task-consequence", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            taskTitle: task.title,
+            taskDescription: task.description || "",
+            taskMeta: task.meta || classifyTaskLocally(task.title, task.description || "", goals).meta,
+            consequenceCore,
+            streakDays: completedStreak,
+            linkedGoalTitle: linkedGoal?.title,
+            linkedGoalProgress: linkedGoal ? `${linkedGoal.currentValue} / ${linkedGoal.targetValue} ${linkedGoal.metricLabel}` : undefined,
+            recentCompletions: recentSimilar,
+            userProfileName: profileName,
+            intent,
+            delayMins,
+          }),
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+          throw new Error("Consequence API status non-ok");
+        }
+
+        const data = await res.json();
+        if (data && !data.error) {
+          // Cache the full consequence in consequenceCache state!
+          setConsequenceCache(prev => ({
+            ...prev,
+            [cacheKey]: data
+          }));
+          
+          // Also update task's local consequence teaser / insight for quick display if needed
+          const updated = flexibleTasks.map(t =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  consequence_insight: data.immediate_effect + " " + data.cascade_effect + " " + data.goal_effect,
+                  consequence_teaser: data.immediate_effect,
+                  consequence_generated_at: new Date().toISOString()
+                }
+              : t
+          );
+          handleUpdateFlexible(updated);
+          return data as import("./types").TaskConsequence;
+        }
+      } catch (innerErr) {
+        clearTimeout(timeoutId);
+        throw innerErr;
+      }
+    } catch (err) {
+      console.warn("Consequence API fetch failed, generating default consequence locally:", err);
+    } finally {
+      setLoadingInsightTaskId(null);
+    }
+    
+    // Fallback: Generate local consequence
+    const localRes = generateDefaultConsequence(task, goals, intent, delayMins, consequenceCore);
+    const updatedConsequence = {
+      ...localRes.consequence,
+      negotiation_options: localRes.consequence.negotiation_options.map(opt => ({
+        ...opt,
+        command: {
+          ...opt.command,
+          params: opt.command.type === "shorten_duration" ? { reduced_duration: Math.max(20, Math.round(task.duration_minutes * 0.4)) } : opt.command.params
+        }
+      }))
+    };
+    setConsequenceCache(prev => ({
+      ...prev,
+      [cacheKey]: updatedConsequence
+    }));
+    return updatedConsequence;
+  }, [goals, flexibleTasks, completedStreak, profileName, selectedDate, handleUpdateFlexible, consequenceCache, daySchedule.items, appSettings.day_end]);
+
+  const handleMarkPartial = useCallback((taskId: string, reducedDuration: number) => {
+    const updated = flexibleTasks.map(t =>
+      t.id === taskId
+        ? {
+            ...t,
+            duration_minutes: reducedDuration,
+            partial_completion: true,
+            partial_duration_minutes: reducedDuration,
+          }
+        : t
+    );
+    handleUpdateFlexible(updated);
+    showToast(`Committed to reduced ${reducedDuration} min session. Streak safe!`, "success");
+    triggerHaptic(30);
+    setOpenInsightTaskId(null);
+  }, [flexibleTasks, handleUpdateFlexible]);
+
+  const findFirstSuitableGap = useCallback((taskDuration: number, currentTaskId: string) => {
+    const dayStartMins = timeToMinutes(appSettings.day_start);
+    const dayEndMins = timeToMinutes(appSettings.day_end);
+    
+    // Filter out the task itself
+    const otherItems = daySchedule.items.filter(item => item.id !== currentTaskId);
+    const sortedItems = [...otherItems].sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
+    
+    // 1. Check gap at start of day
+    if (sortedItems.length > 0) {
+      const firstStart = timeToMinutes(sortedItems[0].start_time);
+      if (firstStart - dayStartMins >= taskDuration) {
+        return minutesToTime(dayStartMins);
+      }
+    } else {
+      return appSettings.day_start;
+    }
+    
+    // 2. Check gaps between items
+    for (let i = 0; i < sortedItems.length - 1; i++) {
+      const endMins = timeToMinutes(sortedItems[i].end_time);
+      const nextStartMins = timeToMinutes(sortedItems[i + 1].start_time);
+      const gap = nextStartMins - endMins;
+      if (gap >= taskDuration) {
+        return minutesToTime(endMins);
+      }
+    }
+    
+    // 3. Check gap at end of day
+    if (sortedItems.length > 0) {
+      const lastEndMins = timeToMinutes(sortedItems[sortedItems.length - 1].end_time);
+      if (dayEndMins - lastEndMins >= taskDuration) {
+        return minutesToTime(lastEndMins);
+      }
+    }
+    
+    return null;
+  }, [daySchedule.items, appSettings]);
+
+  const handleSplitTask = useCallback((task: FlexibleTask) => {
+    const originalDuration = task.duration_minutes;
+    const chunk1 = Math.round(originalDuration / 2);
+    const chunk2 = originalDuration - chunk1;
+    
+    const updatedTasks = flexibleTasks.map(t =>
+      t.id === task.id
+        ? {
+            ...t,
+            duration_minutes: chunk1,
+            title: `${task.title} (Part 1)`
+          }
+        : t
+    );
+    
+    const newTask: FlexibleTask = {
+      id: `flex-${Date.now()}`,
+      title: `${task.title} (Part 2)`,
+      duration_minutes: chunk2,
+      deadline: task.deadline,
+      energy_level: task.energy_level,
+      status: "backlog",
+      scheduled_date: null,
+      importance: task.importance,
+      task_flexibility: task.task_flexibility,
+      meta: task.meta
+    };
+    
+    handleUpdateFlexible([...updatedTasks, newTask]);
+    showToast(`Split into two ${chunk1}m & ${chunk2}m chunks. Part 2 sent to backlog!`, "success");
+    triggerHaptic(40);
+    setOpenInsightTaskId(null);
+  }, [flexibleTasks, handleUpdateFlexible]);
+
+  const executeNegotiationCommand = useCallback((task: FlexibleTask, command: any) => {
+    const type = command.type;
+    const params = command.params || {};
+    
+    if (type === "shorten_duration" || type === "mark_partial") {
+      const reduced = params.reduced_duration || Math.max(20, Math.round(task.duration_minutes * 0.4));
+      handleMarkPartial(task.id, reduced);
+    } else if (type === "move_to_gap") {
+      const targetTime = findFirstSuitableGap(task.duration_minutes, task.id);
+      if (targetTime) {
+        const updated = flexibleTasks.map(t =>
+          t.id === task.id ? { ...t, pinned_start_time: targetTime } : t
+        );
+        handleUpdateFlexible(updated);
+        showToast(`Moved "${task.title}" to gap at ${targetTime}`, "success");
+        triggerHaptic(20);
+        setOpenInsightTaskId(null);
+      } else {
+        showToast("No exact gap fits this duration. Opening AI Copilot for slotting.", "info");
+        setMoveSheetTaskId(task.id);
+        handleOpenAICopilot();
+        setCopilotInput(`Find a slot or make space to move "${task.title}" to later today.`);
+      }
+    } else if (type === "split_into_chunks") {
+      handleSplitTask(task);
+    } else if (type === "swap_tasks") {
+      const otherFlex = daySchedule.items.find(i => i.type === "flexible" && i.id !== task.id);
+      if (otherFlex) {
+        const taskA = task;
+        const taskB = flexibleTasks.find(t => t.id === otherFlex.id);
+        if (taskB) {
+          const pinA = taskA.pinned_start_time;
+          const pinB = taskB.pinned_start_time;
+          const prioA = taskA.priority;
+          const prioB = taskB.priority;
+          
+          const updated = flexibleTasks.map(t => {
+            if (t.id === taskA.id) {
+              return { ...t, pinned_start_time: pinB, priority: prioB };
+            }
+            if (t.id === taskB.id) {
+              return { ...t, pinned_start_time: pinA, priority: prioA };
+            }
+            return t;
+          });
+          handleUpdateFlexible(updated);
+          showToast(`Swapped slots of "${taskA.title}" and "${taskB.title}"`, "success");
+          triggerHaptic(30);
+          setOpenInsightTaskId(null);
+        }
+      } else {
+        showToast("No other flexible task scheduled to swap with today.", "warning");
+      }
+    }
+  }, [flexibleTasks, handleUpdateFlexible, findFirstSuitableGap, handleMarkPartial, handleSplitTask, daySchedule.items, handleOpenAICopilot]);
+
   // Onboarding handlers
   const handleAddOnboardingBlock = () => {
     if (!onboardingForm.title.trim()) return;
@@ -2904,7 +4888,7 @@ export default function App() {
         <div id="phone_mockup_container" className="flex-1 h-full bg-transparent flex flex-col overflow-hidden relative">
           
           {/* TOP APP HEADER BAR (Fixed boundary, does not move) */}
-          <header id="mobile_sticky_header" className="h-16 border-b border-neutral-200 px-4 flex items-center justify-between bg-white z-30 flex-shrink-0 relative text-slate-800">
+          <header id="mobile_sticky_header" className="h-16 border-b border-neutral-200/50 px-4 flex items-center justify-between bg-white/40 backdrop-blur-md z-30 flex-shrink-0 relative text-slate-800">
             <div 
               onClick={handleLogoClick}
               className="flex items-center gap-1.5 cursor-pointer select-none"
@@ -2919,35 +4903,49 @@ export default function App() {
               )}
             </div>
 
-            {/* Selected Date Jump Widget and Arrow Controls shifted to the Right (Minimalistic style) */}
-            <div className="flex items-center gap-1">
-              <button 
-                onClick={() => {
-                  const d = new Date(selectedDate);
-                  d.setDate(d.getDate() - 1);
-                  setSelectedDate(d.toISOString().split("T")[0]);
-                }}
-                className="p-1.5 rounded-full hover:bg-neutral-100 text-[#475569] cursor-pointer active:scale-90 transition-all duration-150"
-                title="Previous Day"
-              >
-                <ChevronLeft className="w-4.5 h-4.5" />
-              </button>
-              
-              <span className="text-xs font-bold text-[#475569] font-mono select-none px-1">
-                {new Date(selectedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-              </span>
+            {/* Header Right Area: Quick manual add + date navigation */}
+            <div className="flex items-center gap-3">
+              {(activeTab === "today" || activeTab === "backlog") && (
+                <button
+                  onClick={() => handleOpenAddFlexible(activeTab === "today")}
+                  className="px-3 py-1.5 rounded-xl bg-primary hover:bg-primary-dark text-white active:scale-95 transition-all duration-150 flex items-center justify-center gap-1.5 cursor-pointer font-display font-bold text-xs shadow-xs"
+                  title="Add Task Manually"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Add Task</span>
+                </button>
+              )}
 
-              <button 
-                onClick={() => {
-                  const d = new Date(selectedDate);
-                  d.setDate(d.getDate() + 1);
-                  setSelectedDate(d.toISOString().split("T")[0]);
-                }}
-                className="p-1.5 rounded-full hover:bg-neutral-100 text-[#475569] cursor-pointer active:scale-90 transition-all duration-150"
-                title="Next Day"
-              >
-                <ChevronRight className="w-4.5 h-4.5" />
-              </button>
+              {/* Selected Date Jump Widget and Arrow Controls shifted to the Right (Minimalistic style) */}
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={() => {
+                    const d = new Date(selectedDate);
+                    d.setDate(d.getDate() - 1);
+                    setSelectedDate(d.toISOString().split("T")[0]);
+                  }}
+                  className="p-1.5 rounded-full hover:bg-neutral-100 text-[#475569] cursor-pointer active:scale-90 transition-all duration-150"
+                  title="Previous Day"
+                >
+                  <ChevronLeft className="w-4.5 h-4.5" />
+                </button>
+                
+                <span className="text-xs font-bold text-[#475569] font-mono select-none px-1">
+                  {new Date(selectedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                </span>
+
+                <button 
+                  onClick={() => {
+                    const d = new Date(selectedDate);
+                    d.setDate(d.getDate() + 1);
+                    setSelectedDate(d.toISOString().split("T")[0]);
+                  }}
+                  className="p-1.5 rounded-full hover:bg-neutral-100 text-[#475569] cursor-pointer active:scale-90 transition-all duration-150"
+                  title="Next Day"
+                >
+                  <ChevronRight className="w-4.5 h-4.5" />
+                </button>
+              </div>
             </div>
 
             {/* Navbar Integrated Subtle Progress Line */}
@@ -3029,6 +5027,31 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* AI Adjustments Undo Banner */}
+                {copilotUndoState && (
+                  <div className="mx-4 mb-3 p-3 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center justify-between text-xs text-indigo-850 animate-fade-in shadow-xs text-left">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-primary fill-primary/10 shrink-0" />
+                      <span>AI Copilot updated your schedule. Mismatched?</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button 
+                        onClick={handleUndoAIChanges}
+                        className="bg-primary hover:bg-primary-dark text-white font-bold px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs active:scale-95 text-[11px] font-display"
+                      >
+                        Undo Changes
+                      </button>
+                      <button 
+                        onClick={() => setCopilotUndoState(null)}
+                        className="text-indigo-400 hover:text-indigo-650 font-bold p-1 cursor-pointer"
+                        title="Dismiss"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
                 
 
                 {/* Grid container giving dual layout on desktop, standard layout on mobile */}
@@ -3083,12 +5106,20 @@ export default function App() {
                           No tasks slotted for today. Tap the morning sync banner or click backlog to schedule item queues immediately.
                         </p>
                       </div>
-                      <button
-                        onClick={handleOpenAICopilot}
-                        className="px-4 py-2 bg-primary hover:bg-primary-dark text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" /> Launch AI Copilot
-                      </button>
+                      <div className="flex items-center gap-2.5">
+                        <button
+                          onClick={handleOpenAICopilot}
+                          className="px-4 py-2 bg-primary hover:bg-primary-dark text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" /> Launch AI Copilot
+                        </button>
+                        <button
+                          onClick={() => handleOpenAddFlexible(true)}
+                          className="px-4 py-2 bg-[#FFFFFF] border border-neutral-250 hover:bg-neutral-50 text-neutral-700 text-xs font-bold rounded-xl shadow-xs cursor-pointer transition-all flex items-center gap-1.5 font-display"
+                        >
+                          <Plus className="w-3.5 h-3.5 text-neutral-500" /> Create Manually
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div className="relative border-l border-neutral-200/40 pl-4 py-1 ml-2.5">
@@ -3116,6 +5147,11 @@ export default function App() {
                           gapMins = Math.max(0, nextStartMins - endMins);
                         }
 
+                        // Execution Engine: active / upcoming states
+                        const isActiveNow = activeNowTask?.id === item.id;
+                        const isUpNext = !isActiveNow && upNextTask?.id === item.id && !isCompleted;
+                        const todayFlexCount = daySchedule.items.filter(i => i.type === "flexible").length;
+
                         return (
                           <div
                             key={`${item.id}-${idx}`}
@@ -3134,7 +5170,9 @@ export default function App() {
                             {/* Marker line point dot */}
                             <span 
                               className={`absolute -left-[22px] top-4.5 w-3 h-3 rounded-full border bg-white transition-transform duration-200 ${
-                                isEmergencyItem
+                                isActiveNow
+                                  ? "bg-primary border-primary/50 animate-pulse"
+                                  : isEmergencyItem
                                   ? "bg-amber-500 border-amber-600"
                                   : isFixedType
                                   ? "bg-[#E24B4A] border-red-200"
@@ -3146,10 +5184,13 @@ export default function App() {
 
                             {/* TIMELINE CARD */}
                             <div 
-                              className={`rounded-2xl border border-neutral-150 p-4.5 relative transition-all text-left shadow-xs ${
+                              className={`rounded-2xl border p-4.5 relative transition-all text-left shadow-xs ${
                                 isDragging ? "opacity-40 scale-95 ring-2 ring-primary/30" :
                                 isDragOver ? "ring-2 ring-primary/20" :
-                                isCompleted ? "opacity-60 bg-[#F0FDF4]" : "bg-white hover:scale-[1.005] hover:shadow-sm hover:border-neutral-200/80"
+                                isActiveNow ? "bg-white border-primary/30 ring-2 ring-primary/15 shadow-md shadow-primary/10" :
+                                isUpNext ? "bg-white border-neutral-200 border-dashed" :
+                                isCompleted ? "opacity-60 bg-[#F0FDF4] border-neutral-150" :
+                                "bg-white border-neutral-150 hover:scale-[1.005] hover:shadow-sm hover:border-neutral-200/80"
                               }`}
                               style={{
                                 borderLeft: `3px solid ${
@@ -3188,6 +5229,16 @@ export default function App() {
                                   <div className="space-y-1 flex-1 min-w-0 pr-1">
                                     {/* Top meta tags */}
                                     <div className="flex items-center gap-1.5 text-xs text-[#5A5A7A] leading-none shrink-0 font-semibold uppercase tracking-wider flex-wrap">
+                                      {isActiveNow && (
+                                        <span className="text-primary bg-primary/10 px-1.5 py-0.5 rounded-md text-[9px] font-bold animate-pulse normal-case shrink-0">
+                                          ⚡ Active
+                                        </span>
+                                      )}
+                                      {isUpNext && (
+                                        <span className="text-neutral-500 bg-neutral-100 px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0">
+                                          Next →
+                                        </span>
+                                      )}
                                       {isEmergencyItem ? (
                                         <span className="text-amber-600">🚨 Interruption</span>
                                       ) : isFixedType ? (
@@ -3197,6 +5248,7 @@ export default function App() {
                                       ) : (
                                         <span className="text-[#1D9E75]">Flexible Slotted</span>
                                       )}
+
                                       {item.energy_level && (
                                         <><span>•</span><span className="capitalize">{item.energy_level} energy</span></>
                                       )}
@@ -3204,6 +5256,34 @@ export default function App() {
                                         <span className="flex items-center gap-0.5 text-primary bg-primary/10 px-1 rounded">
                                           📌 Pinned
                                         </span>
+                                      )}
+                                      {task?.importance && (
+                                        <>
+                                          <span>•</span>
+                                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold normal-case ${
+                                            task.importance === "critical"
+                                              ? "bg-red-50 text-red-600 border border-red-100"
+                                              : task.importance === "important"
+                                              ? "bg-primary/5 text-primary border border-primary/10"
+                                              : "bg-[#ECFDF5] text-emerald-700 border border-emerald-200"
+                                          }`}>
+                                            {task.importance === "critical" ? "🚨 Critical" : task.importance === "important" ? "⚡ Important" : "🌱 Optional"}
+                                          </span>
+                                        </>
+                                      )}
+                                      {task?.task_flexibility && (
+                                        <>
+                                          <span>•</span>
+                                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold normal-case ${
+                                            task.task_flexibility === "fixed"
+                                              ? "bg-purple-50 text-purple-650 border border-purple-200/50"
+                                              : task.task_flexibility === "optional"
+                                              ? "bg-[#ECFDF5] text-emerald-700 border border-emerald-200"
+                                              : "bg-blue-50 text-blue-650 border border-blue-200/50"
+                                          }`}>
+                                            {task.task_flexibility === "fixed" ? "🔒 Rigid" : task.task_flexibility === "optional" ? "🌱 Optional" : "↔ Movable"}
+                                          </span>
+                                        </>
                                       )}
                                     </div>
 
@@ -3236,6 +5316,50 @@ export default function App() {
                                         </button>
                                       )}
                                     </div>
+
+                                    {/* Task Graph links on timeline card */}
+                                    {((task?.blocked_by && task.blocked_by.length > 0) || (task?.blocks && task.blocks.length > 0)) && (
+                                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                        {task.blocked_by && task.blocked_by.map(blockedId => {
+                                          const blockedTask = flexibleTasks.find(t => t.id === blockedId);
+                                          if (!blockedTask) return null;
+                                          return (
+                                            <span key={blockedId} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-orange-50 border border-orange-200/50 text-orange-700 text-[9px] font-semibold">
+                                              ↳ blocked by: {blockedTask.title}
+                                            </span>
+                                          );
+                                        })}
+                                        {task.blocks && task.blocks.map(blocksId => {
+                                          const blocksTask = flexibleTasks.find(t => t.id === blocksId);
+                                          if (!blocksTask) return null;
+                                          return (
+                                            <span key={blocksId} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200/50 text-blue-700 text-[9px] font-semibold">
+                                              ↳ blocks: {blocksTask.title}
+                                            </span>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+
+                                    {/* Subtle one-line consequence teaser */}
+                                    {!isFixedType && !isCompleted && task?.consequence_teaser && (
+                                      <div 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (openInsightTaskId === item.id) {
+                                            setOpenInsightTaskId(null);
+                                          } else {
+                                            fetchConsequenceInsight(task);
+                                          }
+                                        }}
+                                        className="text-[10px] text-amber-700/90 font-bold hover:bg-amber-100/30 border border-amber-200/50 bg-amber-50/20 px-2 py-0.5 rounded-lg w-max flex items-center gap-1 mt-1.5 transition-all select-none cursor-pointer"
+                                        title="Tap to view full coach narrative"
+                                      >
+                                        <Zap className="w-2.5 h-2.5 text-amber-500 fill-amber-500/10 shrink-0" />
+                                        <span>{task.consequence_teaser}</span>
+                                        <span className="text-[8px] text-amber-400 font-bold ml-1 font-mono">{(openInsightTaskId === item.id) ? "▴ HIDE" : "▸ READ"}</span>
+                                      </div>
+                                    )}
 
                                     {/* Pin time editor inline */}
                                     {pinTimeTaskId === item.id && (
@@ -3416,6 +5540,206 @@ export default function App() {
                                   Due {new Date(item.deadline).toLocaleDateString("en", { weekday: "short", day: "numeric" })}
                                 </div>
                               )}
+
+                              {/* ⚡ AI Consequence Insight & Action Tray */}
+                              {!isFixedType && !isCompleted && (
+                                <div className="mt-3 border-t border-neutral-100 pt-2.5">
+                                  <div className="flex items-center gap-2">
+                                    {!task?.consequence_teaser && (
+                                      <button
+                                        onClick={() => {
+                                          if (openInsightTaskId === item.id) {
+                                            setOpenInsightTaskId(null);
+                                          } else if (task) {
+                                            fetchConsequenceInsight(task);
+                                          }
+                                        }}
+                                        className={`flex items-center gap-1.5 text-xs font-bold cursor-pointer transition-all ${openInsightTaskId === item.id ? "text-amber-600" : "text-amber-500 hover:text-amber-600"}`}
+                                      >
+                                        <Zap className={`w-3.5 h-3.5 ${loadingInsightTaskId === item.id ? "animate-pulse text-amber-500" : "text-amber-500"}`} />
+                                        {openInsightTaskId === item.id ? "Hide consequence description" : "If skipped →"}
+                                      </button>
+                                    )}
+
+                                    {!isEmergencyItem && (
+                                      <>
+                                        {!task?.consequence_teaser && <span className="text-neutral-300 text-xs">•</span>}
+                                        <button
+                                          onClick={() => setActionTrayTaskId(prev => prev === item.id ? null : item.id)}
+                                          className="text-xs font-bold text-neutral-400 hover:text-neutral-600 transition-colors cursor-pointer flex items-center gap-1"
+                                        >
+                                          <span className={`transition-transform inline-block text-[8px] ${actionTrayTaskId === item.id ? "rotate-180" : ""}`}>▾</span>
+                                          {actionTrayTaskId === item.id ? "Close options" : "Can't do this now?"}
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+
+                                  {openInsightTaskId === item.id && (
+                                    <div className="mt-2.5 space-y-3 animate-fade-in text-left">
+                                      {loadingInsightTaskId === item.id ? (
+                                        <div className="p-3.5 bg-amber-50/70 border border-amber-200/50 rounded-2xl flex items-center gap-2 text-xs text-amber-600">
+                                          <div className="w-3.5 h-3.5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0" />
+                                          <span className="font-semibold">Analyzing real-world impact…</span>
+                                        </div>
+                                      ) : (() => {
+                                        const consequenceKey = task ? getConsequenceCacheKey(task, "skip", 0, daySchedule.items, completedStreak, selectedDate) : "";
+                                        const cached = consequenceCache[consequenceKey];
+                                        if (!cached) {
+                                          return (
+                                            <div className="p-3.5 bg-amber-50/70 border border-amber-200/50 rounded-2xl">
+                                              <p className="text-xs text-amber-800 leading-relaxed font-semibold">{task?.consequence_insight || "Tap again to analyze."}</p>
+                                            </div>
+                                          );
+                                        }
+
+                                        // Map emotional weight to premium styles
+                                        const weightStyles = {
+                                          critical: "border-red-200 bg-red-50 text-red-800",
+                                          high: "border-orange-200 bg-orange-50 text-orange-800",
+                                          medium: "border-amber-200 bg-amber-50/70 text-amber-800",
+                                          low: "border-blue-100 bg-blue-50/50 text-blue-800",
+                                          none: "border-neutral-200 bg-neutral-50 text-neutral-800"
+                                        };
+                                        const style = weightStyles[cached.emotional_weight] || weightStyles.none;
+
+                                        // Get headline based on primary_message_slot
+                                        const headline = cached.primary_message_slot === "immediate" 
+                                          ? cached.immediate_effect 
+                                          : cached.primary_message_slot === "cascade"
+                                          ? cached.cascade_effect
+                                          : cached.goal_effect;
+
+                                        return (
+                                          <div className={`p-4 border rounded-2xl space-y-3 ${style}`}>
+                                            {/* Severity Warn Banner */}
+                                            {cached.emotional_weight === "critical" && (
+                                              <div className="p-2.5 bg-red-650 text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 animate-pulse">
+                                                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                                <span>CRITICAL CASCADE: Skipping breaks your project dependencies!</span>
+                                              </div>
+                                            )}
+                                            {cached.emotional_weight === "high" && (
+                                              <div className="p-2.5 bg-orange-500 text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5">
+                                                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                                <span>HIGH IMPACT TRADE-OFF: Consider taking a partial compromise.</span>
+                                              </div>
+                                            )}
+
+                                            {/* Headline */}
+                                            <div className="space-y-0.5">
+                                              <span className="text-[9px] font-bold tracking-wider uppercase opacity-60">Primary Impact</span>
+                                              <h5 className="text-xs font-bold leading-snug">{headline}</h5>
+                                            </div>
+
+                                            {/* Expanded details */}
+                                            <div className="pt-2 border-t border-current/10 space-y-1.5 text-xs opacity-90 leading-relaxed font-sans">
+                                              <p><strong>Immediate:</strong> {cached.immediate_effect}</p>
+                                              <p><strong>Downstream:</strong> {cached.cascade_effect}</p>
+                                              <p><strong>Goal Momentum:</strong> {cached.goal_effect}</p>
+                                            </div>
+
+                                            {/* Recommendations */}
+                                            <div className="p-3 bg-white/70 rounded-xl space-y-2 border border-current/5">
+                                              <div className="text-[11px] text-neutral-800">
+                                                <span className="font-bold block text-primary text-[9px] uppercase tracking-wider mb-0.5">💡 Best Action Path</span>
+                                                <p className="leading-relaxed font-medium">{cached.recommendation.best_action}</p>
+                                              </div>
+                                              <div className="text-[11px] text-neutral-800 pt-1.5 border-t border-neutral-100">
+                                                <span className="font-bold block text-emerald-700 text-[9px] uppercase tracking-wider mb-0.5">🌱 Minimum Viable Progress (MVP)</span>
+                                                <p className="leading-relaxed font-semibold">{cached.recommendation.minimum_viable_progress}</p>
+                                              </div>
+                                            </div>
+
+                                            {/* Negotiation Options */}
+                                            {cached.negotiation_options && cached.negotiation_options.length > 0 && (
+                                              <div className="space-y-2 pt-1">
+                                                <span className="text-[9px] font-bold tracking-wider uppercase opacity-60 block">Empathy-driven Negotiations</span>
+                                                <div className="flex flex-col gap-1.5">
+                                                  {cached.negotiation_options.map((opt, oIdx) => (
+                                                    <button
+                                                      key={oIdx}
+                                                      type="button"
+                                                      onClick={() => task && executeNegotiationCommand(task, opt.command)}
+                                                      className="flex items-center justify-between p-2.5 bg-white hover:bg-neutral-50 border border-neutral-150 rounded-xl text-left transition-all cursor-pointer shadow-sm group w-full"
+                                                    >
+                                                      <div className="space-y-0.5 pr-2">
+                                                        <span className="text-xs font-bold text-neutral-800 group-hover:text-primary transition-colors">{opt.label}</span>
+                                                        <span className="text-[10px] text-neutral-400 block leading-tight">{opt.consequence_delta}</span>
+                                                      </div>
+                                                      <span className="text-[10px] font-bold uppercase shrink-0 px-2 py-0.5 rounded bg-neutral-100 text-neutral-500 border group-hover:bg-primary/10 group-hover:text-primary group-hover:border-primary/20 transition-all font-mono">
+                                                        {opt.strategy.replace("_", " ")}
+                                                      </span>
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                  )}
+
+                                  {actionTrayTaskId === item.id && (
+                                    <div className="mt-2.5 flex flex-wrap gap-1.5 animate-fade-in">
+                                      <button onClick={() => { showToast("10 min break added.", "info"); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors cursor-pointer">☕ 10 min break</button>
+                                      <button onClick={() => { const result = simulateDelayCost(daySchedule.items, item.id, 30, appSettings.day_end, todayFlexCount, flexibleTasks, completedStreak); setConsequenceState({ taskId: item.id, mode: "break", breakMins: 30, result }); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors cursor-pointer">☕ 30 min break</button>
+                                      <button onClick={() => { setMoveSheetTaskId(item.id); setActionTrayTaskId(null); handleOpenAICopilot(); setCopilotInput(`I want to move "${item.title}" to later today. What slots are available?`); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-600 border border-indigo-100 hover:bg-indigo-100 transition-colors cursor-pointer">↔ Move later</button>
+                                      <button onClick={() => { const result = simulateDelayCost(daySchedule.items, item.id, 0, appSettings.day_end, todayFlexCount, flexibleTasks, completedStreak); setConsequenceState({ taskId: item.id, mode: "skip", result }); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-red-50 text-red-500 border border-red-100 hover:bg-red-100 transition-colors cursor-pointer">✕ Skip today</button>
+                                    </div>
+                                  )}
+
+                                  {consequenceState?.taskId === item.id && (
+                                    <div className="mt-3 p-4 bg-white border border-neutral-200 rounded-2xl shadow-sm space-y-3 animate-fade-in text-left">
+                                      <p className="text-xs font-bold text-neutral-500 uppercase tracking-wider">
+                                        {consequenceState.mode === "skip" ? `Skipping "${item.title}" today` : `Taking a ${consequenceState.breakMins} min break`}
+                                      </p>
+                                      <div className="space-y-1">
+                                        {consequenceState.result.shiftedTasks.slice(0, 3).map(st => (
+                                          <div key={st.id} className="flex items-center gap-1.5 text-xs text-neutral-600">
+                                            <span className="text-neutral-300">·</span>
+                                            <span className="font-medium truncate max-w-[120px]">{st.title}</span>
+                                            <span className="text-neutral-400 shrink-0 font-mono text-[10px]">→ {st.newStart} (was {st.oldStart})</span>
+                                          </div>
+                                        ))}
+                                        {consequenceState.result.sleepShiftMins > 0 && (
+                                          <div className="flex items-center gap-1.5 text-xs text-red-600 font-semibold">
+                                            <Moon className="w-3.5 h-3.5" /><span>Sleep shifts +{consequenceState.result.sleepShiftMins} min later</span>
+                                          </div>
+                                        )}
+                                        {consequenceState.result.streakBreaks && completedStreak > 0 && (
+                                          <div className="flex items-center gap-1.5 text-xs text-orange-600 font-semibold">
+                                            <Flame className="w-3.5 h-3.5" /><span>{completedStreak}-day streak breaks</span>
+                                          </div>
+                                        )}
+                                        {consequenceState.mode === "skip" && consequenceState.result.freeTimeLostMins > 0 && (
+                                          <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium pt-1 mt-1 border-t border-neutral-100">
+                                            <span className="text-neutral-300">·</span><span>Tonight: +{consequenceState.result.freeTimeLostMins} min free time</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                      {consequenceState.mode === "skip" && (
+                                        <div className="p-2.5 bg-primary/5 border border-primary/15 rounded-xl">
+                                          <p className="text-xs text-primary font-semibold">💡 Do {Math.max(20, Math.round(item.duration_minutes * 0.4))} min now → preserves momentum & streak</p>
+                                        </div>
+                                      )}
+                                      <div className="flex flex-wrap gap-2 pt-1">
+                                        {consequenceState.mode === "skip" && (
+                                          <button onClick={() => { const r = Math.max(20, Math.round(item.duration_minutes * 0.4)); handleUpdateFlexible(flexibleTasks.map(t => t.id === item.id ? { ...t, duration_minutes: r, partial_completion: true, partial_duration_minutes: r } : t)); setConsequenceState(null); showToast(`Reduced to ${r} min. Momentum preserved. ✓`, "success"); triggerHaptic(30); }} className="px-3.5 py-2 text-xs font-bold bg-primary text-white rounded-xl hover:bg-primary-dark transition-colors cursor-pointer shadow-sm">Do {Math.max(20, Math.round(item.duration_minutes * 0.4))} min</button>
+                                        )}
+                                        {consequenceState.mode === "break" && (
+                                          <button onClick={() => { showToast(`${consequenceState.breakMins} min break added.`, "info"); setConsequenceState(null); triggerHaptic(20); }} className="px-3.5 py-2 text-xs font-bold bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors cursor-pointer">Take {consequenceState.breakMins} min</button>
+                                        )}
+                                        <button onClick={() => setConsequenceState(null)} className="px-3.5 py-2 text-xs font-bold bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors cursor-pointer">Do full task</button>
+                                        {consequenceState.mode === "skip" && (
+                                          <button onClick={() => { handleCantDoToday(item.id); setConsequenceState(null); showToast("Skipped. Added to tomorrow.", "warning"); triggerHaptic(50); }} className="px-3.5 py-2 text-xs font-bold bg-neutral-100 text-neutral-500 rounded-xl hover:bg-neutral-200 transition-colors cursor-pointer">Skip anyway</button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
 
                             {/* Drop indicator after */}
@@ -3455,11 +5779,12 @@ export default function App() {
                 <div className="hidden lg:block lg:col-span-4 space-y-4 lg:overflow-y-auto h-full pb-6 lg:pr-1">
                   
                   {/* DayFlow AI Copilot Card */}
-                  <div 
-                    onClick={handleOpenAICopilot}
-                    className="glass-card rounded-2xl p-5 cursor-pointer hover:border-primary/45 group transition-all"
-                  >
-                    <div className="flex items-start gap-3">
+                  {/* DayFlow AI Copilot Card */}
+                  <div className="glass-card rounded-2xl p-5 hover:border-primary/45 group transition-all">
+                    <div 
+                      onClick={handleOpenAICopilot}
+                      className="flex items-start gap-3 cursor-pointer"
+                    >
                       <div className="p-2 bg-[#EEEDFE] rounded-lg text-primary transition-transform duration-200 shrink-0">
                         <Sparkles className="w-5 h-5 fill-primary/10" />
                       </div>
@@ -3473,10 +5798,45 @@ export default function App() {
                         </p>
                       </div>
                     </div>
-                    <div className="mt-4 flex items-center justify-between text-xs font-bold text-primary pt-3 border-t border-neutral-100">
-                      <span>Launch AI Copilot</span>
-                      <ArrowRight className="w-4 h-4 text-primary group-hover:translate-x-0.75 transition-transform font-sans" />
+                    
+                    <div className="mt-4 pt-3 border-t border-neutral-100 flex flex-col gap-2">
+                      <div 
+                        onClick={handleOpenAICopilot}
+                        className="flex items-center justify-between text-xs font-bold text-primary cursor-pointer hover:underline"
+                      >
+                        <span>Launch AI Copilot</span>
+                        <ArrowRight className="w-4 h-4 text-primary group-hover:translate-x-0.75 transition-transform font-sans" />
+                      </div>
+
+                      {daySchedule.items.some(i => i.type === "flexible") && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenAICopilot();
+                            setCopilotInput("I'm behind on today's schedule. Can you help me adjust?");
+                          }}
+                          className="mt-1 w-full py-2 px-3 bg-amber-50 text-amber-700 hover:bg-amber-100/80 border border-amber-200/50 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Zap className="w-3.5 h-3.5 fill-amber-500/20 text-amber-500" />
+                          <span>Replan my day</span>
+                        </button>
+                      )}
                     </div>
+                  </div>
+
+                  {/* Quick Action Manual Add Card */}
+                  <div className="glass-card rounded-2xl p-5 border border-neutral-200/60 bg-white shadow-xs flex flex-col gap-3">
+                    <div>
+                      <h4 className="text-xs font-bold text-[#9999B3] uppercase tracking-wider">Quick Actions</h4>
+                      <p className="text-[11px] text-neutral-400 mt-1">Directly schedule or backlog new tasks without AI assistance.</p>
+                    </div>
+                    <button
+                      onClick={() => handleOpenAddFlexible(true)}
+                      className="w-full py-2.5 px-4 bg-[#FFFFFF] border border-neutral-200 hover:border-primary/30 text-neutral-700 text-xs font-bold rounded-xl cursor-pointer transition-all flex items-center justify-center gap-1.5 shadow-2xs font-display"
+                    >
+                      <Plus className="w-4 h-4 text-neutral-500" />
+                      <span>Add Task Manually</span>
+                    </button>
                   </div>
 
                   {/* Interactive inline instructions config */}
@@ -3505,8 +5865,16 @@ export default function App() {
               <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto">
                 
                 {/* Search / Filter Pills header */}
-                <div className="flex items-center justify-between mb-4 gap-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-[#9999B3]">Backlog Filter</span>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-3">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-[#9999B3]">Backlog Filter</span>
+                    <button
+                      onClick={() => handleOpenAddFlexible(false)}
+                      className="px-3.5 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs font-bold rounded-xl cursor-pointer transition-all flex items-center gap-1.5 border border-primary/20"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Add Task
+                    </button>
+                  </div>
                   <div className="flex gap-1.5 overflow-x-auto py-0.5 shrink-0 scrollbar-none">
                     {(["all", "deadline", "anytime", "done"] as const).map((filter) => (
                       <button
@@ -3514,8 +5882,8 @@ export default function App() {
                         onClick={() => setBacklogFilter(filter)}
                         className={`px-4 py-2 text-xs rounded-full cursor-pointer font-bold capitalize transition-all border whitespace-nowrap ${
                           backlogFilter === filter
-                            ? "bg-primary text-white border-primary"
-                            : "bg-neutral-100 text-neutral-600 border-neutral-200 hover:bg-neutral-150"
+                            ? "bg-primary text-white border-primary shadow-sm shadow-primary/10"
+                            : "bg-transparent text-neutral-600 border-neutral-200 hover:bg-neutral-100/30"
                         }`}
                       >
                         {filter === "all" ? "Active" : filter === "deadline" ? "Has Deadline" : filter}
@@ -3527,12 +5895,22 @@ export default function App() {
                 {/* Backlog Grid list container */}
                 <div className="flex-1 space-y-3 pb-24">
                   {filteredBacklogTasks.length === 0 ? (
-                    <div className="py-20 text-center flex flex-col items-center justify-center">
-                      <Zap className="w-8 h-8 text-neutral-300 stroke-[1.5] mb-2" />
-                      <p className="text-sm font-semibold text-neutral-700">Backlog queue is empty</p>
-                      <p className="text-xs text-[#9999B3] max-w-sm px-10 mt-1 leading-relaxed">
-                        Tap "＋" to fill-up backlog items. No deadlines required; predictions map them automatically.
-                      </p>
+                    <div className="py-20 text-center flex flex-col items-center justify-center space-y-3.5">
+                      <div className="p-4 bg-white border border-neutral-200 rounded-full text-neutral-400 shadow-sm">
+                        <Zap className="w-7 h-7 stroke-[1.5]" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-neutral-700">Backlog queue is empty</p>
+                        <p className="text-xs text-[#9999B3] max-w-sm px-10 mt-1 leading-relaxed">
+                          No deadlines required; predictions map them automatically. Add tasks to fill up the backlog.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleOpenAddFlexible(false)}
+                        className="px-4 py-2 bg-primary hover:bg-primary-dark text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add Backlog Task
+                      </button>
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -3745,6 +6123,55 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Execution Score + Momentum Badge Card */}
+                    {executionScore !== null && (
+                      <div className="glass-card rounded-2xl p-5 space-y-3.5 font-sans text-left mt-4">
+                        <h4 className="text-xs font-bold text-neutral-800 uppercase tracking-widest flex items-center gap-1.5">
+                          <Flame className="w-3.5 h-3.5 text-orange-500 fill-orange-500/10" /> Daily Execution & Momentum
+                        </h4>
+
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-0.5">
+                            <span className="text-2xl font-bold text-neutral-800">{executionScore.score}%</span>
+                            <span className="block text-xs text-neutral-500">Tasks: {executionScore.done} / {executionScore.total} completed</span>
+                          </div>
+                          
+                          <div className="text-right">
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${
+                              momentumState === "high" ? "bg-emerald-50 text-emerald-700 border border-emerald-100" :
+                              momentumState === "stable" ? "bg-amber-50 text-amber-700 border border-amber-100" :
+                              "bg-red-50 text-red-700 border border-red-100"
+                            }`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                momentumState === "high" ? "bg-emerald-500" :
+                                momentumState === "stable" ? "bg-amber-500" :
+                                "bg-red-500"
+                              }`} />
+                              {momentumState === "high" ? "High Momentum" :
+                               momentumState === "stable" ? "Steady" :
+                               "Behind"}
+                            </span>
+                            {completedStreak > 0 && (
+                              <span className="block text-[10px] text-neutral-400 mt-1 font-medium font-mono">
+                                🔥 {completedStreak}-DAY STREAK
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="w-full h-1.5 bg-neutral-100/60 rounded-full overflow-hidden">
+                          <div 
+                            className={`h-full rounded-full transition-all duration-500 ${
+                              momentumState === "high" ? "bg-emerald-500" :
+                              momentumState === "stable" ? "bg-amber-500" :
+                              "bg-red-500"
+                            }`}
+                            style={{ width: `${executionScore.score}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     {/* Circadian Calibration Matrix Card */}
                     <div className="glass-card rounded-2xl p-5 space-y-3 font-sans text-left mt-4">
@@ -5011,7 +7438,7 @@ export default function App() {
           )}
 
           {/* BOTTOM NAVIGATION TAB BAR (Fixed boundary, does not move) */}
-          <nav id="mobile_sticky_bottom_nav" className="menu h-20 border-t border-neutral-200/60 bg-white grid grid-cols-4 items-center z-45 flex-shrink-0 md:!hidden pb-1" role="navigation" style={{ '--component-active-color': '#7C3AED' } as React.CSSProperties}>
+          <nav id="mobile_sticky_bottom_nav" className="menu h-20 border-t border-neutral-200/30 bg-white/40 backdrop-blur-md grid grid-cols-4 items-center z-45 flex-shrink-0 md:!hidden pb-1" role="navigation" style={{ '--component-active-color': '#7C3AED' } as React.CSSProperties}>
             {menuItems.map((item, index) => {
               const isActive = item.value === activeTab;
               const IconComponent = item.icon;
@@ -5205,8 +7632,38 @@ export default function App() {
                   required
                   value={flexibleForm.title}
                   onChange={(e) => setFlexibleForm({ ...flexibleForm, title: e.target.value })}
+                  onBlur={handleTitleBlur}
                   className="w-full px-3 py-2.5 border border-neutral-200 rounded-xl text-sm bg-white focus:ring-1 focus:ring-primary focus:outline-none"
                 />
+                {classificationFeedback && (
+                  <div className="mt-2 flex items-center justify-between p-2 rounded-xl bg-neutral-50 border border-neutral-100 text-xs">
+                    <div className="flex items-center gap-1.5 font-medium">
+                      {classificationFeedback.confidence >= 0.75 ? (
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] font-bold">
+                          ✓ Classified: {classificationFeedback.category}
+                        </span>
+                      ) : classificationFeedback.confidence >= 0.5 ? (
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-100 text-[10px] font-bold">
+                          ⚡ Guess: {classificationFeedback.category}
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-100 text-[10px] font-bold">
+                          ⚠️ Low confidence: {classificationFeedback.category}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-neutral-400">
+                        via {classificationFeedback.source} ({Math.round(classificationFeedback.confidence * 100)}%)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsMetadataOpen(!isMetadataOpen)}
+                      className="text-[10px] text-primary font-bold hover:underline"
+                    >
+                      {isMetadataOpen ? "Hide Options" : "Adjust"}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -5257,6 +7714,54 @@ export default function App() {
               </div>
 
               <div>
+                <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Importance</label>
+                <div className="flex gap-1.5">
+                  {(["critical", "important", "optional"] as const).map((imp) => (
+                    <button
+                      key={imp}
+                      type="button"
+                      onClick={() => setFlexibleForm({ ...flexibleForm, importance: imp })}
+                      className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer transition-all ${
+                        flexibleForm.importance === imp
+                          ? imp === "critical"
+                            ? "bg-red-50 text-red-700 border-red-200"
+                            : imp === "important"
+                            ? "bg-primary/10 text-primary border-primary"
+                            : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : "bg-white text-neutral-500 border-neutral-200"
+                      }`}
+                    >
+                      {imp === "critical" ? "🚨 Critical" : imp === "optional" ? "🌱 Optional" : "⚡ Important"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Rigidity (Flexibility)</label>
+                <div className="flex gap-1.5">
+                  {(["fixed", "movable", "optional"] as const).map((flex) => (
+                    <button
+                      key={flex}
+                      type="button"
+                      onClick={() => setFlexibleForm({ ...flexibleForm, task_flexibility: flex })}
+                      className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer transition-all ${
+                        flexibleForm.task_flexibility === flex
+                          ? flex === "fixed"
+                            ? "bg-purple-50 text-purple-700 border-purple-200"
+                            : flex === "optional"
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : "bg-blue-50 text-blue-700 border-blue-200"
+                          : "bg-white text-neutral-500 border-neutral-200"
+                      }`}
+                    >
+                      {flex === "fixed" ? "🔒 Rigid (Fixed)" : flex === "optional" ? "🌱 Optional" : "↔ Movable"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
                 <label className="flex items-center gap-2 text-sm font-bold text-neutral-700 select-none cursor-pointer">
                   <input 
                     type="checkbox"
@@ -5291,6 +7796,156 @@ export default function App() {
                 </p>
               </div>
 
+              {/* Advanced Metadata collapsible details block */}
+              <div className="pt-2">
+                <details 
+                  open={isMetadataOpen} 
+                  onToggle={(e) => setIsMetadataOpen((e.target as HTMLDetailsElement).open)}
+                  className="border border-neutral-200 rounded-xl p-3 bg-neutral-50/50 space-y-3"
+                >
+                  <summary className="text-xs font-bold text-neutral-500 cursor-pointer select-none outline-none hover:text-neutral-700 flex items-center justify-between">
+                    <span>ADVANCED COGNITIVE METADATA</span>
+                    <span className="text-[10px] text-neutral-400 font-mono">{isMetadataOpen ? "▼ COLLAPSE" : "▶ EXPAND"}</span>
+                  </summary>
+                  
+                  <div className="pt-3 space-y-3 border-t border-neutral-100">
+                    {/* Category */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-wider mb-1">Category</label>
+                      <select
+                        value={flexibleForm.category}
+                        onChange={(e) => setFlexibleForm({ ...flexibleForm, category: e.target.value as any })}
+                        className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                      >
+                        <option value="study">🎓 Study</option>
+                        <option value="project">💻 Project</option>
+                        <option value="meeting">👥 Meeting</option>
+                        <option value="health">🏋️ Health</option>
+                        <option value="habit">🔄 Habit</option>
+                        <option value="admin">⚙️ Admin</option>
+                        <option value="social">🍻 Social</option>
+                        <option value="creative">🎨 Creative</option>
+                        <option value="personal">👤 Personal</option>
+                        <option value="misc">📦 Misc</option>
+                      </select>
+                    </div>
+
+                    {/* Rigidity */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-wider mb-1">Rigidity</label>
+                      <select
+                        value={flexibleForm.rigidity}
+                        onChange={(e) => setFlexibleForm({ ...flexibleForm, rigidity: e.target.value as any })}
+                        className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                      >
+                        <option value="flexible">Flexible</option>
+                        <option value="semi_flexible">Semi-flexible</option>
+                        <option value="fixed">Fixed</option>
+                      </select>
+                    </div>
+
+                    {/* Recoverability */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-wider mb-1">Recoverability</label>
+                      <select
+                        value={flexibleForm.recoverability}
+                        onChange={(e) => setFlexibleForm({ ...flexibleForm, recoverability: e.target.value as any })}
+                        className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                      >
+                        <option value="easy">Easy to recover</option>
+                        <option value="hard">Hard to recover</option>
+                        <option value="impossible">Impossible to recover</option>
+                      </select>
+                    </div>
+
+                    {/* Dependency Chain */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-wider mb-1">Dependency Strength</label>
+                      <select
+                        value={flexibleForm.dependency_chain}
+                        onChange={(e) => setFlexibleForm({ ...flexibleForm, dependency_chain: e.target.value as any })}
+                        className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                      >
+                        <option value="none">No dependencies</option>
+                        <option value="weak">Weak dependence</option>
+                        <option value="strong">Strong dependence</option>
+                      </select>
+                    </div>
+
+                    {/* Progress Type */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-wider mb-1">Progress Model</label>
+                      <select
+                        value={flexibleForm.progress_type}
+                        onChange={(e) => setFlexibleForm({ ...flexibleForm, progress_type: e.target.value as any })}
+                        className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                      >
+                        <option value="binary">Binary (Done/Not Done)</option>
+                        <option value="compound">Compound (Accumulates progress)</option>
+                        <option value="streak">Streak (Maintains daily momentum)</option>
+                      </select>
+                    </div>
+
+                    {/* Deadline Pressure */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-wider mb-1">Deadline Pressure</label>
+                      <select
+                        value={flexibleForm.deadline_pressure}
+                        onChange={(e) => setFlexibleForm({ ...flexibleForm, deadline_pressure: e.target.value as any })}
+                        className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                      >
+                        <option value="none">None</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                    </div>
+
+                    {/* Dependency links */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-wider mb-1">Blocked By</label>
+                        <select
+                          multiple
+                          value={flexibleForm.blocked_by}
+                          onChange={(e) => {
+                            const selected = Array.from(e.target.selectedOptions, option => option.value);
+                            setFlexibleForm(prev => ({ ...prev, blocked_by: selected }));
+                          }}
+                          className="w-full h-24 px-2 py-1 border border-neutral-200 rounded-xl text-[11px] bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                        >
+                          {flexibleTasks
+                            .filter(t => !editingTask || t.id !== editingTask.id)
+                            .map(t => (
+                              <option key={t.id} value={t.id}>{t.title}</option>
+                            ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-wider mb-1">Blocks Tasks</label>
+                        <select
+                          multiple
+                          value={flexibleForm.blocks}
+                          onChange={(e) => {
+                            const selected = Array.from(e.target.selectedOptions, option => option.value);
+                            setFlexibleForm(prev => ({ ...prev, blocks: selected }));
+                          }}
+                          className="w-full h-24 px-2 py-1 border border-neutral-200 rounded-xl text-[11px] bg-white focus:ring-1 focus:ring-primary focus:outline-none"
+                        >
+                          {flexibleTasks
+                            .filter(t => !editingTask || t.id !== editingTask.id)
+                            .map(t => (
+                              <option key={t.id} value={t.id}>{t.title}</option>
+                            ))}
+                        </select>
+                      </div>
+                    </div>
+                    <p className="text-[9px] text-neutral-400 mt-1 leading-tight">Cmd/Ctrl-click to select multiple tasks.</p>
+                  </div>
+                </details>
+              </div>
+
               <div className="pt-3 border-t border-neutral-100 flex gap-2">
                 <button 
                   type="button"
@@ -5312,16 +7967,16 @@ export default function App() {
           {/* SHEET 3 — AI Copilot */}
           {(() => {
             const userPromptsCount = chatHistory.filter(m => m.sender === "user").length;
-            const isCopilotFullScreen = userPromptsCount >= 3;
+            const isCopilotFullScreen = userPromptsCount >= 3 && !copilotMinimized;
             return (
               <div 
-                className={`absolute z-49 bg-white/95 backdrop-blur-xl transition-all duration-300 ease-out flex flex-col overflow-y-auto ${
+                className={`absolute z-49 bg-white/75 backdrop-blur-xl transition-all duration-300 ease-out flex flex-col overflow-hidden ${
                   activeBottomSheet === "assistant" 
                     ? "opacity-100 scale-100 pointer-events-auto" 
                     : "opacity-0 pointer-events-none invisible"
                 } ${
                   isCopilotFullScreen
-                    ? "top-0 bottom-0 left-0 right-0 w-full h-full max-h-screen rounded-none p-6"
+                    ? "top-0 bottom-0 left-0 right-0 w-full h-full max-h-screen md:max-w-3xl md:left-1/2 md:right-auto md:-translate-x-1/2 md:top-6 md:bottom-6 md:h-[calc(100vh-48px)] md:max-h-[85vh] md:rounded-3xl border border-neutral-200/80 shadow-2xl p-6"
                     : "bottom-0 left-0 right-0 max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl border border-neutral-200/80 shadow-2xl p-6 transform " + 
                       (activeBottomSheet === "assistant" ? "translate-y-0 scale-100" : "translate-y-full md:translate-y-10 md:scale-95")
                 }`}
@@ -5331,55 +7986,307 @@ export default function App() {
                     <span className="w-10 h-1 bg-neutral-200 rounded-full" />
                   </div>
                 )}
-
+ 
                 {/* Header */}
-                <div className="flex items-center justify-between mb-4 gap-2">
+                <div className="flex items-center justify-between mb-4 gap-2 border-b border-neutral-200/40 pb-3">
                   <h3 className="font-display font-semibold text-lg text-[#0F172A] flex items-center gap-1.5 shrink-0">
                     <Sparkles className="w-5 h-5 text-primary fill-primary/10 shrink-0" />
                     <span>DayFlow AI Copilot</span>
+                    {isCopilotFullScreen && (
+                      <span className="text-[10px] bg-indigo-50 text-primary font-bold px-2 py-0.5 rounded-full ml-1 animate-fade-in font-display">
+                        Expanded
+                      </span>
+                    )}
                   </h3>
                   
-                  <button
-                    type="button"
-                    onClick={() => handleSendCopilotMessage("Summarize my day and plan tomorrow")}
-                    disabled={isProcessingCopilot}
-                    className="ml-auto px-2.5 py-1 text-[10px] md:text-xs font-bold bg-gradient-to-r from-primary to-indigo-600 hover:from-primary-dark hover:to-indigo-700 text-white rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200 disabled:opacity-50 disabled:pointer-events-none shadow-sm shadow-primary/10"
-                    title="Summarize my day and plan tomorrow"
-                  >
-                    <Sparkles className="w-3 h-3 fill-white/10" />
-                    <span>Summarize & Plan</span>
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                    {/* Minimize / Expand Toggle */}
+                    {userPromptsCount >= 3 && (
+                      <button
+                        type="button"
+                        onClick={() => setCopilotMinimized(prev => !prev)}
+                        className="px-2 py-1 text-[10px] font-bold border border-neutral-200 text-neutral-500 hover:text-neutral-700 hover:bg-neutral-50 rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200"
+                        title={copilotMinimized ? "Expand chat view" : "Minimize chat view"}
+                      >
+                        {copilotMinimized ? (
+                          <>
+                            <Maximize2 className="w-3 h-3 text-neutral-400" />
+                            <span className="hidden sm:inline">Expand</span>
+                          </>
+                        ) : (
+                          <>
+                            <Minimize2 className="w-3 h-3 text-neutral-400" />
+                            <span className="hidden sm:inline">Minimize</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={handleResetCopilotChat}
+                      className="px-2 py-1 text-[10px] font-bold border border-neutral-200 text-neutral-500 hover:text-neutral-755 hover:bg-neutral-50 rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200 disabled:opacity-50"
+                      title="Reset chat context and troubleshooting"
+                    >
+                      <RefreshCw className="w-3 h-3 text-neutral-400 group-hover:rotate-180 transition-transform" />
+                      <span>Reset</span>
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={() => handleSendCopilotMessage("Summarize my day and plan tomorrow")}
+                      disabled={isProcessingCopilot}
+                      className="px-2.5 py-1 text-[10px] md:text-xs font-bold bg-gradient-to-r from-primary to-indigo-600 hover:from-primary-dark hover:to-indigo-700 text-white rounded-full transition-all cursor-pointer flex items-center gap-1 shrink-0 active:scale-95 duration-200 disabled:opacity-50 disabled:pointer-events-none shadow-sm shadow-primary/10"
+                      title="Summarize my day and plan tomorrow"
+                    >
+                      <Sparkles className="w-3 h-3 fill-white/10" />
+                      <span>Summarize & Plan</span>
+                    </button>
+
+                    {/* Exit/Close Chat button for desktop/fullscreen */}
+                    {isCopilotFullScreen && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveBottomSheet(null)}
+                        className="p-1 rounded-full border border-neutral-200 hover:bg-neutral-50 text-neutral-450 hover:text-neutral-650 cursor-pointer active:scale-95 duration-200 shrink-0 ml-1"
+                        title="Close Copilot"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
             {/* Content Container */}
             <div className="space-y-5 flex-1 flex flex-col min-h-0">
               
               {/* Copilot Chat Message Area */}
-              <div className="space-y-3 flex-1 max-h-[50vh] overflow-y-auto pr-1 flex flex-col">
+              <div className={`space-y-3 flex-1 overflow-y-auto pr-1 flex flex-col ${
+                isCopilotFullScreen ? "max-h-none" : "max-h-[50vh]"
+              }`}>
+                {copilotError && (
+                  <div className="p-3.5 bg-amber-50/90 border border-amber-200/60 rounded-2xl text-xs text-amber-900 flex flex-col gap-2 animate-fade-in text-left shadow-xs">
+                    <div className="flex items-center gap-2 font-bold text-amber-800">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>Troubleshooting Assistant</span>
+                    </div>
+                    <p className="text-[#5A5A7A] leading-relaxed text-[11px]">{copilotError}</p>
+                    <div className="flex items-center gap-3 mt-1 pt-1.5 border-t border-amber-200/50">
+                      <button
+                        type="button"
+                        onClick={() => setCopilotError(null)}
+                        className="text-[10px] font-bold text-amber-600 hover:text-amber-800 cursor-pointer"
+                      >
+                        Dismiss Notice
+                      </button>
+                      <span className="text-amber-300 text-[10px]">•</span>
+                      <button
+                        type="button"
+                        onClick={handleResetCopilotChat}
+                        className="text-[10px] font-bold text-primary hover:text-primary-dark cursor-pointer flex items-center gap-1"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" /> Reset AI Chat
+                      </button>
+                      {copilotError.indexOf("stopped") === -1 && copilotError.indexOf("cancelled") === -1 && (
+                        <>
+                          <span className="text-amber-300 text-[10px]">•</span>
+                          <button
+                            type="button"
+                            onClick={handleTriggerOfflineFallback}
+                            className="text-[10px] font-bold text-[#D97706] hover:text-amber-800 cursor-pointer flex items-center gap-1"
+                          >
+                            Use Offline Fallback
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {chatHistory.map((msg, idx) => {
                   const isAI = msg.sender === "ai";
+                  const isEditingThis = editingMessageIdx === idx;
+                  
                   return (
                     <div 
                       key={idx} 
-                      className={`flex flex-col max-w-[85%] ${isAI ? "self-start" : "self-end ml-auto"}`}
+                      className={`flex flex-col max-w-[85%] group/msg relative ${isAI ? "self-start" : "self-end ml-auto"}`}
                     >
-                      <div 
-                        className={`p-3.5 text-xs leading-relaxed ${
-                          isAI 
-                            ? "bg-[#F6F5FF] border border-[#E0D9FF] text-[#1F2937] rounded-xl font-medium shadow-none" 
-                            : "bg-primary text-white rounded-xl font-semibold shadow-[0_2px_4px_rgba(79,70,229,0.2)]"
-                        }`}
-                        style={{ whiteSpace: "pre-wrap" }}
-                      >
-                        {msg.text}
-                      </div>
+                      {isEditingThis ? (
+                        <div className="p-3 bg-white border border-[#E0D9FF] rounded-2xl shadow-sm space-y-2 w-full text-left">
+                          <textarea
+                            value={editingMessageText}
+                            onChange={(e) => setEditingMessageText(e.target.value)}
+                            className="w-full p-2 border border-neutral-200 rounded-xl text-xs bg-white focus:outline-none focus:ring-1 focus:ring-primary font-sans resize-none text-slate-800"
+                            rows={2}
+                          />
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setEditingMessageIdx(null)}
+                              className="px-2 py-1 text-[10px] font-bold border border-neutral-200 text-neutral-550 rounded-lg hover:bg-neutral-50 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const updatedHistory = chatHistory.slice(0, idx);
+                                setEditingMessageIdx(null);
+                                handleSendCopilotMessage(editingMessageText, updatedHistory);
+                              }}
+                              className="px-2.5 py-1 text-[10px] font-bold bg-primary text-white rounded-lg hover:bg-primary-dark cursor-pointer"
+                            >
+                              Regenerate
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <div 
+                            className={`p-3.5 text-xs leading-relaxed ${
+                              isAI 
+                                ? "bg-[#F6F5FF] border border-[#E0D9FF] text-[#1F2937] rounded-xl font-medium shadow-none text-left" 
+                                : "bg-primary text-white rounded-xl font-semibold shadow-[0_2px_4px_rgba(79,70,229,0.2)] text-left"
+                            }`}
+                            style={{ whiteSpace: "pre-wrap" }}
+                          >
+                            {msg.text}
+                          </div>
+                          
+                          {!isAI && !isProcessingCopilot && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingMessageIdx(idx);
+                                setEditingMessageText(msg.text);
+                              }}
+                              className="absolute -left-9 top-1/2 -translate-y-1/2 p-1.5 rounded-xl bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-450 hover:text-neutral-650 opacity-70 md:opacity-0 group-hover/msg:opacity-100 transition-opacity cursor-pointer shadow-3xs z-10"
+                              title="Edit message"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          )}
+                          
+                          {/* Questionnaire setup wizard card */}
+                          {msg.questionnaire && !msg.questionnaireSubmitted && (
+                            <div className="mt-3 bg-white border border-neutral-200/80 rounded-2xl p-4 shadow-xs space-y-3.5 text-left text-slate-800 w-full min-w-[260px] animate-fade-in">
+                              <div className="flex items-center gap-2 font-bold text-xs text-primary uppercase tracking-wider">
+                                <Sparkles className="w-3.5 h-3.5 fill-primary/10 text-primary" />
+                                <span>Plan Setup Wizard</span>
+                              </div>
+                              <h5 className="text-xs font-extrabold text-neutral-800 leading-tight">
+                                {msg.questionnaire.title}
+                              </h5>
+                              
+                              <div className="space-y-3">
+                                {msg.questionnaire.questions.map((q: any, qIdx: number) => (
+                                  <div key={q.id} className="space-y-1">
+                                    <label className="text-[11px] font-bold text-neutral-550 block">
+                                      {q.label}
+                                    </label>
+                                    {q.type === "select" ? (
+                                      <select
+                                        value={q.value}
+                                        onChange={(e) => {
+                                          const updated = [...chatHistory];
+                                          const msgCopy = { ...updated[idx] };
+                                          if (msgCopy.questionnaire) {
+                                            const qCopy = { ...msgCopy.questionnaire };
+                                            qCopy.questions = qCopy.questions.map((item: any, i: number) =>
+                                              i === qIdx ? { ...item, value: e.target.value } : item
+                                            );
+                                            msgCopy.questionnaire = qCopy;
+                                            updated[idx] = msgCopy;
+                                            setChatHistory(updated);
+                                          }
+                                        }}
+                                        className="w-full p-2 border border-neutral-200 rounded-xl text-xs bg-white text-neutral-700 focus:outline-none focus:ring-1 focus:ring-primary font-sans cursor-pointer"
+                                      >
+                                        {q.options?.map((opt: string) => (
+                                          <option key={opt} value={opt}>
+                                            {opt}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        value={q.value}
+                                        onChange={(e) => {
+                                          const updated = [...chatHistory];
+                                          const msgCopy = { ...updated[idx] };
+                                          if (msgCopy.questionnaire) {
+                                            const qCopy = { ...msgCopy.questionnaire };
+                                            qCopy.questions = qCopy.questions.map((item: any, i: number) =>
+                                              i === qIdx ? { ...item, value: e.target.value } : item
+                                            );
+                                            msgCopy.questionnaire = qCopy;
+                                            updated[idx] = msgCopy;
+                                            setChatHistory(updated);
+                                          }
+                                        }}
+                                        placeholder={q.placeholder}
+                                        className="w-full p-2 border border-neutral-200 rounded-xl text-xs bg-white text-neutral-700 focus:outline-none focus:ring-1 focus:ring-primary font-sans"
+                                      />
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+
+                              <div className="flex gap-2 pt-2.5 border-t border-neutral-100">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const updated = [...chatHistory];
+                                    updated[idx] = { ...updated[idx], questionnaireSubmitted: true };
+                                    setChatHistory(updated);
+                                  }}
+                                  className="flex-1 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-600 font-bold rounded-xl text-[11px] font-display transition-colors cursor-pointer text-center"
+                                >
+                                  Dismiss
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleSubmitQuestionnaire(idx);
+                                  }}
+                                  className="flex-1 py-2 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl text-[11px] font-display transition-all shadow-sm shadow-primary/20 cursor-pointer text-center"
+                                >
+                                  Generate Plan
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
                 {isProcessingCopilot && (
-                  <div className="flex items-center gap-2 text-xs text-[#94A3B8] font-bold animate-pulse p-1">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary" />
-                    <span>AI is formulating suggestions...</span>
+                  <div className="flex items-center justify-between gap-2 text-xs text-[#94A3B8] font-bold p-3 bg-neutral-50 rounded-2xl border border-neutral-100 animate-pulse">
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary" />
+                      <span className="text-neutral-600 font-medium transition-all duration-300 animate-fade-in">
+                        {copilotRetryAttempt === 1 ? (
+                          <span className="text-amber-600 font-semibold flex items-center gap-1.5">
+                            ⚡ AI servers are crowded. Holding your schedule safely...
+                          </span>
+                        ) : copilotRetryAttempt >= 2 ? (
+                          <span className="text-rose-500 font-semibold flex items-center gap-1.5">
+                            ⚡ Still retrying. Your data is safe — no changes lost...
+                          </span>
+                        ) : (
+                          copilotLoadingPhase
+                        )}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleStopCopilot}
+                      className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 rounded-xl text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-95 shrink-0"
+                    >
+                      <X className="w-3 h-3" /> Stop
+                    </button>
                   </div>
                 )}
               </div>
@@ -5541,7 +8448,9 @@ export default function App() {
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
-                        handleSendCopilotMessage();
+                        if (!isProcessingCopilot) {
+                          handleSendCopilotMessage();
+                        }
                       }
                     }}
                     placeholder={
@@ -5552,8 +8461,8 @@ export default function App() {
                         : `Hey ${profileName.split(" ")[0] || "there"}, what's on your mind? (e.g. 'I weigh 74.5 kg today')`
                     }
                     rows={2}
-                    className="w-full pl-3 pr-24 py-2.5 border border-neutral-200 rounded-2xl text-xs bg-white focus:ring-1 focus:ring-primary focus:outline-none resize-none font-sans font-medium"
-                    disabled={isProcessingCopilot || !!proposedChanges}
+                    className="w-full pl-3 pr-24 py-2.5 border border-neutral-200 rounded-2xl text-xs bg-white/40 backdrop-blur-xs focus:bg-white focus:ring-1 focus:ring-primary focus:outline-none resize-none font-sans font-medium"
+                    disabled={!!proposedChanges}
                   />
                   
                   <div className="absolute right-2.5 flex items-center gap-1.5">

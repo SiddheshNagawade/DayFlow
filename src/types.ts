@@ -14,7 +14,69 @@ export interface FixedBlock {
   color?: string;     // Color theme
 }
 
+export type TaskCategory = 
+  | "study" | "project" | "meeting" | "health" | "habit" 
+  | "admin" | "social" | "creative" | "personal" | "misc";
+
+export type TaskRigidity = "fixed" | "semi_flexible" | "flexible";
+export type TaskRecoverability = "impossible" | "hard" | "easy";
+export type TaskDependencyChain = "none" | "weak" | "strong";
+export type TaskProgressType = "binary" | "compound" | "streak";
+export type DeadlinePressure = "none" | "low" | "medium" | "high" | "critical";
+
+export interface TaskMeta {
+  category: TaskCategory;
+  rigidity: TaskRigidity;
+  importance: "critical" | "important" | "optional";
+  recoverability: TaskRecoverability;
+  dependency_chain: TaskDependencyChain;
+  progress_type: TaskProgressType;
+  deadline_pressure: DeadlinePressure;
+}
+
+export interface ClassificationResult {
+  meta: TaskMeta;
+  confidence: number;
+  source: "rules" | "memory" | "ai";
+}
+
+export type ConsequenceIntent = "preview" | "skip" | "delay" | "break" | "cancel";
+
+export interface ConsequenceCore {
+  time_shift_mins: number;
+  backlog_mins: number;
+  streak_break: boolean;
+  blocked_task_ids: string[];
+  deadline_risk_delta: number; // 0 to 10
+}
+
+export interface NegotiationOption {
+  strategy: "reduce_scope" | "reschedule" | "restructure" | "skip";
+  label: string;
+  consequence_delta: string;
+  command: {
+    type: "shorten_duration" | "move_to_gap" | "split_into_chunks" | "mark_partial" | "swap_tasks";
+    params?: Record<string, any>;
+  };
+}
+
+export interface TaskConsequence {
+  immediate_effect: string;
+  cascade_effect: string;
+  goal_effect: string;
+  emotional_weight: "none" | "low" | "medium" | "high" | "critical";
+  primary_message_slot: "immediate" | "cascade" | "goal";
+  recommendation: {
+    best_action: string;
+    minimum_viable_progress: string;
+  };
+  negotiation_options: NegotiationOption[];
+}
+
 export interface FlexibleTask {
+  meta?: TaskMeta;
+  blocked_by?: string[];
+  blocks?: string[];
   id: string;
   title: string;
   duration_minutes: number;
@@ -51,6 +113,19 @@ export interface FlexibleTask {
   category?: "work" | "exercise" | "relax" | "personal";
   notification_response?: "started" | "delayed_15" | "delayed_30" | "skipped_today";
   delay_count?: number; // how many times this task was delayed today
+
+  // Execution Engine — AI Consequence Insight
+  consequence_insight?: string;          // AI-generated narrative cached after first fetch
+  consequence_teaser?: string;           // AI-generated one-line teaser cached after first fetch
+  consequence_generated_at?: string;     // ISO date — used to decide if regeneration is needed
+
+  // Execution Engine — Partial Completion ("Do 25 min" option)
+  partial_completion?: boolean;          // true if user chose reduced version today
+  partial_duration_minutes?: number;     // the reduced duration they committed to
+
+  // Task Importance / Rigidity classification
+  importance?: "critical" | "important" | "optional";
+  task_flexibility?: "fixed" | "movable" | "optional";
 }
 
 export type GoalCategory = 
@@ -158,6 +233,16 @@ export interface TimeGap {
   start: string; // "HH:MM"
   end: string;   // "HH:MM"
   duration_minutes: number;
+}
+
+// Result of simulating a delay or skip cascade
+export interface DelayCostResult {
+  shiftedTasks: { id: string; title: string; newStart: string; oldStart: string }[];
+  sleepShiftMins: number;     // > 0 if last task overflows day end
+  freeTimeLostMins: number;   // total minutes of gap reduction
+  streakBreaks: boolean;      // true if this is the only flex task today
+  backlogIncrease: number;    // 1 if skip, 0 otherwise
+  core: ConsequenceCore;
 }
 
 export interface ScheduledItem {

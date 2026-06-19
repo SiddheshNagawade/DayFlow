@@ -143,6 +143,9 @@ app.post("/api/adjust-schedule", async (req, res) => {
 The user describes their situation, adjustments they want to make, or their current mood and feelings in plain English.
 Today's Date is: ${today}.
 
+DayFlow core philosophy:
+DayFlow does not optimize for completing every task. DayFlow optimizes for preserving meaningful progress while minimizing decision fatigue, burnout, and self-deception. Keep this philosophy in mind when the user is tired, stressed, or lagging behind — recommend compassionate rescheduling, task duration reduction, or backlog parking over pushing through burnout.
+
 Current schedule for today:
 ${scheduleContext || "(empty)"}
 
@@ -175,8 +178,21 @@ Your response must conform exactly to this structure. Return only keys from this
     }
   ],
   "message": "A supportive, conversational explanation of the changes. If there are clarifying questions (e.g. missing room number, unclear times), include them here.",
-  "clarificationNeeded": false // set to true if critical info is missing from an image/timetable and you need to ask the user a question
+  "clarificationNeeded": false, // set to true if critical info is missing or you need clarification to formulate a detailed multi-task schedule plan
+  "clarificationQuestions": [
+    {
+      "id": "project_type",
+      "label": "What stage/type of project is this?",
+      "type": "select" | "text",
+      "options": ["Option 1", "Option 2"], // required if type is select
+      "placeholder": "Enter details..." // optional if type is text
+    }
+  ]
 }
+
+### CRITICAL WIZARD CLARIFICATION RULE:
+- If the user enters a vague, open-ended task or plan request (e.g., "create a gym plan", "make a study schedule for my exams", "plan my portfolio website development", "schedule my homework and projects", "help me set up a routine"), DO NOT immediately schedule a single generic block.
+- Instead, set "clarificationNeeded": true and generate 2 to 4 structured, interactive questions in "clarificationQuestions" to tailor the plan. Once the user submits their choices in the UI, you will receive a follow-up message with the answers to generate the final detailed, multi-task plan.
 
 ### TIME CALCULATION RULE (AVOID HALLUCINATION):
 - DO NOT calculate start/end clock hours or absolute times yourself (e.g. do not calculate that 3:15 PM + 45 minutes = 4:00 PM).
@@ -282,10 +298,29 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
                 required: ["action", "reasoning"],
               },
             },
-            message: { type: Type.STRING, description: "A short friendly summary of all changes made, any suggested goals, and clarifying questions if needed" },
-            clarificationNeeded: { type: Type.BOOLEAN, description: "True if AI needs more info from user (e.g. missing room numbers, unclear times in an image)" },
-          },
-          required: ["changes", "message"],
+             message: { type: Type.STRING, description: "A short friendly summary of all changes made, any suggested goals, and clarifying questions if needed" },
+             clarificationNeeded: { type: Type.BOOLEAN, description: "True if AI needs more info from user (e.g. missing room numbers, or when a user enters an open-ended task/plan request that requires custom questions)" },
+             clarificationQuestions: {
+               type: Type.ARRAY,
+               description: "Interactive setup questions to render in a questionnaire wizard if clarificationNeeded is true",
+               items: {
+                 type: Type.OBJECT,
+                 properties: {
+                   id: { type: Type.STRING, description: "Unique question id (e.g. 'project_type', 'session_count')" },
+                   label: { type: Type.STRING, description: "User-facing question text" },
+                   type: { type: Type.STRING, description: "Input type: 'select' or 'text'" },
+                   options: {
+                     type: Type.ARRAY,
+                     items: { type: Type.STRING },
+                     description: "Options array if type is select"
+                   },
+                   placeholder: { type: Type.STRING, description: "Placeholder text if type is text" }
+                 },
+                 required: ["id", "label", "type"]
+               }
+             }
+           },
+           required: ["changes", "message"],
         },
       },
     });
@@ -297,6 +332,258 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
   } catch (error: any) {
     console.error("Schedule Adjust Error:", error);
     res.status(500).json({ error: error.message || "Failed to process schedule changes." });
+  }
+});
+
+
+
+// 3.5. Task Metadata Classification API — auto-tags tasks based on title/description
+app.post("/api/classify-task", async (req, res) => {
+  try {
+    const { title, description } = req.body;
+    if (!title || typeof title !== "string") {
+      res.status(400).json({ error: "title is required" });
+      return;
+    }
+
+    const systemPrompt = `You are the Task Metadata Classifier for DayFlow.
+Your job is to analyze a task's title and description and classify it into specific metadata layers.
+Choose the most appropriate enum values for each field.
+
+Metadata Schema & Enums:
+1. category:
+   - "study" (lectures, exams, schoolwork, revision)
+   - "project" (milestones, app building, portfolio, design work)
+   - "meeting" (calls, interviews, live discussions, classes)
+   - "health" (workouts, gym, exercise, runs, stretch, doctor)
+   - "habit" (consistency items, reading, meditation, sleep)
+   - "admin" (chores, laundry, groceries, bills, cleaning)
+   - "social" (events, friends, dinners, calls to family)
+   - "creative" (sketching, art, writing, music)
+   - "personal" (routine personal items)
+   - "misc" (relaxation, movies, gaming, unstructured time)
+
+2. rigidity:
+   - "fixed" (Missed = gone forever. e.g., live lectures, exams, meetings, appointments)
+   - "semi_flexible" (Can move but carries cost/disruption. e.g., gym workout, exam revision)
+   - "flexible" (Easy to move. e.g., chores, laundry, unstructured reading)
+
+3. importance:
+   - "critical" (Severe consequences if skipped/delayed)
+   - "important" (Standard priority, default)
+   - "optional" (Low stakes, minimal consequences)
+
+4. recoverability:
+   - "impossible" (Cannot be recovered directly. e.g., a live lecture slot, an exam)
+   - "hard" (Requires high effort to catch up. e.g., a major project block, deep study)
+   - "easy" (Simple to compensate later. e.g., buy soap, clean desk)
+
+5. dependency_chain:
+   - "none" (Does not affect or block any other tasks)
+   - "weak" (May influence, but doesn't block other tasks)
+   - "strong" (Blocks future tasks. e.g., research before writing, setting up tools)
+
+6. progress_type:
+   - "binary" (Either done or not. e.g., submit a form, pay rent)
+   - "compound" (Each session builds on the previous. e.g., studying course, fitness training, building app)
+   - "streak" (Consistency matters heavily. e.g., habits, meditation)
+
+7. deadline_pressure:
+   - "none" (No deadline)
+   - "low" (Deadline is far away, > 1 week)
+   - "medium" (Deadline is in 3-7 days)
+   - "high" (Deadline is in 1-2 days)
+   - "critical" (Deadline is today)
+
+Confidence Scoring Guidelines:
+- Return a confidence value from 0.0 to 1.0 based on how clear the task semantics are.
+- Clear matches (e.g. "math lecture", "leg day workout") -> 0.9+
+- Vague titles (e.g. "something", "do task") -> < 0.5
+
+Respond ONLY with a valid JSON object conforming exactly to this structure. Do not include markdown code block syntax, formatting tags, or preambles.`;
+
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-1.5-flash",
+      contents: `Classify this task:\nTitle: "${title}"\nDescription: "${description || ''}"`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.1,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            meta: {
+              type: Type.OBJECT,
+              properties: {
+                category: { type: Type.STRING, enum: ["study", "project", "meeting", "health", "habit", "admin", "social", "creative", "personal", "misc"] },
+                rigidity: { type: Type.STRING, enum: ["fixed", "semi_flexible", "flexible"] },
+                importance: { type: Type.STRING, enum: ["critical", "important", "optional"] },
+                recoverability: { type: Type.STRING, enum: ["impossible", "hard", "easy"] },
+                dependency_chain: { type: Type.STRING, enum: ["none", "weak", "strong"] },
+                progress_type: { type: Type.STRING, enum: ["binary", "compound", "streak"] },
+                deadline_pressure: { type: Type.STRING, enum: ["none", "low", "medium", "high", "critical"] }
+              },
+              required: ["category", "rigidity", "importance", "recoverability", "dependency_chain", "progress_type", "deadline_pressure"]
+            },
+            confidence: { type: Type.NUMBER },
+            source: { type: Type.STRING, enum: ["ai"] }
+          },
+          required: ["meta", "confidence", "source"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response received from classifier model");
+    const result = JSON.parse(text);
+    res.json(result);
+  } catch (error: any) {
+    console.error("Task classification API error:", error);
+    res.status(500).json({ error: error.message || "Failed to classify task." });
+  }
+});
+
+
+
+// 4. Task Consequence Narrative API — generates structured coaching-style consequence narratives and negotiation options
+app.post("/api/task-consequence", async (req, res) => {
+  try {
+    const {
+      taskTitle,
+      taskDescription,
+      taskMeta,
+      consequenceCore,
+      streakDays,
+      linkedGoalTitle,
+      linkedGoalProgress,
+      recentCompletions,
+      userProfileName,
+      intent,
+      delayMins,
+    } = req.body;
+
+    if (!taskTitle || typeof taskTitle !== "string") {
+      res.status(400).json({ error: "taskTitle is required" });
+      return;
+    }
+
+    const intentVal = intent || "preview";
+    const delayVal = delayMins || 0;
+    const metaVal = taskMeta || {};
+    const coreVal = consequenceCore || {};
+
+    const streakLine = streakDays > 0 ? `User's current streak: ${streakDays} day${streakDays > 1 ? "s" : ""}.` : "No active streak.";
+    const goalLine = linkedGoalTitle ? `Linked goal: ${linkedGoalTitle}${linkedGoalProgress ? ` — Progress: ${linkedGoalProgress}` : ""}.` : "No linked goal.";
+    const historyLine = recentCompletions && recentCompletions.length > 0
+      ? `Recent completions of similar tasks: ${(recentCompletions as string[]).join(", ")}.`
+      : "No recent similar task history.";
+    const descLine = taskDescription ? `Task details: ${taskDescription}.` : "";
+
+    const systemPrompt = `You are the consequence reasoning engine for DayFlow, a personal productivity coach app.
+Your job is not to schedule tasks. The schedule is already calculated.
+Your job is to translate the schedule impact and core metrics into meaningful human consequences.
+
+DayFlow core philosophy:
+DayFlow does not optimize for completing every task. DayFlow optimizes for preserving meaningful progress while minimizing decision fatigue, burnout, and self-deception.
+
+RULES (follow strictly):
+- DO NOT use bullet points or numbered lists.
+- Write like a coach speaking honestly to a friend — matter-of-fact, calm, intelligent, and supportive.
+- Do NOT use abstract mathematical formulas in the effects text. Explain real-life consequences.
+- Avoid guilt-tripping. Frame choices as tradeoffs.
+
+Your output must be a valid JSON object containing:
+1. "immediate_effect": A short, factual one-sentence statement explaining what changes today.
+2. "cascade_effect": A short description of the impact on future tasks/days (backlogs, tomorrow's load, week compression).
+3. "goal_effect": Explaining the long-term significance of this task for their larger goals or streak consistency.
+4. "emotional_weight": "none" | "low" | "medium" | "high" | "critical" (based on meta importance, rigidity, and goal impact).
+5. "primary_message_slot": "immediate" | "cascade" | "goal" (which effect is the strongest and should be shown as a one-line preview).
+6. "recommendation":
+   - "best_action": The ideal recovery path.
+   - "minimum_viable_progress": A tiny, low-friction compromise (e.g. "Do 15 mins now to keep the momentum alive") to prevent binary all-or-nothing collapse.
+7. "negotiation_options": An array of alternative options that are relevant. Each option should specify:
+   - "strategy": "reduce_scope" | "reschedule" | "restructure" | "skip"
+   - "label": Clear action label (e.g., "Do 20 mins now", "Move to 8 PM", "Split into 2 sessions")
+   - "consequence_delta": Explain the positive trade-off (e.g. "Saves 40 min, preserves streak", "Pushes half to tomorrow")
+   - "command": { "type": "shorten_duration" | "move_to_gap" | "split_into_chunks" | "mark_partial" | "swap_tasks", "params": { ... } }
+
+Note on Tone adaptation by user intent:
+- "preview": informative, realistic.
+- "skip": warning, highlighting what is lost.
+- "delay": negotiation, focus on slot compression.
+- "break": warning, focus on succeeding shifts.
+
+Respond ONLY with a valid JSON object conforming exactly to this structure. Do not include markdown code block characters, notes, formatting tags, or preambles.`;
+
+    const userMessage = `Task: "${taskTitle}"
+Description: ${descLine}
+Intent: ${intentVal} (${delayVal} min delay)
+Metadata: ${JSON.stringify(metaVal)}
+Core Programmatic Impact: ${JSON.stringify(coreVal)}
+Context: ${streakLine} ${goalLine} ${historyLine}
+${userProfileName ? `User Profile: ${userProfileName}` : ""}
+
+Generate the Consequence JSON:`;
+
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-1.5-flash",
+      contents: userMessage,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.6,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            immediate_effect: { type: Type.STRING },
+            cascade_effect: { type: Type.STRING },
+            goal_effect: { type: Type.STRING },
+            emotional_weight: { type: Type.STRING, enum: ["none", "low", "medium", "high", "critical"] },
+            primary_message_slot: { type: Type.STRING, enum: ["immediate", "cascade", "goal"] },
+            recommendation: {
+              type: Type.OBJECT,
+              properties: {
+                best_action: { type: Type.STRING },
+                minimum_viable_progress: { type: Type.STRING }
+              },
+              required: ["best_action", "minimum_viable_progress"]
+            },
+            negotiation_options: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  strategy: { type: Type.STRING, enum: ["reduce_scope", "reschedule", "restructure", "skip"] },
+                  label: { type: Type.STRING },
+                  consequence_delta: { type: Type.STRING },
+                  command: {
+                    type: Type.OBJECT,
+                    properties: {
+                      type: { type: Type.STRING, enum: ["shorten_duration", "move_to_gap", "split_into_chunks", "mark_partial", "swap_tasks"] },
+                      params: { type: Type.OBJECT }
+                    },
+                    required: ["type"]
+                  }
+                },
+                required: ["strategy", "label", "consequence_delta", "command"]
+              }
+            }
+          },
+          required: ["immediate_effect", "cascade_effect", "goal_effect", "emotional_weight", "primary_message_slot", "recommendation", "negotiation_options"]
+        }
+      },
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response from model");
+
+    const result = JSON.parse(text);
+    res.json(result);
+  } catch (error: any) {
+    console.error("Task Consequence Error:", error);
+    res.status(500).json({ error: error.message || "Failed to generate consequence insight." });
   }
 });
 
