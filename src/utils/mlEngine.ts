@@ -39,16 +39,7 @@ export function calculateAdvancedCalibration(tasks: FlexibleTask[]): Calibration
   const totalCompletions = completed.length;
   
   if (totalCompletions === 0) {
-    const hourlyMetrics: HourlyMetric[] = [];
-    for (let h = 0; h < 24; h++) {
-      hourlyMetrics.push({
-        hour: h,
-        completionRate: 0,
-        focusQuality: 0,
-        consistency: 0,
-        label: "Awaiting Data"
-      });
-    }
+    const contextSuccessRates: Record<string, { rate: number; confidence: number; supportCount: number }> = {};
 
     const categories: ("work" | "exercise" | "relax" | "personal")[] = ["work", "exercise", "relax", "personal"];
     const categoryBiases: CategoryBias[] = categories.map(cat => ({
@@ -77,7 +68,7 @@ export function calculateAdvancedCalibration(tasks: FlexibleTask[]): Calibration
       exerciseRecoveryGap: 25,
       peakFocusTime: "morning",
       completionRate: 0,
-      hourlyMetrics,
+      contextSuccessRates,
       categoryBiases,
       transitionGaps,
       procrastinationSignatures: [],
@@ -108,98 +99,31 @@ export function calculateAdvancedCalibration(tasks: FlexibleTask[]): Calibration
     }
   }
 
-  // --- TIER 1: Hourly Rhythm Clustering ---
-  const hourlyMetrics: HourlyMetric[] = [];
-  const hoursMap: Record<number, { scheduled: number; completed: number; actualDurs: number[]; plannedDurs: number[]; dayCompletionRates: Record<string, number> }> = {};
+  // --- TIER 1: Context-Based Success Clustering ---
+  const contextSuccessRates: Record<string, { rate: number; confidence: number; supportCount: number }> = {};
+  const contextMap: Record<string, { scheduled: number; completed: number }> = {};
   
-  for (let h = 0; h < 24; h++) {
-    hoursMap[h] = { scheduled: 0, completed: 0, actualDurs: [], plannedDurs: [], dayCompletionRates: {} };
-  }
-
-  // Populate map with task telemetry
   tasks.forEach(t => {
-    // Determine start hour based on actual_start_time if completed, else scheduled_start_time
-    const timeStr = t.status === "done" ? t.actual_start_time || t.scheduled_start_time : t.scheduled_start_time;
-    if (timeStr) {
-      const hour = parseInt(timeStr.split(":")[0], 10);
-      if (!isNaN(hour) && hour >= 0 && hour < 24) {
-        hoursMap[hour].scheduled++;
-        const dateKey = t.scheduled_date || t.completed_at?.split("T")[0] || "unknown";
-        
-        if (!hoursMap[hour].dayCompletionRates[dateKey]) {
-          hoursMap[hour].dayCompletionRates[dateKey] = 0;
-        }
-
-        if (t.status === "done") {
-          hoursMap[hour].completed++;
-          hoursMap[hour].dayCompletionRates[dateKey]++;
-          if (t.actual_duration_minutes) {
-            hoursMap[hour].actualDurs.push(t.actual_duration_minutes);
-            hoursMap[hour].plannedDurs.push(t.duration_minutes);
-          }
-        }
-      }
+    const category = t.category || getTaskCategory(t.title);
+    const difficulty = t.energy_level || "medium";
+    const key = `${category}_${difficulty}`;
+    
+    if (!contextMap[key]) contextMap[key] = { scheduled: 0, completed: 0 };
+    contextMap[key].scheduled++;
+    if (t.status === "done") {
+      contextMap[key].completed++;
     }
   });
 
-  // Calculate actual hourly metrics
-  for (let h = 0; h < 24; h++) {
-    const data = hoursMap[h];
-    const totalScheduled = data.scheduled;
-    
-    // Fallback defaults to make the graph look realistic if there are no tasks logged for that hour
-    let rate = 50; // default baseline
-    let focusQual = 0;
-    
-    if (totalScheduled > 0) {
-      rate = Math.round((data.completed / totalScheduled) * 100);
-      
-      let sumFocus = 0;
-      for (let i = 0; i < data.actualDurs.length; i++) {
-        const planned = data.plannedDurs[i];
-        const actual = data.actualDurs[i];
-        if (planned > 0) {
-          sumFocus += ((actual - planned) / planned) * -1; // positive means done faster
-        }
-      }
-      focusQual = data.actualDurs.length > 0 ? sumFocus / data.actualDurs.length : 0;
-    } else {
-      // Realistic baseline curves based on standard circadian rhythms (e.g. peak 8-10am, slump 1-2pm, crashes after 8pm)
-      if (h >= 8 && h <= 10) rate = 92;
-      else if (h >= 7 && h < 8) rate = 78;
-      else if (h >= 10 && h <= 11) rate = 88;
-      else if (h === 11 || h === 12) rate = 65;
-      else if (h >= 13 && h <= 14) rate = 18; // lunch slump
-      else if (h >= 15 && h <= 17) rate = 68; // recovery
-      else if (h === 18 || h === 19) rate = 48; // drop
-      else rate = 10; // crashed night hours
-    }
-
-    // Calculate Consistency (standard deviation of completions over days)
-    const rateSamples = Object.values(data.dayCompletionRates);
-    const consistencyDev = calculateStandardDeviation(rateSamples);
-    const consistencyScore = totalScheduled > 0 ? Math.max(0, 100 - Math.round(consistencyDev * 10)) : 80;
-
-    let label: HourlyMetric["label"] = "Moderate";
-    if (rate >= 90) label = "Peak+";
-    else if (rate >= 80) label = "Peak";
-    else if (rate >= 70) label = "Good";
-    else if (rate >= 60) label = "Improving";
-    else if (rate >= 50) label = "Moderate";
-    else if (rate >= 40) label = "Declining";
-    else if (rate >= 30) label = "Low";
-    else if (rate >= 20) label = "Slump";
-    else if (rate >= 12) label = "Lowest";
-    else if (rate >= 8) label = "Crashed";
-    else label = "Dead";
-
-    hourlyMetrics.push({
-      hour: h,
-      completionRate: rate,
-      focusQuality: focusQual,
-      consistency: consistencyScore,
-      label
-    });
+  for (const key in contextMap) {
+    const data = contextMap[key];
+    const rate = Math.round((data.completed / data.scheduled) * 100);
+    const confidence = data.scheduled >= 5 ? 1.0 : data.scheduled >= 2 ? 0.8 : 0.3;
+    contextSuccessRates[key] = {
+      rate,
+      confidence,
+      supportCount: data.scheduled
+    };
   }
 
   // --- TIER 3: Estimation Bias per Category ---
@@ -352,18 +276,8 @@ export function calculateAdvancedCalibration(tasks: FlexibleTask[]): Calibration
     optimalWorkGap = 18;
     exerciseRecoveryGap = 32;
     
-    // Find peak focus time
-    const morningScore = hourlyMetrics.filter(m => m.hour >= 8 && m.hour <= 11).reduce((sum, m) => sum + m.completionRate, 0);
-    const afternoonScore = hourlyMetrics.filter(m => m.hour >= 12 && m.hour <= 16).reduce((sum, m) => sum + m.completionRate, 0);
-    const eveningScore = hourlyMetrics.filter(m => m.hour >= 17 && m.hour <= 22).reduce((sum, m) => sum + m.completionRate, 0);
-    
-    if (afternoonScore > morningScore && afternoonScore >= eveningScore) {
-      peakFocusTime = "afternoon";
-    } else if (eveningScore > morningScore && eveningScore > afternoonScore) {
-      peakFocusTime = "evening";
-    } else {
-      peakFocusTime = "morning";
-    }
+    // Generic peak focus time without relying on noisy hourly metrics
+    peakFocusTime = "morning";
   }
 
   return {
@@ -376,7 +290,7 @@ export function calculateAdvancedCalibration(tasks: FlexibleTask[]): Calibration
     completionRate,
     
     // ML details
-    hourlyMetrics,
+    contextSuccessRates,
     categoryBiases,
     transitionGaps,
     procrastinationSignatures,
@@ -491,38 +405,36 @@ export function generateMockMLData(): FlexibleTask[] {
 
 export function detectHighDelayPatterns(tasks: FlexibleTask[]): {
   category: string;
-  problemHour: number;
+  difficulty: string;
   avgDelays: number;
 }[] {
   const completed = tasks.filter(t => 
     t.status === "done" && 
     t.delay_count && 
-    t.delay_count > 0 && 
-    (t.actual_start_time || t.scheduled_start_time)
+    t.delay_count > 0
   );
 
-  const hourCategoryDelays: Record<string, number[]> = {};
+  const contextCategoryDelays: Record<string, number[]> = {};
 
   for (const task of completed) {
-    const startVal = task.actual_start_time || task.scheduled_start_time!;
-    const hour = parseInt(startVal.split(":")[0]);
-    if (isNaN(hour)) continue;
     const cat = task.category || getTaskCategory(task.title);
-    const key = `${cat}-${hour}`;
-    if (!hourCategoryDelays[key]) hourCategoryDelays[key] = [];
-    hourCategoryDelays[key].push(task.delay_count!);
+    const difficulty = task.energy_level || "medium";
+    const key = `${cat}-${difficulty}`;
+    
+    if (!contextCategoryDelays[key]) contextCategoryDelays[key] = [];
+    contextCategoryDelays[key].push(task.delay_count!);
   }
 
-  return Object.entries(hourCategoryDelays)
-    .filter(([, delays]) => delays.length >= 3)
+  return Object.entries(contextCategoryDelays)
+    .filter(([, delays]) => delays.length >= 2)
     .map(([key, delays]) => {
-      const [category, hourStr] = key.split("-");
+      const [category, difficulty] = key.split("-");
       return {
         category,
-        problemHour: parseInt(hourStr),
+        difficulty,
         avgDelays: delays.reduce((s, d) => s + d, 0) / delays.length,
       };
     })
-    .filter(p => p.avgDelays > 1.5) // consistently delayed
+    .filter(p => p.avgDelays > 1.0) // consistently delayed
     .sort((a, b) => b.avgDelays - a.avgDelays);
 }

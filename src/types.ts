@@ -196,14 +196,6 @@ export interface Achievement {
   goalId?: string;
 }
 
-export interface HourlyMetric {
-  hour: number;
-  completionRate: number;
-  focusQuality: number; // Performance ratio: (actual - planned) / planned * -1
-  consistency: number;  // Standard dev indicator
-  label: "Peak" | "Peak+" | "Good" | "Declining" | "Slump" | "Lowest" | "Low" | "Recovery" | "Improving" | "Moderate" | "Dropping" | "Crashed" | "Dead" | "Awaiting Data";
-}
-
 export interface CategoryBias {
   category: "work" | "exercise" | "relax" | "personal";
   bias: number; // Multiplier e.g. 1.87x
@@ -236,7 +228,7 @@ export interface CalibrationProfile {
   completionRate: number;     // e.g. 85 (percent)
   
   // Advanced CCM Data Metrics
-  hourlyMetrics?: HourlyMetric[];
+  contextSuccessRates?: Record<string, { rate: number; confidence: number; supportCount: number }>;
   categoryBiases?: CategoryBias[];
   transitionGaps?: TransitionGap[];
   procrastinationSignatures?: ProcrastinationSignature[];
@@ -296,7 +288,7 @@ export interface TaskExecutionLog {
   estimationSource?: "timer" | "message" | "timestamp" | "default";
 }
 
-export type FrictionReason = "low_energy" | "distraction" | "resistance" | "unclear_task" | "external_interrupt" | "unknown";
+export type FrictionReason = "low_energy" | "distraction" | "resistance" | "emotional_resistance" | "unclear_task" | "external_interrupt" | "unknown";
 
 export interface ReflectionEvent {
   id: string;
@@ -357,11 +349,6 @@ export interface Signal<T> {
 export interface BehaviorSignals {
   // Planning accuracy
   planningBias: Signal<number>;            // e.g. value: 1.34 (takes 34% longer), confidence, sampleSize
-
-  // Time-of-day patterns (only hours with real data — no circadian defaults)
-  bestHours: Signal<number[]>;             // hours where success >= 0.75 AND confidence >= 0.4
-  worstHours: Signal<number[]>;            // hours where success < 0.4 AND confidence >= 0.4
-  hourlySuccessMap: Record<number, { rate: number; confidence: number; supportCount: number }>;
 
   // Category performance
   categorySuccessRates: Record<string, { rate: number; confidence: number; supportCount: number }>;

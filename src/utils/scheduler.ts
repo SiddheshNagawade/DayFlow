@@ -88,7 +88,7 @@ export function generateSchedule(
   emergencyTime: string | null = null,
   emergencyDurationMinutes = 60,
   profile?: CalibrationProfile,
-  delayPatterns?: { category: string; problemHour: number; avgDelays: number }[],
+  delayPatterns?: { category: string; difficulty: string; avgDelays: number }[],
   softRoutines?: RoutineBlock[]
 ): DaySchedule {
   const finalScheduledItems: ScheduledItem[] = [];
@@ -308,22 +308,9 @@ export function generateSchedule(
     }
   };
 
-  // In Phase 2, re-order gaps so that the user's peak window comes first
-  // for high-energy tasks, preserving original order for low/medium energy.
-  const isProblematicSlot = (gapStartMins: number, category: string): boolean => {
-    if (!delayPatterns) return false;
-    const hour = Math.floor(gapStartMins / 60);
-    return delayPatterns.some(p => p.category === category && p.problemHour === hour);
-  };
-
-  // Order gaps: normal peak gaps -> other normal gaps -> soft routine overlap gaps -> problematic gaps
+  // Order gaps: normal peak gaps -> other normal gaps -> soft routine overlap gaps
   const orderGapsForTask = (task: FlexibleTask): TimeGap[] => {
     const category = task.category || getTaskCategory(task.title);
-    
-    const checkProblem = (g: TimeGap) => {
-      const mid = (timeToMinutes(g.start) + timeToMinutes(g.end)) / 2;
-      return isProblematicSlot(mid, category);
-    };
 
     const checkSoftOverlap = (g: TimeGap) => {
       const gStart = timeToMinutes(g.start);
@@ -335,15 +322,12 @@ export function generateSchedule(
       });
     };
 
-    // Partition gaps into good, soft overlap, and problem gaps
+    // Partition gaps into good, soft overlap
     const goodGaps: TimeGap[] = [];
     const softOverlapGaps: TimeGap[] = [];
-    const problemGaps: TimeGap[] = [];
 
     for (const g of gaps) {
-      if (checkProblem(g)) {
-        problemGaps.push(g);
-      } else if (checkSoftOverlap(g)) {
+      if (checkSoftOverlap(g)) {
         softOverlapGaps.push(g);
       } else {
         goodGaps.push(g);
@@ -368,8 +352,7 @@ export function generateSchedule(
 
     return [
       ...sortPeakOther(goodGaps),
-      ...sortPeakOther(softOverlapGaps),
-      ...sortPeakOther(problemGaps)
+      ...sortPeakOther(softOverlapGaps)
     ];
   };
 

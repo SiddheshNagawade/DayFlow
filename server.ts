@@ -358,10 +358,13 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
     }
     contents.push({ text: `User's change request: "${userText}"` });
 
+    const t0 = performance.now();
     // V3.1 Payload logging
     const payloadBytes = JSON.stringify({ userText, scheduleSummary: scheduleContext, pendingSummary: pendingContext }).length;
     console.log(`[AI] /api/adjust-schedule payload: ${payloadBytes} bytes (target <12KB = ${payloadBytes < 12288 ? '✓ OK' : '⚠ OVER'})`);
+    console.log(`[AI] prompt build: ${(performance.now() - t0).toFixed(2)}ms`);
 
+    const t1 = performance.now();
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents,
@@ -472,10 +475,14 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
         },
       },
     });
+    console.log(`[AI] gemini inference: ${(performance.now() - t1).toFixed(2)}ms`);
 
+    const t2 = performance.now();
     const outputText = response.text;
     if (!outputText) throw new Error("Empty response from model");
     const result = JSON.parse(outputText.trim());
+    console.log(`[AI] parse overhead: ${(performance.now() - t2).toFixed(2)}ms`);
+    
     res.json(result);
   } catch (error: any) {
     console.error("Schedule Adjust Error:", error);
@@ -483,7 +490,92 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
   }
 });
 
+// 3.4. Micro-Coach API — cheap endpoint for motivational nudges and friction coaching
+app.post("/api/micro-coach", async (req, res) => {
+  try {
+    const { userText, behaviorSignals } = req.body;
+    if (!userText || typeof userText !== "string") {
+       return res.status(400).json({ error: "userText required" });
+    }
 
+    const systemPrompt = `You are DayFlow's micro-coach.
+Your job is to provide short, punchy (1-3 sentences) behavioral coaching, motivation, or friction-busting advice.
+Do not output JSON. Do not schedule tasks. Just reply with plain text.
+Be warm, direct, and empathetic.
+Recent behavior signals: ${behaviorSignals || "(none)"}`;
+
+    const t0 = performance.now();
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-8b",
+      contents: `User says: "${userText}"`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.7,
+      }
+    });
+    console.log(`[AI] /api/micro-coach inference: ${(performance.now() - t0).toFixed(2)}ms`);
+
+    res.json({ message: response.text });
+  } catch (error: any) {
+    console.error("Micro-Coach Error:", error);
+    handleApiError(res, error, "Failed to get coaching.");
+  }
+});
+
+// 3.4.1 Chat API — SSE streaming for general conversation
+app.post("/api/chat", async (req, res) => {
+  try {
+    const { userText, scheduleSummary } = req.body;
+    if (!userText || typeof userText !== "string") {
+       return res.status(400).json({ error: "userText required" });
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const systemPrompt = `You are DayFlow's conversational assistant.
+Your job is to answer general questions, offer advice, or explain scheduling decisions.
+Do not output JSON. Reply with conversational Markdown.
+Current schedule summary:
+${scheduleSummary || "(none)"}`;
+
+    const t0 = performance.now();
+    const ai = getGeminiClient();
+    const resultStream = await ai.models.generateContentStream({
+      model: "gemini-2.5-flash",
+      contents: `User says: "${userText}"`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.7,
+      }
+    });
+
+    console.log(`[AI] /api/chat prompt build: ${(performance.now() - t0).toFixed(2)}ms`);
+
+    let t1 = performance.now();
+    let firstToken = true;
+
+    for await (const chunk of resultStream) {
+      if (firstToken) {
+        console.log(`[AI] /api/chat TTFT: ${(performance.now() - t1).toFixed(2)}ms`);
+        firstToken = false;
+      }
+      if (chunk.text) {
+        // SSE format requires "data: " prefix and double newline
+        res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
+      }
+    }
+
+    res.write("data: [DONE]\n\n");
+    res.end();
+  } catch (error: any) {
+    console.error("Chat Error:", error);
+    res.write(`data: ${JSON.stringify({ error: "Failed to get chat response" })}\n\n`);
+    res.end();
+  }
+});
 
 // 3.5. Task Metadata Classification API — auto-tags tasks based on title/description
 app.post("/api/classify-task", async (req, res) => {

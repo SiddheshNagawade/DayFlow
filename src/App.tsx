@@ -3782,25 +3782,50 @@ export default function App() {
       }, getTimeoutForOperation("copilot"));
 
       try {
-        // V3.1: Replace raw task arrays with compact text summaries
-        const { scheduleSummary, pendingSummary } = buildCopilotScheduleSummary(
-          daySchedule.items,
-          flexibleTasks.filter(t => t.status !== "done"),
-          selectedDate
-        );
-        const response = await fetch("/api/adjust-schedule", {
+        const lowerText = messageText?.toLowerCase() || "";
+        const isMicroCoach = lowerText.startsWith("why") || lowerText.includes("motivate") || lowerText.includes("tired") || lowerText.includes("procrastinat") || lowerText.includes("friction");
+        const isChat = lowerText.startsWith("how") || lowerText.startsWith("what") || lowerText.startsWith("hello") || lowerText.startsWith("hi ") || lowerText === "hi" || lowerText.includes("advice");
+
+        let endpoint = "/api/adjust-schedule";
+        let bodyPayload: any = {
+          userText: messageText || "Please analyze the attached image and extract schedule/workout/weight info.",
+          today: selectedDate,
+        };
+
+        if (imagePayload) {
+          bodyPayload.image = imagePayload;
+        }
+
+        if (isMicroCoach) {
+          endpoint = "/api/micro-coach";
+          bodyPayload.behaviorSignals = "User is currently in Today tab looking for guidance.";
+        } else if (isChat) {
+          endpoint = "/api/chat";
+          // V3.1: Pass only compact schedule summary for chat
+          const { scheduleSummary } = buildCopilotScheduleSummary(
+            daySchedule.items,
+            flexibleTasks.filter(t => t.status !== "done"),
+            selectedDate
+          );
+          bodyPayload.scheduleSummary = scheduleSummary;
+        } else {
+          // V3.1: Replace raw task arrays with compact text summaries
+          const { scheduleSummary, pendingSummary } = buildCopilotScheduleSummary(
+            daySchedule.items,
+            flexibleTasks.filter(t => t.status !== "done"),
+            selectedDate
+          );
+          bodyPayload.scheduleSummary = scheduleSummary;
+          bodyPayload.pendingSummary = pendingSummary;
+          bodyPayload.routineBlocksSummary = routineBlocks.map(r => `${r.title} (${r.startTime}-${r.endTime}, rigidity: ${r.rigidity}, type: ${r.type}, days: ${r.daysOfWeek.join(",")})`).join("\n");
+          bodyPayload.calendarEventsSummary = calendarEvents.map(e => `${e.title} (${e.startDate} to ${e.endDate}, type: ${e.type})`).join("\n");
+        }
+
+        const response = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
-          body: JSON.stringify({
-            userText: messageText || "Please analyze the attached image and extract schedule/workout/weight info.",
-            scheduleSummary,
-            pendingSummary,
-            today: selectedDate,
-            image: imagePayload,
-            routineBlocksSummary: routineBlocks.map(r => `${r.title} (${r.startTime}-${r.endTime}, rigidity: ${r.rigidity}, type: ${r.type}, days: ${r.daysOfWeek.join(",")})`).join("\n"),
-            calendarEventsSummary: calendarEvents.map(e => `${e.title} (${e.startDate} to ${e.endDate}, type: ${e.type})`).join("\n")
-          })
+          body: JSON.stringify(bodyPayload)
         });
         clearTimeout(timeoutId);
 
@@ -3817,7 +3842,42 @@ export default function App() {
           throw new Error(errMsg);
         }
 
-        data = await response.json();
+        if (endpoint === "/api/chat" && response.body) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          let aiText = "";
+          
+          setChatHistory(prev => [...prev, { sender: "ai", text: "..." }]);
+          
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            
+            const lines = chunk.split("\n");
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const dataStr = line.slice(6).trim();
+                if (dataStr === "[DONE]") continue;
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  if (parsed.text) {
+                    aiText += parsed.text;
+                    setChatHistory(prev => {
+                      const newHistory = [...prev];
+                      newHistory[newHistory.length - 1].text = aiText;
+                      return newHistory;
+                    });
+                  }
+                } catch (e) {}
+              }
+            }
+          }
+          data = { changes: [], message: aiText };
+        } else {
+          data = await response.json();
+        }
+
         success = true;
         recordAISuccess();
         break; // break retry loop
@@ -7775,9 +7835,18 @@ Please create the specified number of backlog tasks representing the project pha
                             {change.confidence || "high"} confidence
                           </span>
                         </div>
-                        {change.newTime && (
-                          <span className="text-[10px] font-bold text-neutral-600 font-mono">{change.newTime}</span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {change.newTime && (
+                            <span className="text-[10px] font-bold text-neutral-600 font-mono">{change.newTime}</span>
+                          )}
+                          <button
+                            onClick={() => setProposedChanges(prev => prev ? prev.filter((_, i) => i !== idx) : null)}
+                            className="p-1 text-[#9999B3] hover:text-red-500 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                            title="Reject this specific change"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
                       </div>
                       <p className="text-[12px] font-medium text-neutral-700 leading-relaxed">{change.reasoning}</p>
                     </div>
@@ -9067,6 +9136,16 @@ Please create the specified number of backlog tasks representing the project pha
                                         Undo
                                       </button>
                                     )}
+                                    
+                                    {!isCompleted && !isSkipped && !isExpired && !isFixedType && (
+                                      <button
+                                        onClick={() => handleToggleTaskDone(item.id)}
+                                        className="p-1.5 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg cursor-pointer transition-all"
+                                        title="Mark Task as Done"
+                                      >
+                                        <Check className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
                                   </div>
                               </div>
 
@@ -9155,6 +9234,7 @@ Please create the specified number of backlog tasks representing the project pha
                                       { key: "low_energy", label: "⚡ Low Energy", desc: "Mentally drained" },
                                       { key: "distraction", label: "🔊 Distraction", desc: "Doomscrolling/phone" },
                                       { key: "resistance", label: "🐢 Resistance", desc: "Starting is hard" },
+                                      { key: "emotional_resistance", label: "😨 Emotional Resistance", desc: "Fear, anxiety, perfectionism" },
                                       { key: "unclear_task", label: "❓ Unclear Task", desc: "Too large or vague" },
                                       { key: "external_interrupt", label: "🚨 Interruption", desc: "External meeting/event" },
                                       { key: "unknown", label: "🤷 Other", desc: "Unknown/misc" }
@@ -9343,10 +9423,48 @@ Please create the specified number of backlog tasks representing the project pha
                                       className="flex items-center gap-1 text-[10px] font-bold text-primary/70 hover:text-primary cursor-pointer transition-colors"
                                     >
                                       <ChevronDown className={`w-3 h-3 transition-transform ${expandedTaskIds[item.id] ? "rotate-180" : ""}`} />
-                                      {expandedTaskIds[item.id] ? "Hide details" : (linkedProj ? "See project progress" : "See details")}
+                                      {expandedTaskIds[item.id] ? "Hide details" : (linkedProj ? "See project progress" : "See details & consequences")}
                                     </button>
                                     {expandedTaskIds[item.id] && (
-                                      <div className="mt-2">
+                                      <div className="mt-2 space-y-3">
+                                        
+                                        {/* Standard Description Box */}
+                                        {task?.description && !linkedProj && (
+                                          <div className="p-3 bg-neutral-50 border border-neutral-200/60 rounded-xl">
+                                            <span className="text-[9px] font-black text-neutral-400 uppercase tracking-widest block mb-1">Description / Subtasks</span>
+                                            <p className="text-xs text-neutral-700 whitespace-pre-wrap">{task.description}</p>
+                                          </div>
+                                        )}
+
+                                        {/* AI Consequence Box */}
+                                        {!isFixedType && !isCompleted && task && (
+                                          <div className="p-3 bg-amber-50/50 border border-amber-200/60 rounded-xl space-y-2">
+                                            <div className="flex items-center justify-between">
+                                              <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest flex items-center gap-1">
+                                                <Zap className="w-3 h-3" /> AI Consequence Analysis
+                                              </span>
+                                              <button 
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  fetchConsequenceInsight(task);
+                                                }}
+                                                className="text-[9px] font-bold text-amber-600 hover:underline cursor-pointer"
+                                              >
+                                                Regenerate
+                                              </button>
+                                            </div>
+                                            {task.consequence_insight ? (
+                                              <p className="text-xs text-amber-800 leading-relaxed">
+                                                {task.consequence_insight}
+                                              </p>
+                                            ) : (
+                                              <p className="text-xs text-amber-800/60 italic">
+                                                Click "Regenerate" to analyze the systemic impact of skipping this task.
+                                              </p>
+                                            )}
+                                          </div>
+                                        )}
+
                                         {linkedProj ? (() => {
                                           const daysLeft = Math.max(1, Math.ceil((new Date(linkedProj.deadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)));
                                           const totalSubtasks = linkedProj.phases.flatMap(p => p.subtasks);
@@ -11713,100 +11831,104 @@ Please create the specified number of backlog tasks representing the project pha
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Duration (mins)</label>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setFlexibleForm({ ...flexibleForm, duration_minutes: Math.max(15, flexibleForm.duration_minutes - 15) })}
-                      className="px-2 py-1.5 bg-neutral-100 rounded-lg text-xs font-bold cursor-pointer"
-                    >
-                      -15
-                    </button>
-                    <span className="flex-1 text-center font-mono text-sm font-bold bg-neutral-50 py-1.5 rounded-lg border">
-                      {flexibleForm.duration_minutes >= 60 
-                        ? `${Math.floor(flexibleForm.duration_minutes / 60)}h ${flexibleForm.duration_minutes % 60}m` 
-                        : `${flexibleForm.duration_minutes}m`}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setFlexibleForm({ ...flexibleForm, duration_minutes: Math.min(480, flexibleForm.duration_minutes + 15) })}
-                      className="px-2 py-1.5 bg-neutral-100 rounded-lg text-xs font-bold cursor-pointer"
-                    >
-                      +15
-                    </button>
+              {isMetadataOpen && (
+                <div className="space-y-4 pt-2 border-t border-neutral-100 mt-2 animate-fade-in">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Duration (mins)</label>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setFlexibleForm({ ...flexibleForm, duration_minutes: Math.max(15, flexibleForm.duration_minutes - 15) })}
+                          className="px-2 py-1.5 bg-neutral-100 rounded-lg text-xs font-bold cursor-pointer"
+                        >
+                          -15
+                        </button>
+                        <span className="flex-1 text-center font-mono text-sm font-bold bg-neutral-50 py-1.5 rounded-lg border">
+                          {flexibleForm.duration_minutes >= 60 
+                            ? `${Math.floor(flexibleForm.duration_minutes / 60)}h ${flexibleForm.duration_minutes % 60}m` 
+                            : `${flexibleForm.duration_minutes}m`}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setFlexibleForm({ ...flexibleForm, duration_minutes: Math.min(480, flexibleForm.duration_minutes + 15) })}
+                          className="px-2 py-1.5 bg-neutral-100 rounded-lg text-xs font-bold cursor-pointer"
+                        >
+                          +15
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Energy Required</label>
+                      <div className="flex gap-1">
+                        {(["high", "medium", "low"] as const).map((energy) => (
+                          <button
+                            key={energy}
+                            type="button"
+                            onClick={() => setFlexibleForm({ ...flexibleForm, energy_level: energy })}
+                            className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer ${
+                              flexibleForm.energy_level === energy
+                                ? "bg-primary/10 text-primary border-primary"
+                                : "bg-white text-neutral-500 border-neutral-200"
+                            }`}
+                          >
+                            {energy === "high" ? "🔥 High" : energy === "low" ? "🌙 Low" : "⚡ Med"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Importance</label>
+                    <div className="flex gap-1.5">
+                      {(["critical", "important", "optional"] as const).map((imp) => (
+                        <button
+                          key={imp}
+                          type="button"
+                          onClick={() => setFlexibleForm({ ...flexibleForm, importance: imp })}
+                          className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer transition-all ${
+                            flexibleForm.importance === imp
+                              ? imp === "critical"
+                                ? "bg-red-50 text-red-700 border-red-200"
+                                : imp === "important"
+                                ? "bg-primary/10 text-primary border-primary"
+                                : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-white text-neutral-500 border-neutral-200"
+                          }`}
+                        >
+                          {imp === "critical" ? "🚨 Critical" : imp === "optional" ? "🌱 Optional" : "⚡ Important"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Rigidity (Flexibility)</label>
+                    <div className="flex gap-1.5">
+                      {(["fixed", "movable", "optional"] as const).map((flex) => (
+                        <button
+                          key={flex}
+                          type="button"
+                          onClick={() => setFlexibleForm({ ...flexibleForm, task_flexibility: flex })}
+                          className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer transition-all ${
+                            flexibleForm.task_flexibility === flex
+                              ? flex === "fixed"
+                                ? "bg-purple-50 text-purple-700 border-purple-200"
+                                : flex === "optional"
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : "bg-blue-50 text-blue-700 border-blue-200"
+                              : "bg-white text-neutral-500 border-neutral-200"
+                          }`}
+                        >
+                          {flex === "fixed" ? "🔒 Rigid (Fixed)" : flex === "optional" ? "🌱 Optional" : "↔ Movable"}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Energy Required</label>
-                  <div className="flex gap-1">
-                    {(["high", "medium", "low"] as const).map((energy) => (
-                      <button
-                        key={energy}
-                        type="button"
-                        onClick={() => setFlexibleForm({ ...flexibleForm, energy_level: energy })}
-                        className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer ${
-                          flexibleForm.energy_level === energy
-                            ? "bg-primary/10 text-primary border-primary"
-                            : "bg-white text-neutral-500 border-neutral-200"
-                        }`}
-                      >
-                        {energy === "high" ? "🔥 High" : energy === "low" ? "🌙 Low" : "⚡ Med"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Importance</label>
-                <div className="flex gap-1.5">
-                  {(["critical", "important", "optional"] as const).map((imp) => (
-                    <button
-                      key={imp}
-                      type="button"
-                      onClick={() => setFlexibleForm({ ...flexibleForm, importance: imp })}
-                      className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer transition-all ${
-                        flexibleForm.importance === imp
-                          ? imp === "critical"
-                            ? "bg-red-50 text-red-700 border-red-200"
-                            : imp === "important"
-                            ? "bg-primary/10 text-primary border-primary"
-                            : "bg-emerald-50 text-emerald-700 border-emerald-200"
-                          : "bg-white text-neutral-500 border-neutral-200"
-                      }`}
-                    >
-                      {imp === "critical" ? "🚨 Critical" : imp === "optional" ? "🌱 Optional" : "⚡ Important"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Rigidity (Flexibility)</label>
-                <div className="flex gap-1.5">
-                  {(["fixed", "movable", "optional"] as const).map((flex) => (
-                    <button
-                      key={flex}
-                      type="button"
-                      onClick={() => setFlexibleForm({ ...flexibleForm, task_flexibility: flex })}
-                      className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer transition-all ${
-                        flexibleForm.task_flexibility === flex
-                          ? flex === "fixed"
-                            ? "bg-purple-50 text-purple-700 border-purple-200"
-                            : flex === "optional"
-                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                            : "bg-blue-50 text-blue-700 border-blue-200"
-                          : "bg-white text-neutral-500 border-neutral-200"
-                      }`}
-                    >
-                      {flex === "fixed" ? "🔒 Rigid (Fixed)" : flex === "optional" ? "🌱 Optional" : "↔ Movable"}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              )}
 
               <div>
                 <label className="flex items-center gap-2 text-sm font-bold text-neutral-700 select-none cursor-pointer">
