@@ -2049,10 +2049,18 @@ export default function App() {
   const notifiedTasksRef = useRef<{ [key: string]: boolean }>({});
 
   // Profile settings states
-  const [profileName, setProfileName] = useState(() => localStorage.getItem("dayflow_profile_name") || "Siddhesh Nagawade");
-  const [profileAge, setProfileAge] = useState(() => localStorage.getItem("dayflow_profile_age") || "25");
-  const [profileBio, setProfileBio] = useState(() => localStorage.getItem("dayflow_profile_bio") || "Productivity creator. Tracking daily flows.");
-  const [profileEmoji, setProfileEmoji] = useState(() => localStorage.getItem("dayflow_profile_emoji") || "👨‍💻");
+  const [profileName, setProfileName] = useState(() => {
+    const savedName = localStorage.getItem("dayflow_profile_name");
+    if (savedName) return savedName;
+    
+    // Auto-generate a guest name for frictionless onboarding
+    const newGuestName = `Guest${Math.floor(Math.random() * 10000)}`;
+    localStorage.setItem("dayflow_profile_name", newGuestName);
+    return newGuestName;
+  });
+  const [profileAge, setProfileAge] = useState(() => localStorage.getItem("dayflow_profile_age") || "");
+  const [profileBio, setProfileBio] = useState(() => localStorage.getItem("dayflow_profile_bio") || "");
+  const [profileEmoji, setProfileEmoji] = useState(() => localStorage.getItem("dayflow_profile_emoji") || "👤");
 
 
   // Goals and Achievements states
