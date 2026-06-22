@@ -12,6 +12,7 @@ export interface FixedBlock {
   locked: boolean;
   date: string;       // "YYYY-MM-DD" reference date
   color?: string;     // Color theme
+  daysOfWeek?: number[]; // custom repeat days 0-6 (0=Sunday)
 }
 
 export type TaskCategory = 
@@ -132,6 +133,15 @@ export interface FlexibleTask {
   // Task Importance / Rigidity classification
   importance?: "critical" | "important" | "optional";
   task_flexibility?: "fixed" | "movable" | "optional";
+
+  // Multi-source duration log tracking metadata
+  duration_log_confidence?: number;
+  duration_log_source?: "timer" | "message" | "timestamp" | "default";
+
+  // Project Engine linking
+  projectId?: string;
+  phaseId?: string;
+  subtaskId?: string;
 }
 
 export type GoalCategory = 
@@ -268,6 +278,8 @@ export interface ScheduledItem {
   task_nature?: "recurring" | "one_time" | "progressive";
   carried_over_from?: string;
   carry_over_count?: number;
+  isRoutine?: boolean;
+  rigidity?: "hard" | "soft";
 }
 
 // ─── Behavioral memory logs ───────────────────────────────────────────────────
@@ -280,14 +292,18 @@ export interface TaskExecutionLog {
   scheduledStartHour?: number;
   completed: boolean;
   skipped: boolean;
+  confidence?: number;
+  estimationSource?: "timer" | "message" | "timestamp" | "default";
 }
+
+export type FrictionReason = "low_energy" | "distraction" | "resistance" | "unclear_task" | "external_interrupt" | "unknown";
 
 export interface ReflectionEvent {
   id: string;
   date: string; // YYYY-MM-DD
   completionRate: number;
   type: "success" | "failure";
-  cause: "planning" | "energy" | "discipline" | "interruption" | "success_sleep" | "success_planning" | "success_focus" | "success_load";
+  cause: "planning" | "energy" | "discipline" | "interruption" | "success_sleep" | "success_planning" | "success_focus" | "success_load" | FrictionReason;
   notes?: string;
 }
 
@@ -327,6 +343,12 @@ export interface DataReliability {
   verdict: "trusted" | "partial" | "unreliable";
 }
 
+export interface Signal<T> {
+  value: T;
+  confidence: number; // 0–1
+  sampleSize: number;
+}
+
 /**
  * BehaviorSignals: compressed behavioral model output from the Pattern Engine.
  * This — and ONLY this — is what gets sent to the AI Brain.
@@ -334,31 +356,130 @@ export interface DataReliability {
  */
 export interface BehaviorSignals {
   // Planning accuracy
-  planningBias: number;            // 1.34 = tasks take 34% longer than estimated on average
-  planningBiasConfidence: number;  // 0–1; based on number of completed logs with actualDuration
+  planningBias: Signal<number>;            // e.g. value: 1.34 (takes 34% longer), confidence, sampleSize
 
   // Time-of-day patterns (only hours with real data — no circadian defaults)
-  bestHours: number[];             // hours where success >= 0.75 AND confidence >= 0.4
-  worstHours: number[];            // hours where success < 0.4 AND confidence >= 0.4
-  hourlySuccessMap: Record<number, { rate: number; confidence: number }>;
+  bestHours: Signal<number[]>;             // hours where success >= 0.75 AND confidence >= 0.4
+  worstHours: Signal<number[]>;            // hours where success < 0.4 AND confidence >= 0.4
+  hourlySuccessMap: Record<number, { rate: number; confidence: number; supportCount: number }>;
 
   // Category performance
-  categorySuccessRates: Record<string, { rate: number; confidence: number }>;
-  weakCategories: string[];        // categories where rate < 0.5 and confidence >= 0.4
+  categorySuccessRates: Record<string, { rate: number; confidence: number; supportCount: number }>;
+  weakCategories: Signal<string[]>;        // categories where rate < 0.5 and confidence >= 0.4
 
   // Carry-over / procrastination
-  averageCarryOverCount: number;   // rolling avg carries per task in last 30 days
-  procrastinationRisk: number;     // 0–1 derived from carry-over rate + stale task age
+  averageCarryOverCount: Signal<number>;   // rolling avg carries per task in last 30 days
+  procrastinationRisk: Signal<number>;     // 0–1 derived from carry-over rate + stale task age
 
   // Load / burnout
-  recentLoadMins: number;          // total planned minutes over last 7 days
-  avgDailyCompletionRate: number;  // 7-day rolling, 0–1
-  burnoutRisk: number;             // 0–1 derived from load + completion drop trend
+  recentLoadMins: Signal<number>;          // total planned minutes over last 7 days
+  avgDailyCompletionRate: Signal<number>;  // 7-day rolling, 0–1
+  burnoutRisk: Signal<number>;             // 0–1 derived from load + completion drop trend
 
   // Data confidence
   totalLoggedTasks: number;
   dataAge: "insufficient" | "early" | "mature"; // <10 | 10-50 | >50 logs
   reliability: DataReliability;
+  coldStartMode: boolean;
+
+  // Behavioral Engine & Coach Upgrades
+  topFrictionReasons?: Signal<{ cause: string; percentage: number; count: number }[]>;
+  interventionCandidates?: SuggestionCandidate[];
+  wesScore?: Signal<number>; // Weighted Execution Score (0 to 100)
+  sssScore?: Signal<number>; // Schedule Stability Score (0 to 100)
+  pgsScore?: Signal<number>; // Personal Growth Score (0 to 100)
+}
+
+export type PlanningStyle = "overestimate" | "underestimate" | "procrastinate" | "consistency" | "execution";
+
+export interface OnboardingProfile {
+  completed: boolean;
+  sleep_start: string; // "HH:MM"
+  sleep_end: string; // "HH:MM"
+  energy_pattern: "morning" | "afternoon" | "night" | "inconsistent";
+  goals: string[];
+  struggles: string[];
+  planning_style: PlanningStyle;
+  role?: "student" | "working" | "freelancer" | "exam_prep";
+}
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  type: "routine_override" | "event";
+  effects?: {
+    suspendRoutineTypes?: ("sleep" | "class" | "meal" | "commute" | "custom")[];
+  };
+  confidence: 0.3 | 0.8 | 1.0;
+  source: "user_direct" | "ai_inferred";
+}
+
+export interface RoutineBlock {
+  id: string;
+  title: string;
+  daysOfWeek: number[]; // 0 = Sunday, 1 = Monday, etc.
+  startTime: string; // "HH:MM"
+  endTime: string; // "HH:MM"
+  type: "sleep" | "class" | "meal" | "commute" | "custom";
+  rigidity: "hard" | "soft";
+  confidence?: 0.3 | 0.8 | 1.0;
+  source?: "user_direct" | "ai_inferred";
+}
+
+export interface PendingQuestion {
+  id: string;
+  question: string;
+  priority: "low" | "medium" | "high";
+}
+
+export interface AIActionExplanation {
+  action: string;
+  reason: string;
+  confidence: "low" | "medium" | "high";
+}
+
+export interface ParsedCommand {
+  action: "start_timer" | "stop_timer" | "add_task" | "delete_task" | "postpone_task" | "move_to_tomorrow" | "change_time" | "add_routine" | "add_event";
+  taskId?: string;
+  taskTitle?: string;
+  newTaskTitle?: string;
+  newTaskDuration?: number;
+  newTime?: string;
+  mins?: number;
+  daysOfWeek?: number[];
+  endTime?: string;
+  rigidity?: "hard" | "soft";
+  routineType?: "sleep" | "class" | "meal" | "commute" | "custom";
+  startDate?: string;
+  endDate?: string;
+  eventType?: "routine_override" | "event";
+  suspendRoutineTypes?: ("sleep" | "class" | "meal" | "commute" | "custom")[];
+  confidence?: 0.3 | 0.8 | 1.0;
+  source?: "user_direct" | "ai_inferred";
+}
+
+export type CommandResolution =
+  | { status: "resolved"; command: ParsedCommand }
+  | {
+      status: "uncertain";
+      question: string;
+      options?: { id: string; title: string }[];
+      action?: ParsedCommand["action"];
+      mins?: number;
+      newTime?: string;
+    }
+  | { status: "none" };
+
+
+export interface SuggestionCandidate {
+  id: string;
+  type: "move_gym" | "reduce_load" | "pad_durations" | "break_task" | "focus_slump";
+  score: number;
+  message: string;
+  actionLabel: string;
+  whyQuery: string; // opens chat with this query when "Why?" is clicked
 }
 
 /**
@@ -415,4 +536,45 @@ export interface WeightEntry {
   date: string;   // "YYYY-MM-DD"
   weight: number; // in kg
   note?: string;
+}
+
+export interface ActiveTimer {
+  taskId: string;
+  startedAt: number; // Date.now() timestamp
+  title: string;
+}
+
+export interface WeeklyEvalSnapshot {
+  weekStart: string;       // "YYYY-MM-DD" Monday
+  completionRate: number;  // 0–1
+  carryOverRate: number;   // avg carry-overs per task
+  planningAccuracy: number; // actual/planned ratio, closer to 1.0 = better
+  streakDays: number;
+  aiSuggestionAcceptanceRate: number; // 0–1 suggestion acceptance
+  pgsScore?: number;       // 0–100 Personal Growth Score
+}
+
+export interface ProjectSubtask {
+  id: string;
+  title: string;
+  duration_minutes: number;
+  status: "pending" | "done" | "skipped";
+  taskId?: string; // Scheduled task ID if linked
+}
+
+export interface ProjectPhase {
+  id: string;
+  title: string;
+  order: number;
+  subtasks: ProjectSubtask[];
+}
+
+export interface Project {
+  id: string;
+  title: string;
+  deadline: string; // YYYY-MM-DD
+  goal: string;
+  phases: ProjectPhase[];
+  totalHoursEstimate: number;
+  progress: number; // calculated percentage
 }

@@ -1,4 +1,4 @@
-import { FixedBlock, FlexibleTask, TimeGap, ScheduledItem, DaySchedule, EnergyLevel, CalibrationProfile, DelayCostResult, ConsequenceCore } from "../types";
+import { FixedBlock, FlexibleTask, TimeGap, ScheduledItem, DaySchedule, EnergyLevel, CalibrationProfile, DelayCostResult, ConsequenceCore, RoutineBlock } from "../types";
 import { calculateAdvancedCalibration, getTaskCategory } from "./mlEngine";
 
 // Helper to convert HH:MM string to minutes since midnight
@@ -19,13 +19,18 @@ export function minutesToTime(mins: number): string {
 export function isFixedBlockActiveOnDate(block: FixedBlock, dateStr: string): boolean {
   if (block.repeats === "daily") return true;
   
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+
   if (block.repeats === "weekdays") {
-    const [year, month, day] = dateStr.split("-").map(Number);
-    const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
     return dayOfWeek >= 1 && dayOfWeek <= 5;
   }
   
-  if (block.repeats === "none" || block.repeats === "custom") {
+  if (block.repeats === "custom") {
+    return !!block.daysOfWeek?.includes(dayOfWeek);
+  }
+  
+  if (block.repeats === "none") {
     return block.date === dateStr;
   }
   
@@ -83,7 +88,8 @@ export function generateSchedule(
   emergencyTime: string | null = null,
   emergencyDurationMinutes = 60,
   profile?: CalibrationProfile,
-  delayPatterns?: { category: string; problemHour: number; avgDelays: number }[]
+  delayPatterns?: { category: string; problemHour: number; avgDelays: number }[],
+  softRoutines?: RoutineBlock[]
 ): DaySchedule {
   const finalScheduledItems: ScheduledItem[] = [];
   const conflicts: FlexibleTask[] = [];
@@ -97,6 +103,12 @@ export function generateSchedule(
     peakFocusTime: "morning" as const,
     completionRate: 100
   };
+
+  const activeSoftRoutines = (softRoutines || []).filter(r => {
+    const [year, month, day] = dateStr.split("-").map(Number);
+    const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+    return r.daysOfWeek.includes(dayOfWeek) && r.rigidity === "soft";
+  });
 
   // 1. Get active fixed blocks for today
   const activeFixed = fixedBlocks.filter((b) => isFixedBlockActiveOnDate(b, dateStr));
@@ -304,7 +316,7 @@ export function generateSchedule(
     return delayPatterns.some(p => p.category === category && p.problemHour === hour);
   };
 
-  // Order gaps: normal peak gaps -> other normal gaps -> problematic gaps (delayed slots)
+  // Order gaps: normal peak gaps -> other normal gaps -> soft routine overlap gaps -> problematic gaps
   const orderGapsForTask = (task: FlexibleTask): TimeGap[] => {
     const category = task.category || getTaskCategory(task.title);
     
@@ -313,24 +325,52 @@ export function generateSchedule(
       return isProblematicSlot(mid, category);
     };
 
-    const nonProblemGaps = gaps.filter(g => !checkProblem(g));
-    const problemGaps = gaps.filter(g => checkProblem(g));
+    const checkSoftOverlap = (g: TimeGap) => {
+      const gStart = timeToMinutes(g.start);
+      const gEnd = timeToMinutes(g.end);
+      return activeSoftRoutines.some(r => {
+        const rStart = timeToMinutes(r.startTime);
+        const rEnd = timeToMinutes(r.endTime);
+        return gStart < rEnd && gEnd > rStart;
+      });
+    };
 
-    if (activeProfile.phase < 2 || task.energy_level !== "high") {
-      return [...nonProblemGaps, ...problemGaps];
+    // Partition gaps into good, soft overlap, and problem gaps
+    const goodGaps: TimeGap[] = [];
+    const softOverlapGaps: TimeGap[] = [];
+    const problemGaps: TimeGap[] = [];
+
+    for (const g of gaps) {
+      if (checkProblem(g)) {
+        problemGaps.push(g);
+      } else if (checkSoftOverlap(g)) {
+        softOverlapGaps.push(g);
+      } else {
+        goodGaps.push(g);
+      }
     }
 
-    const [peakStart, peakEnd] = getPeakRange();
-    const peakGaps = nonProblemGaps.filter(g => {
-      const mid = (timeToMinutes(g.start) + timeToMinutes(g.end)) / 2;
-      return mid >= peakStart && mid < peakEnd;
-    });
-    const otherGaps = nonProblemGaps.filter(g => {
-      const mid = (timeToMinutes(g.start) + timeToMinutes(g.end)) / 2;
-      return !(mid >= peakStart && mid < peakEnd);
-    });
+    const sortPeakOther = (arr: TimeGap[]): TimeGap[] => {
+      if (activeProfile.phase < 2 || task.energy_level !== "high") {
+        return arr;
+      }
+      const [peakStart, peakEnd] = getPeakRange();
+      const peak = arr.filter(g => {
+        const mid = (timeToMinutes(g.start) + timeToMinutes(g.end)) / 2;
+        return mid >= peakStart && mid < peakEnd;
+      });
+      const other = arr.filter(g => {
+        const mid = (timeToMinutes(g.start) + timeToMinutes(g.end)) / 2;
+        return !(mid >= peakStart && mid < peakEnd);
+      });
+      return [...peak, ...other];
+    };
 
-    return [...peakGaps, ...otherGaps, ...problemGaps];
+    return [
+      ...sortPeakOther(goodGaps),
+      ...sortPeakOther(softOverlapGaps),
+      ...sortPeakOther(problemGaps)
+    ];
   };
 
   // 4. Fill gaps with flexible tasks (peak-aware in Phase 2, with transition buffers)
@@ -418,6 +458,91 @@ export function generateSchedule(
 
     if (!slotted) {
       conflicts.push(task);
+    }
+  }
+
+  // 5. Post-process: slot remaining soft routines into the remaining gaps
+  for (const r of activeSoftRoutines) {
+    const rStart = timeToMinutes(r.startTime);
+    const rEnd = timeToMinutes(r.endTime);
+    const rDuration = rEnd - rStart;
+
+    let schStart: number | null = null;
+    let schEnd: number | null = null;
+
+    // A. Try to place at preferred time
+    const preferredGap = gaps.find(g => {
+      const gStart = timeToMinutes(g.start);
+      const gEnd = timeToMinutes(g.end);
+      return gStart <= rStart && gEnd >= rEnd;
+    });
+
+    if (preferredGap) {
+      schStart = rStart;
+      schEnd = rEnd;
+    } else {
+      // B. Try to find the first gap at or after preferred start time
+      const laterGap = gaps.find(g => {
+        const gStart = timeToMinutes(g.start);
+        const gEnd = timeToMinutes(g.end);
+        return gStart >= rStart && (gEnd - gStart) >= rDuration;
+      });
+      if (laterGap) {
+        schStart = timeToMinutes(laterGap.start);
+        schEnd = schStart + rDuration;
+      } else {
+        // C. Try to find the first gap anywhere
+        const anyGap = gaps.find(g => {
+          const gStart = timeToMinutes(g.start);
+          const gEnd = timeToMinutes(g.end);
+          return (gEnd - gStart) >= rDuration;
+        });
+        if (anyGap) {
+          schStart = timeToMinutes(anyGap.start);
+          schEnd = schStart + rDuration;
+        }
+      }
+    }
+
+    if (schStart !== null && schEnd !== null) {
+      finalScheduledItems.push({
+        id: r.id,
+        type: "fixed",
+        title: r.title,
+        start_time: minutesToTime(schStart),
+        end_time: minutesToTime(schEnd),
+        duration_minutes: rDuration,
+        locked: false,
+        status: "fixed",
+        isRoutine: true,
+        rigidity: "soft"
+      });
+
+      // Split the gap
+      const targetStart = schStart;
+      const targetEnd = schEnd;
+      const gapIndex = gaps.findIndex(g => timeToMinutes(g.start) <= targetStart && timeToMinutes(g.end) >= targetEnd);
+      if (gapIndex !== -1) {
+        const gap = gaps[gapIndex];
+        const gStart = timeToMinutes(gap.start);
+        const gEnd = timeToMinutes(gap.end);
+        const newGaps: TimeGap[] = [];
+        if (targetStart > gStart) {
+          newGaps.push({
+            start: gap.start,
+            end: minutesToTime(targetStart),
+            duration_minutes: targetStart - gStart
+          });
+        }
+        if (gEnd > targetEnd) {
+          newGaps.push({
+            start: minutesToTime(targetEnd),
+            end: gap.end,
+            duration_minutes: gEnd - targetEnd
+          });
+        }
+        gaps.splice(gapIndex, 1, ...newGaps);
+      }
     }
   }
 

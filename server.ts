@@ -1,7 +1,6 @@
 import express from "express";
 import net from "net";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 
@@ -164,7 +163,7 @@ Never guess a start time for flexible tasks. Please output correct JSON structur
 app.post("/api/adjust-schedule", async (req, res) => {
   try {
     // V3.1: Read compressed text summaries instead of raw task arrays
-    const { userText, scheduleSummary, pendingSummary, currentSchedule, pendingTasks, today, image } = req.body;
+    const { userText, scheduleSummary, pendingSummary, currentSchedule, pendingTasks, today, image, routineBlocksSummary, calendarEventsSummary } = req.body;
     if (!userText || typeof userText !== "string" || userText.trim() === "") {
       res.status(400).json({ error: "Change description is required" });
       return;
@@ -184,18 +183,29 @@ app.post("/api/adjust-schedule", async (req, res) => {
         .map((t: any) => `- "${t.title}" (${t.duration_minutes}min) id="${t.id}" scheduled="${t.scheduled_date || 'backlog'}"`)
         .join("\n");
 
-    const systemPrompt = `You are a personal schedule adjustment assistant and productivity coach for the DayFlow app.
-The user describes their situation, adjustments they want to make, or their current mood and feelings in plain English.
+    const systemPrompt = `You are a narrow personal schedule assistant for the DayFlow app.
 Today's Date is: ${today}.
 
-DayFlow core philosophy:
-DayFlow does not optimize for completing every task. DayFlow optimizes for preserving meaningful progress while minimizing decision fatigue, burnout, and self-deception. Keep this philosophy in mind when the user is tired, stressed, or lagging behind — recommend compassionate rescheduling, task duration reduction, or backlog parking over pushing through burnout.
+## Strict Scope of Responsibilities
+You are NOT a general assistant, life coach, or generic conversational partner. You have ONLY 4 jobs:
+1. Parse messy input: Convert messy user statements ("wasted 3 hours doomscrolling") into structured changes (e.g. log friction, delay, or park tasks).
+2. Explain suggestions: Provide a brief, evidence-based reason when a user clicks "Why?" or asks for schedule suggestions.
+3. Reflection coaching: Conduct the evening check-in review Conversational flow.
+4. Decompose vague tasks: Break large/vague tasks (>120 mins, carryover >= 3, or unclear tasks) into exactly 3 bite-sized concrete steps.
+
+If the user attempts to chat about unrelated subjects (programming, life advice, recipes, general talk), politely refuse and bring the focus back to schedule and execution coaching.
 
 Current schedule for today:
 ${scheduleContext || "(empty)"}
 
 Pending flexible tasks (backlog):
 ${pendingContext || "(none)"}
+
+Active routine blocks (recurring templates):
+${routineBlocksSummary || "(none)"}
+
+Calendar events / Vacations / Holidays logged:
+${calendarEventsSummary || "(none)"}
 
 Based on the user's input, return a response matching the JSON structure blueprint below.
 
@@ -204,12 +214,12 @@ Your response must conform exactly to this structure. Return only keys from this
 {
   "changes": [
     {
-      "action": "delete" | "move_to_tomorrow" | "move_to_date" | "change_time" | "reduce_duration" | "add" | "cant_do_today" | "add_goal" | "update_goal" | "record_weight" | "generate_workout_plan",
-      "taskId": "string representing the task/goal ID to modify (empty/omit for add/add_goal)",
+      "action": "delete" | "move_to_tomorrow" | "move_to_date" | "change_time" | "reduce_duration" | "add" | "cant_do_today" | "add_goal" | "update_goal" | "record_weight" | "generate_workout_plan" | "propose_actual_time" | "add_routine" | "add_event" | "add_project",
+      "taskId": "string representing the task/goal ID to modify (empty/omit for add/add_goal/add_project)",
       "newDate": "YYYY-MM-DD (used only for move_to_date)",
-      "newTime": "HH:MM (used for change_time to schedule/pin at specific time)",
+      "newTime": "HH:MM (used for change_time/add_routine to schedule/pin at specific time)",
       "durationMultiplier": 0.5, // number (used only for reduce_duration to scale length, e.g. 0.5)
-      "newTaskTitle": "string (used only for action=add)",
+      "newTaskTitle": "string (used only for action=add/add_routine/add_event)",
       "newTaskDuration": 30, // integer minutes (used only for action=add)
       "newTaskDescription": "string (used when action=add and the task has workout steps or class details. One item per line.)",
       "insertImmediately": true | false, // boolean (used when action=add or action=change_time to pin/start a task/break immediately at the current time without doing calendar time math)
@@ -219,6 +229,29 @@ Your response must conform exactly to this structure. Return only keys from this
       "goalTarget": 10, // integer (new target count for add_goal or update_goal)
       "goalKeywords": ["keyword1", "keyword2"], // array of keywords to auto-match task titles
       "weightValue": 75.5, // number in kg (used only for action=record_weight)
+      "proposedDurationMinutes": 120, // integer minutes (used only for action=propose_actual_time)
+      "confidence": 0.3 | 0.8 | 1.0, // memory confidence (used for add_routine and add_event)
+      "source": "user_direct" | "ai_inferred", // memory source (used for add_routine and add_event)
+      "daysOfWeek": [1, 2, 3, 4, 5], // array of integers 0-6 (where 0=Sunday) used for add_routine
+      "endTime": "10:00", // HH:MM end time used for add_routine
+      "routineType": "sleep" | "class" | "meal" | "commute" | "custom", // category of routine
+      "rigidity": "hard" | "soft", // rigidity for add_routine
+      "startDate": "YYYY-MM-DD", // date used for add_event
+      "endDate": "YYYY-MM-DD", // date used for add_event
+      "eventType": "routine_override" | "event", // event type for add_event
+      "suspendRoutineTypes": ["sleep", "class", "meal", "commute", "custom"], // array of routine types to suspend during routine_override
+      "projectTitle": "string (used only for action=add_project)",
+      "projectGoal": "string (used only for action=add_project)",
+      "projectDeadline": "YYYY-MM-DD (used only for action=add_project)",
+      "projectPhases": [
+        {
+          "title": "string (e.g. Phase 1 / Unit 1)",
+          "order": 1,
+          "subtasks": [
+            { "title": "string (e.g. Diffusion study)", "duration_minutes": 90 }
+          ]
+        }
+      ],
       "reasoning": "Brief explanation for the change"
     }
   ],
@@ -253,6 +286,21 @@ Your response must conform exactly to this structure. Return only keys from this
 - "update_goal": Change target/parameters of an existing goal when user requests it. Specify the goal by matching "taskId" (goal id) or "goalTitle" (goal name), and specify the new target in "goalTarget".
 - "record_weight": When the user logs their weight (e.g. "today 74.5 kg" or "I weigh 80kg"), create this action with "weightValue" set to the number in kg.
 - "generate_workout_plan": When user shares a workout screenshot or asks you to create a plan, generate one or more "add" actions per day/muscle group. Use "newTaskDescription" to include the individual exercises (one per line) for that day.
+- "propose_actual_time": When the user casually mentions how long a task took (e.g., "gym took 2 hours", "spent around 90 mins on science revision", "reading was 45 minutes"), return action "propose_actual_time". Set "taskId" to the matched task id, "proposedDurationMinutes" to the extracted integer minutes, and "confidence" to a score (0.0 to 1.0). If confidence < 0.6, mention it in the message so the user can verify.
+- "add_routine": Propose a recurring routine template block (e.g. sleep block, work hours, meals, commutes, classes, etc.) with startTime/endTime (using fields newTime and endTime), daysOfWeek, rigidity, and routineType.
+  * Memory Confidence: Set "confidence": 0.3 | 0.8 | 1.0 and "source": "user_direct" | "ai_inferred".
+    - Vague/implicit statement (e.g. "I sleep late", "I usually study in the afternoon") -> confidence: 0.3, source: "ai_inferred".
+    - Explicit request (e.g. "Save sleep 11 PM to 7 AM every day as a routine") -> confidence: 1.0, source: "user_direct".
+- "add_event": Propose a calendar event or routine override.
+  * Replaces separate vacation/holiday types.
+  * Use "eventType": "routine_override" | "event".
+  * If it's a "routine_override" (e.g. family trip, vacation, internship, exam week, holiday), specify "suspendRoutineTypes" with the categories of routines to suspend (e.g. ["class", "commute"]) during the startDate and endDate window.
+  * Memory Confidence: Set "confidence" (0.3 | 0.8 | 1.0) and "source" ("user_direct" | "ai_inferred") based on statement clarity.
+- "add_project": Propose decomposing a large study block, exam prep, portfolio, or major task into a structured project container.
+  * Populate "projectTitle" (e.g., "Material Science Midterm Study"), "projectGoal", "projectDeadline".
+  * Provide "projectPhases": an array of phases (e.g. "Phases / Units", "Final Prep"), each containing sequential subtasks with title and duration_minutes (e.g. "Unit 1 Study", 90).
+  * Enforce safety confirmation: Projects are proposals. The user must click "Confirm" in the UI to save them.
+- Strict Safety Confirmation: You must NOT directly modify or save routines, projects, or overrides without user review. All proposed changes must be outputted as items in the "changes" array so that the UI can present them to the user for explicit confirmation or rejection. Do not make statements claiming changes are active before the user confirms them.
 
 ### VISION / IMAGE PARSING RULES:
 If an image is attached (college timetable, workout plan screenshot, scale photo, etc.):
@@ -323,12 +371,12 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  action: { type: Type.STRING, description: "One of: delete, move_to_tomorrow, move_to_date, change_time, reduce_duration, add, cant_do_today, add_goal, update_goal, record_weight, generate_workout_plan" },
-                  taskId: { type: Type.STRING, description: "Task or goal id to modify (empty for add/add_goal)" },
+                  action: { type: Type.STRING, description: "One of: delete, move_to_tomorrow, move_to_date, change_time, reduce_duration, add, cant_do_today, add_goal, update_goal, record_weight, generate_workout_plan, propose_actual_time, add_routine, add_event, add_project" },
+                  taskId: { type: Type.STRING, description: "Task, goal, or project id to modify (empty for add/add_goal/add_project)" },
                   newDate: { type: Type.STRING, description: "YYYY-MM-DD for move_to_date" },
-                  newTime: { type: Type.STRING, description: "HH:MM for change_time" },
+                  newTime: { type: Type.STRING, description: "HH:MM for change_time/add_routine start time" },
                   durationMultiplier: { type: Type.NUMBER, description: "e.g. 0.5 to scale duration for reduce_duration" },
-                  newTaskTitle: { type: Type.STRING, description: "Title for new task when action=add" },
+                  newTaskTitle: { type: Type.STRING, description: "Title for new task/routine/event when action is add/add_routine/add_event" },
                   newTaskDuration: { type: Type.INTEGER, description: "Minutes for new task when action=add" },
                   newTaskDescription: { type: Type.STRING, description: "Multi-line detail: exercises or class info, one item per line. Used when action=add." },
                   insertImmediately: { type: Type.BOOLEAN, description: "Set to true if the task/break must start right now, avoiding time calculations" },
@@ -342,6 +390,51 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
                     description: "Keywords to auto-match task titles, e.g. ['gym', 'workout'] if action=add_goal"
                   },
                   weightValue: { type: Type.NUMBER, description: "Weight in kg if action=record_weight" },
+                  proposedDurationMinutes: { type: Type.INTEGER, description: "Proposed duration in minutes for propose_actual_time" },
+                  confidence: { type: Type.NUMBER, description: "Confidence score (0.3, 0.8, or 1.0) indicating memory extraction confidence for routines/events" },
+                  source: { type: Type.STRING, description: "Memory source: 'user_direct' or 'ai_inferred'" },
+                  daysOfWeek: {
+                    type: Type.ARRAY,
+                    items: { type: Type.INTEGER },
+                    description: "Days of week 0-6 (0=Sunday) for add_routine"
+                  },
+                  endTime: { type: Type.STRING, description: "HH:MM end time for add_routine" },
+                  routineType: { type: Type.STRING, description: "Category of routine: sleep, class, meal, commute, custom for add_routine" },
+                  rigidity: { type: Type.STRING, description: "Rigidity: hard or soft for add_routine" },
+                  startDate: { type: Type.STRING, description: "YYYY-MM-DD start date for add_event" },
+                  endDate: { type: Type.STRING, description: "YYYY-MM-DD end date for add_event" },
+                  eventType: { type: Type.STRING, description: "Type of override event: routine_override or event for add_event" },
+                  suspendRoutineTypes: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "Routine categories to suspend during a routine_override, e.g. ['class', 'commute']"
+                  },
+                  projectTitle: { type: Type.STRING, description: "Title of the project (e.g. 'Material Science Midterm Study')" },
+                  projectGoal: { type: Type.STRING, description: "Goal or description of the project" },
+                  projectDeadline: { type: Type.STRING, description: "YYYY-MM-DD deadline for the project" },
+                  projectPhases: {
+                    type: Type.ARRAY,
+                    description: "Structured project phases and subtasks",
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        title: { type: Type.STRING, description: "Phase title (e.g. 'Phases / Units', 'Final Prep')" },
+                        order: { type: Type.INTEGER, description: "Order sequence of phase" },
+                        subtasks: {
+                          type: Type.ARRAY,
+                          items: {
+                            type: Type.OBJECT,
+                            properties: {
+                              title: { type: Type.STRING, description: "Subtask task title" },
+                              duration_minutes: { type: Type.INTEGER, description: "Estimated duration in minutes" }
+                            },
+                            required: ["title", "duration_minutes"]
+                          }
+                        }
+                      },
+                      required: ["title", "order", "subtasks"]
+                    }
+                  },
                   reasoning: { type: Type.STRING },
                 },
                 required: ["action", "reasoning"],
@@ -490,6 +583,66 @@ Respond ONLY with a valid JSON object conforming exactly to this structure. Do n
   } catch (error: any) {
     console.error("Task classification API error:", error);
     handleApiError(res, error, "Failed to classify task.");
+  }
+});
+
+
+
+// 3.6 Task Decomposition API — splits vague/long tasks into exactly 3 actionable steps
+app.post("/api/decompose-task", async (req, res) => {
+  try {
+    const { taskTitle, duration } = req.body;
+    if (!taskTitle || typeof taskTitle !== "string") {
+      res.status(400).json({ error: "taskTitle is required" });
+      return;
+    }
+
+    const durationVal = Number(duration) || 60;
+
+    const systemPrompt = `You are a task decomposition coach.
+Your job is to break down a vague or large task into exactly 3 smaller, highly concrete, actionable sub-tasks.
+Each sub-task must be concrete, meaning it starts with a physical action verb (e.g. "Draft case study intro", "Write 2 code files", "Pack sports bag") rather than a vague idea (e.g. "Work on portfolio").
+For the sub-tasks:
+- Distribute the total duration of ${durationVal} minutes reasonably among the 3 sub-tasks so their sum matches ${durationVal}.
+- Return exactly 3 sub-tasks.
+
+Respond ONLY with a valid JSON object matching the schema. Do not include markdown code block syntax, formatting tags, or preambles.`;
+
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Decompose this task: "${taskTitle}" with total duration ${durationVal} minutes.`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.2,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            subtasks: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING, description: "Concrete, actionable title starting with a verb" },
+                  duration: { type: Type.INTEGER, description: "Duration in minutes" }
+                },
+                required: ["title", "duration"]
+              }
+            }
+          },
+          required: ["subtasks"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response received from decomposition model");
+    const result = JSON.parse(text);
+    res.json(result);
+  } catch (error: any) {
+    console.error("Task decomposition API error:", error);
+    handleApiError(res, error, "Failed to decompose task.");
   }
 });
 
@@ -647,23 +800,14 @@ app.post("/api/ai-reasoning", async (req, res) => {
       return;
     }
 
-    const systemPrompt = `You are DayFlow, an intelligent behavioral scheduling coach.
+    const systemPrompt = `You are DayFlow, an intelligent, narrow behavioral scheduling coach.
+You have ONLY 4 jobs:
+1. Parse messy input: Convert messy user statements ("wasted 3 hours doomscrolling") into structured changes (e.g. log friction, delay, or park tasks).
+2. Explain suggestions: Provide a brief, evidence-based reason when a user clicks "Why?" or asks for schedule suggestions.
+3. Reflection coaching: Conduct the evening check-in review Conversational flow.
+4. Decompose vague tasks: Break large/vague tasks (>120 mins, carryover >= 3, or unclear tasks) into exactly 3 bite-sized concrete steps.
 
-## Your Role (V3.1 Hybrid Intelligence)
-You are the explanation and negotiation layer. Local code has already done all the math.
-You receive compressed BehaviorSignals — not raw task lists or logs.
-Your job: interpret signals in human language, coach warmly, propose structured actions.
-
-## Critical Rules
-1. NEVER invent behavioral patterns. Only cite patterns that appear in the provided signals.
-2. ALWAYS check confidence before citing a pattern:
-   - Only reference hourly or category patterns where confidence >= 0.4
-   - If confidence < 0.4, say "I'm noticing a possible trend" not "you always..."
-3. If dataAge === "insufficient" (< 10 logs): act as a supportive default coach. Do NOT cite specific behavioral data.
-4. If reliability.verdict === "unreliable": tell the user their data may not fully reflect actual behavior. Ask them to confirm.
-5. Use evidence-based language:
-   - ❌ Bad: "You always fail after 7 PM."
-   - ✅ Good: "I noticed 4 recent failures after 7 PM — does evening fatigue affect you?"
+You are NOT a general conversational assistant or general life coach. Do not answer questions outside of tasks, schedule logs, friction points, task decomposition, and reflections.
 
 ## Trigger Modes
 1. "reflection": User is reflecting on yesterday or recent stale tasks.
@@ -673,7 +817,7 @@ Your job: interpret signals in human language, coach warmly, propose structured 
 2. "drift": A task has been missed today. Check in softly.
    - Use missedTask, todayLoadMins, overloadRisk from currentState.
    - Propose: delay, carry_over, backlog depending on load.
-3. "copilot": User is chatting with you. Provide coach-like feedback.
+3. "copilot": User is chatting with you. Provide coach-like feedback strictly regarding their timeline and execution psychology.
 
 ## Proposal Actions
 - { "type": "carry_over", "taskId": "..." } — move to today
@@ -749,6 +893,7 @@ async function startServer() {
     : PORT;
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -767,4 +912,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
