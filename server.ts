@@ -886,6 +886,12 @@ Generate the AIProposal response JSON:`;
 
 
 
+// Global Error Handler for Vercel
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("Unhandled Express Error:", err);
+  res.status(500).json({ error: "Internal Server Error: " + (err.message || String(err)) });
+});
+
 // Vite middleware / client routing setup
 async function startServer() {
   const listenPort = process.env.NODE_ENV !== "production"
