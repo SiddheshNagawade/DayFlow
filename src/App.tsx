@@ -1353,7 +1353,7 @@ export default function App() {
 
   const getTimeoutForOperation = (opType: "copilot" | "project_wizard" | "consequence" | "classification"): number => {
     switch (opType) {
-      case "copilot": return 20000;
+      case "copilot": return 60000;
       case "project_wizard": return 90000;
       case "consequence": return 25000;
       case "classification": return 8000;
