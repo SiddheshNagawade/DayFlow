@@ -4075,12 +4075,15 @@ export default function App() {
     let userSummary = "";
     let promptForAI = "";
     
+    // Format the answers beautifully for the chat UI
+    const formattedAnswers = msg.questionnaire.questions.map((q: any) => `• ${q.label}\n  ↳ ${answers[q.id]}`).join("\n\n");
+    
     if (msg.questionnaire.type === "workout_plan") {
       const workoutType = answers["workout_type"];
       const weightGoal = answers["weight_goal"];
       const goalDetails = answers["goal_details"] || "General fitness";
       const frequency = answers["frequency"];
-      userSummary = `Configured: ${workoutType} plan, focusing on ${weightGoal} (${goalDetails}) for ${frequency}.`;
+      userSummary = `Here are my preferences:\n\n${formattedAnswers}`;
       promptForAI = `Generate a customized fitness schedule plan. User options:
 - Type: ${workoutType}
 - Focus: ${weightGoal}
@@ -4093,7 +4096,7 @@ Please create 3 or 4 relevant scheduled/backlog tasks representing these specifi
       const sessionCount = answers["session_count"];
       const sessionDuration = answers["session_duration"];
       const goalName = answers["project_goal_name"] || "General milestone";
-      userSummary = `Configured: ${projectType} milestone plan, scheduling ${sessionCount} tasks at ${sessionDuration} each, targeting ${goalName}.`;
+      userSummary = `Here are my preferences:\n\n${formattedAnswers}`;
       promptForAI = `Generate a customized project plan. User options:
 - Type: ${projectType}
 - Sessions: ${sessionCount}
@@ -4103,9 +4106,9 @@ Please create 3 or 4 relevant scheduled/backlog tasks representing these specifi
 Please create the specified number of backlog tasks representing the project phases with the given duration. Include descriptions detailing steps. Also create a tracking goal.`;
     } else {
       // General online AI clarification answers compilation
-      const answersList = msg.questionnaire.questions.map((q: any) => `- ${q.label}: ${answers[q.id]}`).join("\n");
-      userSummary = "Completed setup responses.";
-      promptForAI = `Here are my answers to your clarification questions:\n${answersList}\n\nPlease formulate the detailed schedule adjustment plan now based on this context.`;
+      userSummary = `Here are my answers:\n\n${formattedAnswers}`;
+      const plainAnswersList = msg.questionnaire.questions.map((q: any) => `- ${q.label}: ${answers[q.id]}`).join("\n");
+      promptForAI = `Here are my answers to your clarification questions:\n${plainAnswersList}\n\nPlease formulate the detailed schedule adjustment plan now based on this context.`;
     }
     
     // Circuit Breaker check
@@ -4235,7 +4238,11 @@ Please create the specified number of backlog tasks representing the project pha
               answers["project_goal_name"] || ""
             );
           } else {
-            offlineData = adjustScheduleOffline(promptForAI, daySchedule.items, flexibleTasks, selectedDate);
+            // General questionnaire fallback if AI times out
+            offlineData = {
+              changes: [],
+              message: "The DayFlow AI service took too long to process your answers and timed out (high server load). I've saved your project parameters locally. Please try adding specific tasks manually using the 'add task' command for now!"
+            };
           }
           data = offlineData;
           setCopilotError(offlineData.changes.length > 0 ? null : `DayFlow AI service failed: ${err.message}`);
