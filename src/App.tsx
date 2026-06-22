@@ -57,7 +57,8 @@ import {
   Activity,
   ArrowUpRight,
   Briefcase,
-  FolderKanban
+  FolderKanban,
+  RotateCcw
 } from "lucide-react";
 import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone, WeightEntry, ClassificationResult, TaskCategory, TaskRigidity, TaskRecoverability, TaskDependencyChain, TaskProgressType, DeadlinePressure, TaskConsequence, TaskMeta, ConsequenceIntent, ReflectionEvent, TaskExecutionLog, UBMInsights, AIProposal, ActiveTimer, WeeklyEvalSnapshot, PlanningStyle, FrictionReason, OnboardingProfile, RoutineBlock, PendingQuestion, ParsedCommand, CommandResolution, AIActionExplanation, CalendarEvent, Project, ProjectPhase, ProjectSubtask } from "./types";
 import { generateSchedule, calculateFuturePredictions, timeToMinutes, minutesToTime, isFixedBlockActiveOnDate, calculateCalibrationProfile, simulateDelayCost, getActionRisk } from "./utils/scheduler";
@@ -125,15 +126,29 @@ const CopilotTextArea: React.FC<CopilotTextAreaProps> = ({
   };
 
   return (
-    <textarea 
-      value={localVal}
-      onChange={(e) => setLocalVal(e.target.value)}
-      onKeyDown={handleKeyDown}
-      placeholder={placeholder}
-      rows={2}
-      className="w-full pl-3 pr-24 py-2.5 border border-neutral-200 rounded-2xl text-xs bg-white/45 backdrop-blur-xs focus:bg-white focus:ring-1 focus:ring-primary focus:outline-none resize-none font-sans font-medium"
-      disabled={disabled}
-    />
+    <div className="relative w-full flex items-center">
+      <textarea 
+        value={localVal}
+        onChange={(e) => setLocalVal(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        rows={2}
+        className="w-full pl-3 pr-14 py-2.5 border border-neutral-200 rounded-2xl text-xs bg-white/45 backdrop-blur-xs focus:bg-white focus:ring-1 focus:ring-primary focus:outline-none resize-none font-sans font-medium"
+        disabled={disabled}
+      />
+      {localVal.trim().length > 0 && !disabled && !isProcessing && (
+        <button
+          onClick={() => {
+            onSend(localVal);
+            setLocalVal("");
+          }}
+          className="absolute right-2 p-1.5 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors shadow-sm z-10 cursor-pointer flex items-center justify-center h-8 w-8"
+          title="Send Message"
+        >
+          <Send className="w-3.5 h-3.5" />
+        </button>
+      )}
+    </div>
   );
 };
 
@@ -7146,17 +7161,30 @@ Please create the specified number of backlog tasks representing the project pha
                       </div>
                       
                       {!isAI && !isProcessingCopilot && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingMessageIdx(idx);
-                            setEditingMessageText(msg.text);
-                          }}
-                          className="absolute -left-9 top-1/2 -translate-y-1/2 p-1.5 rounded-xl bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-450 hover:text-neutral-650 opacity-70 md:opacity-0 group-hover/msg:opacity-100 transition-opacity cursor-pointer shadow-3xs z-10"
-                          title="Edit message"
-                        >
-                          <Pencil className="w-3 h-3" />
-                        </button>
+                        <div className="absolute -left-[4.5rem] top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-70 md:opacity-0 group-hover/msg:opacity-100 transition-opacity z-10">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updatedHistory = chatHistory.slice(0, idx);
+                              handleSendCopilotMessage(msg.text, updatedHistory);
+                            }}
+                            className="p-1.5 rounded-xl bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-450 hover:text-primary cursor-pointer shadow-3xs"
+                            title="Retry message"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingMessageIdx(idx);
+                              setEditingMessageText(msg.text);
+                            }}
+                            className="p-1.5 rounded-xl bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-450 hover:text-neutral-650 cursor-pointer shadow-3xs"
+                            title="Edit message"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        </div>
                       )}
                       
                       {/* Duration confirmation inline chip */}
@@ -9571,6 +9599,7 @@ Please create the specified number of backlog tasks representing the project pha
 
                                   {actionTrayTaskId === item.id && (
                                     <div className="mt-2.5 flex flex-wrap gap-1.5 animate-fade-in">
+                                      <button onClick={() => { handleOpenEditFlexible(flexibleTasks.find(t => t.id === item.id)!); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors cursor-pointer flex items-center gap-1.5"><Edit2 className="w-3.5 h-3.5" /> Edit</button>
                                       <button onClick={() => { showToast("10 min break added.", "info"); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors cursor-pointer">☕ 10 min break</button>
                                       <button onClick={() => { const result = simulateDelayCost(daySchedule.items, item.id, 30, appSettings.day_end, todayFlexCount, flexibleTasks, completedStreak); setConsequenceState({ taskId: item.id, mode: "break", breakMins: 30, result }); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors cursor-pointer">☕ 30 min break</button>
                                       <button onClick={() => { setMoveSheetTaskId(item.id); setActionTrayTaskId(null); handleOpenAICopilot(); setCopilotInput(`I want to move "${item.title}" to later today. What slots are available?`); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-600 border border-indigo-100 hover:bg-indigo-100 transition-colors cursor-pointer">↔ Move later</button>
@@ -10240,10 +10269,20 @@ Please create the specified number of backlog tasks representing the project pha
                   {/* Tab Content */}
                   {profileViewTab === "grid" && (
                     <div className="space-y-6 text-left">
-                      {/* Routine Blocks Manager Header */}
-                      <div className="flex flex-col md:flex-row gap-6 bg-white border border-neutral-200/60 rounded-3xl p-6 shadow-sm">
+                      {/* Routine Blocks Manager */}
+                      <div className={
+                        editingRoutineBlockId
+                          ? "fixed inset-0 bg-neutral-900/40 backdrop-blur-[2px] z-[100] flex items-center justify-center p-4 animate-fade-in"
+                          : "flex flex-col md:flex-row gap-6 bg-white border border-neutral-200/60 rounded-3xl p-6 shadow-sm"
+                      }>
+                        {editingRoutineBlockId && <div className="absolute inset-0" onClick={() => setEditingRoutineBlockId(null)} />}
+                        
                         {/* Form Column */}
-                        <div className="flex-1 space-y-4">
+                        <div className={
+                          editingRoutineBlockId
+                            ? "bg-white rounded-3xl shadow-2xl max-w-lg w-full p-6 space-y-4 relative z-10 max-h-[90vh] overflow-y-auto"
+                            : "flex-1 space-y-4"
+                        }>
                           <h3 className="text-sm font-bold text-neutral-800 uppercase tracking-widest flex items-center gap-1.5">
                             <BookMarked className="w-4 h-4 text-primary" /> 
                             <span>{editingRoutineBlockId ? "Edit Routine Block" : "Add Routine Block"}</span>
@@ -10363,19 +10402,21 @@ Please create the specified number of backlog tasks representing the project pha
                         </div>
 
                         {/* Guide card right */}
-                        <div className="hidden md:block w-72 bg-neutral-50 border border-neutral-100 rounded-2xl p-5 space-y-3 font-sans">
-                          <h4 className="text-xs font-bold text-neutral-800 flex items-center gap-1">
-                            <HelpCircle className="w-3.5 h-3.5 text-neutral-505 shrink-0" /> Routine Rules
-                          </h4>
-                          <div className="text-[11px] text-neutral-550 space-y-2 leading-relaxed">
-                            <p>
-                              <strong>🔒 Hard rigidity:</strong> Acts as an absolute commitment block (like a lecture or job hours). Flexible tasks are scheduled around it.
-                            </p>
-                            <p>
-                              <strong>📋 Soft rigidity:</strong> preferred window (e.g. Lunch or Gym). Flexible tasks can take precedence, shifting this routine dynamically.
-                            </p>
+                        {!editingRoutineBlockId && (
+                          <div className="hidden md:block w-72 bg-neutral-50 border border-neutral-100 rounded-2xl p-5 space-y-3 font-sans">
+                            <h4 className="text-xs font-bold text-neutral-800 flex items-center gap-1">
+                              <HelpCircle className="w-3.5 h-3.5 text-neutral-505 shrink-0" /> Routine Rules
+                            </h4>
+                            <div className="text-[11px] text-neutral-550 space-y-2 leading-relaxed">
+                              <p>
+                                <strong>🔒 Hard rigidity:</strong> Acts as an absolute commitment block (like a lecture or job hours). Flexible tasks are scheduled around it.
+                              </p>
+                              <p>
+                                <strong>📋 Soft rigidity:</strong> preferred window (e.g. Lunch or Gym). Flexible tasks can take precedence, shifting this routine dynamically.
+                              </p>
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
 
                       {/* List Grid */}

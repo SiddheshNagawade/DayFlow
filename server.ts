@@ -271,7 +271,7 @@ Your response must conform exactly to this structure. Return only keys from this
 ### CRITICAL WIZARD CLARIFICATION RULE:
 - If the user enters a vague, open-ended task or plan request (e.g., "create a gym plan", "make a study schedule for my exams", "plan my portfolio website development"), DO NOT immediately schedule a single generic block.
 - Instead, set "clarificationNeeded": true and generate 2 to 4 structured questions in "clarificationQuestions".
-- **Crucial Feature:** If you need the user to manually define their specific chapters, modules, or project steps, include a question with `"type": "task_list"` (e.g., "What specific tasks or chapters do you want to cover?"). This renders a dynamic UI where the user can click 'Add Task' and type their exact tasks and minute durations.
+- **Crucial Feature:** If you need the user to manually define their specific chapters, modules, or project steps, include a question with "type": "task_list" (e.g., "What specific tasks or chapters do you want to cover?"). This renders a dynamic UI where the user can click 'Add Task' and type their exact tasks and minute durations.
 
 ### TIME CALCULATION RULE (AVOID HALLUCINATION):
 - DO NOT calculate start/end clock hours or absolute times yourself (e.g. do not calculate that 3:15 PM + 45 minutes = 4:00 PM).
