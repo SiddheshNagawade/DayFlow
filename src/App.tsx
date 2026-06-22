@@ -1351,14 +1351,15 @@ export default function App() {
     return true;
   };
 
+  // Increased timeouts to 5 minutes to prevent the frontend from prematurely aborting slow AI requests
   const getTimeoutForOperation = (opType: "copilot" | "project_wizard" | "consequence" | "classification"): number => {
     switch (opType) {
-      case "copilot": return 60000;
-      case "project_wizard": return 90000;
-      case "consequence": return 25000;
-      case "classification": return 8000;
+      case "copilot": return 300000;
+      case "project_wizard": return 300000;
+      case "consequence": return 300000;
+      case "classification": return 300000;
     }
-    return 30000;
+    return 300000;
   };
 
   const generateLocalConsequenceFallback = (
@@ -4076,7 +4077,14 @@ export default function App() {
     let promptForAI = "";
     
     // Format the answers beautifully for the chat UI
-    const formattedAnswers = msg.questionnaire.questions.map((q: any) => `• ${q.label}\n  ↳ ${answers[q.id]}`).join("\n\n");
+    const formattedAnswers = msg.questionnaire.questions.map((q: any) => {
+      if (q.type === "task_list") {
+        const tasks = Array.isArray(answers[q.id]) ? answers[q.id] : [];
+        const taskStr = tasks.map((t: any) => `    - ${t.title || "Untitled"} (${t.duration || 0}m)`).join("\n");
+        return `• ${q.label}\n${taskStr}`;
+      }
+      return `• ${q.label}\n  ↳ ${answers[q.id]}`;
+    }).join("\n\n");
     
     if (msg.questionnaire.type === "workout_plan") {
       const workoutType = answers["workout_type"];
@@ -4107,7 +4115,13 @@ Please create the specified number of backlog tasks representing the project pha
     } else {
       // General online AI clarification answers compilation
       userSummary = `Here are my answers:\n\n${formattedAnswers}`;
-      const plainAnswersList = msg.questionnaire.questions.map((q: any) => `- ${q.label}: ${answers[q.id]}`).join("\n");
+      const plainAnswersList = msg.questionnaire.questions.map((q: any) => {
+        if (q.type === "task_list") {
+          const tasks = Array.isArray(answers[q.id]) ? answers[q.id] : [];
+          return `- ${q.label}:\n${tasks.map((t: any) => `  * ${t.title || "Untitled"} (Duration: ${t.duration || 0} mins)`).join("\n")}`;
+        }
+        return `- ${q.label}: ${answers[q.id]}`;
+      }).join("\n");
       promptForAI = `Here are my answers to your clarification questions:\n${plainAnswersList}\n\nPlease formulate the detailed schedule adjustment plan now based on this context.`;
     }
     
@@ -7475,6 +7489,98 @@ Please create the specified number of backlog tasks representing the project pha
                                       </option>
                                     ))}
                                   </select>
+                                ) : q.type === "task_list" ? (
+                                  <div className="space-y-2 border border-neutral-200 rounded-xl p-2 bg-neutral-50/50">
+                                    {(Array.isArray(q.value) ? q.value : [{ title: "", duration: 30 }]).map((taskItem: any, tIdx: number, arr: any[]) => (
+                                      <div key={tIdx} className="flex gap-2 items-center">
+                                        <input
+                                          type="text"
+                                          placeholder="Task / Chapter name"
+                                          value={taskItem.title}
+                                          onChange={(e) => {
+                                            const updated = [...chatHistory];
+                                            const msgCopy = { ...updated[idx] };
+                                            if (msgCopy.questionnaire) {
+                                              const qCopy = { ...msgCopy.questionnaire };
+                                              const newList = [...arr];
+                                              newList[tIdx] = { ...newList[tIdx], title: e.target.value };
+                                              qCopy.questions = qCopy.questions.map((item: any, i: number) =>
+                                                i === qIdx ? { ...item, value: newList } : item
+                                              );
+                                              msgCopy.questionnaire = qCopy;
+                                              updated[idx] = msgCopy;
+                                              setChatHistory(updated);
+                                            }
+                                          }}
+                                          className="flex-1 p-2 border border-neutral-200 rounded-lg text-xs bg-white focus:ring-1 focus:ring-primary"
+                                        />
+                                        <div className="flex items-center gap-1 w-24">
+                                          <input
+                                            type="number"
+                                            value={taskItem.duration}
+                                            onChange={(e) => {
+                                              const updated = [...chatHistory];
+                                              const msgCopy = { ...updated[idx] };
+                                              if (msgCopy.questionnaire) {
+                                                const qCopy = { ...msgCopy.questionnaire };
+                                                const newList = [...arr];
+                                                newList[tIdx] = { ...newList[tIdx], duration: parseInt(e.target.value) || 0 };
+                                                qCopy.questions = qCopy.questions.map((item: any, i: number) =>
+                                                  i === qIdx ? { ...item, value: newList } : item
+                                                );
+                                                msgCopy.questionnaire = qCopy;
+                                                updated[idx] = msgCopy;
+                                                setChatHistory(updated);
+                                              }
+                                            }}
+                                            className="w-full p-2 border border-neutral-200 rounded-lg text-xs bg-white text-center focus:ring-1 focus:ring-primary"
+                                          />
+                                          <span className="text-[10px] text-neutral-400 font-bold">m</span>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const updated = [...chatHistory];
+                                            const msgCopy = { ...updated[idx] };
+                                            if (msgCopy.questionnaire) {
+                                              const qCopy = { ...msgCopy.questionnaire };
+                                              const newList = arr.filter((_, filterIdx) => filterIdx !== tIdx);
+                                              qCopy.questions = qCopy.questions.map((item: any, i: number) =>
+                                                i === qIdx ? { ...item, value: newList.length > 0 ? newList : [{ title: "", duration: 30 }] } : item
+                                              );
+                                              msgCopy.questionnaire = qCopy;
+                                              updated[idx] = msgCopy;
+                                              setChatHistory(updated);
+                                            }
+                                          }}
+                                          className="p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                                        >
+                                          <X className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const updated = [...chatHistory];
+                                        const msgCopy = { ...updated[idx] };
+                                        if (msgCopy.questionnaire) {
+                                          const qCopy = { ...msgCopy.questionnaire };
+                                          const currentArr = Array.isArray(q.value) ? q.value : [{ title: "", duration: 30 }];
+                                          qCopy.questions = qCopy.questions.map((item: any, i: number) =>
+                                            i === qIdx ? { ...item, value: [...currentArr, { title: "", duration: 30 }] } : item
+                                          );
+                                          msgCopy.questionnaire = qCopy;
+                                          updated[idx] = msgCopy;
+                                          setChatHistory(updated);
+                                        }
+                                      }}
+                                      className="w-full py-1.5 flex items-center justify-center gap-1 text-[11px] font-bold text-primary hover:bg-primary/5 rounded-lg border border-dashed border-primary/30 transition-colors"
+                                    >
+                                      <Plus className="w-3 h-3" />
+                                      Add Task
+                                    </button>
+                                  </div>
                                 ) : (
                                   <input
                                     type="text"

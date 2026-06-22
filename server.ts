@@ -269,8 +269,9 @@ Your response must conform exactly to this structure. Return only keys from this
 }
 
 ### CRITICAL WIZARD CLARIFICATION RULE:
-- If the user enters a vague, open-ended task or plan request (e.g., "create a gym plan", "make a study schedule for my exams", "plan my portfolio website development", "schedule my homework and projects", "help me set up a routine"), DO NOT immediately schedule a single generic block.
-- Instead, set "clarificationNeeded": true and generate 2 to 4 structured, interactive questions in "clarificationQuestions" to tailor the plan. Once the user submits their choices in the UI, you will receive a follow-up message with the answers to generate the final detailed, multi-task plan.
+- If the user enters a vague, open-ended task or plan request (e.g., "create a gym plan", "make a study schedule for my exams", "plan my portfolio website development"), DO NOT immediately schedule a single generic block.
+- Instead, set "clarificationNeeded": true and generate 2 to 4 structured questions in "clarificationQuestions".
+- **Crucial Feature:** If you need the user to manually define their specific chapters, modules, or project steps, include a question with `"type": "task_list"` (e.g., "What specific tasks or chapters do you want to cover?"). This renders a dynamic UI where the user can click 'Add Task' and type their exact tasks and minute durations.
 
 ### TIME CALCULATION RULE (AVOID HALLUCINATION):
 - DO NOT calculate start/end clock hours or absolute times yourself (e.g. do not calculate that 3:15 PM + 45 minutes = 4:00 PM).
@@ -339,6 +340,11 @@ PROACTIVE GOAL SETUP & TRACKING:
   - Schedules a new recurring block or routine (e.g. gym/exercise, study sessions, reading, projects) that doesn't have a goal yet.
   - For example, if a user schedules "gym", suggest creating a Fitness Goal of e.g. 20 sessions, and define keywords like ["gym", "workout"].
 - Mention the proposed goal or update in your message.
+
+### SPEED AND CONCISENESS RULE (CRITICAL):
+- You MUST generate your response as fast as possible to ensure a snappy user experience.
+- Keep the "message" short and punchy (1-2 sentences maximum).
+- If the user provides answers for a large project (e.g. building a portfolio over a month), DO NOT generate exhaustive daily lists or dozens of tasks. Strict Limit: Generate a maximum of 3 to 5 high-level tasks or phases. Outline just the immediate next steps or major milestones to get the user started. Generating massive JSON payloads will crash the system.
 
 Be concise, warm, non-judgmental, and focused on helping the user stay productive without burning out.
 Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY with a raw, valid JSON object. Do not include markdown code block characters, notes, formatting tags, or preambles.`;
@@ -450,7 +456,7 @@ Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY
                  properties: {
                    id: { type: Type.STRING, description: "Unique question id (e.g. 'project_type', 'session_count')" },
                    label: { type: Type.STRING, description: "User-facing question text" },
-                   type: { type: Type.STRING, description: "Input type: 'select' or 'text'" },
+                   type: { type: Type.STRING, description: "Input type: 'select', 'text', or 'task_list'" },
                    options: {
                      type: Type.ARRAY,
                      items: { type: Type.STRING },
