@@ -1254,6 +1254,7 @@ export default function App() {
 
   // Search/Filters in Backlog
   const [backlogFilter, setBacklogFilter] = useState<"all" | "deadline" | "anytime" | "done">("all");
+  const [backlogTab, setBacklogTab] = useState<"carried" | "dropped">("carried");
   
   // Notification States
   const [showNotificationPrompt, setShowNotificationPrompt] = useState(false);
@@ -2350,6 +2351,28 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, []);
+
+  // Theme Mode Effect
+  useEffect(() => {
+    const applyTheme = () => {
+      const isSystemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (appSettings.themeMode === 'dark' || (appSettings.themeMode === 'system' && isSystemDark)) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    };
+    
+    applyTheme();
+    
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => {
+      if (appSettings.themeMode === 'system') applyTheme();
+    };
+    mediaQuery.addEventListener('change', handleChange);
+    
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, [appSettings.themeMode]);
 
   // Update profiles wrapper
   const handleUpdateProfiles = (newProfiles: ScheduleProfile[]) => {
@@ -6118,6 +6141,10 @@ Please create the specified number of backlog tasks representing the project pha
 
   // Filter Backlog items
   const filteredBacklogTasks = useMemo(() => {
+    if (backlogTab === "dropped") {
+      return flexibleTasks.filter(t => t.status === "skipped" || t.status === "expired");
+    }
+
     // Only non-scheduled (or unassigned) tasks count as Backlog
     const backlog = flexibleTasks.filter((t) => t.scheduled_date === null);
     
@@ -6133,7 +6160,7 @@ Please create the specified number of backlog tasks representing the project pha
       default:
         return backlog.filter((t) => t.status !== "done");
     }
-  }, [flexibleTasks, backlogFilter]);
+  }, [flexibleTasks, backlogFilter, backlogTab]);
 
   // Task completes ratio
   const completedTodayPercentage = useMemo(() => {
@@ -7300,7 +7327,7 @@ Please create the specified number of backlog tasks representing the project pha
                                         updated[idx].durationConfirmation.resolvedMins = mins;
                                         setChatHistory(updated);
                                       }}
-                                      className="flex-1 py-1.5 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl text-[11px] font-display transition-all shadow-sm shadow-primary/20 cursor-pointer text-center"
+                                      className="flex-1 py-1.5 bg-primary-gradient hover:opacity-90 text-white font-bold rounded-xl text-[11px] font-display transition-all shadow-sm shadow-primary/20 cursor-pointer text-center"
                                     >
                                       Save
                                     </button>
@@ -7711,7 +7738,7 @@ Please create the specified number of backlog tasks representing the project pha
                               onClick={() => {
                                 handleSubmitQuestionnaire(idx);
                               }}
-                              className="flex-1 py-2 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl text-[11px] font-display transition-all shadow-sm shadow-primary/20 cursor-pointer text-center"
+                              className="flex-1 py-2 bg-primary-gradient hover:opacity-90 text-white font-bold rounded-xl text-[11px] font-display transition-all shadow-sm shadow-primary/20 cursor-pointer text-center"
                             >
                               Generate Plan
                             </button>
@@ -7942,7 +7969,7 @@ Please create the specified number of backlog tasks representing the project pha
               <button 
                 type="button"
                 onClick={handleConfirmAIChanges}
-                className="flex-1 py-3 text-xs font-bold rounded-xl bg-primary hover:bg-primary-dark text-white transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm shadow-primary/20 text-center font-display animate-fade-in"
+                className="flex-1 py-3 text-xs font-bold rounded-xl bg-primary-gradient hover:opacity-90 text-white transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm shadow-primary/20 text-center font-display animate-fade-in"
               >
                 <Check className="w-4 h-4" />
                 <span>Confirm</span>
@@ -7959,9 +7986,8 @@ Please create the specified number of backlog tasks representing the project pha
       
       {/* Background ambient light blobs */}
       <div className="absolute inset-0 -z-10 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-15%] left-[-15%] w-[60%] h-[60%] rounded-full bg-violet-400/12 blur-[130px] animate-pulse-slow"></div>
-        <div className="absolute bottom-[-15%] right-[-15%] w-[65%] h-[65%] rounded-full bg-emerald-400/8 blur-[160px] animate-pulse-slow" style={{ animationDelay: "2.5s" }}></div>
-        <div className="absolute top-[35%] right-[15%] w-[40%] h-[40%] rounded-full bg-indigo-400/8 blur-[110px] animate-pulse-slow" style={{ animationDelay: "5s" }}></div>
+        <div className="absolute top-[40%] left-[-30%] w-[160vw] h-[160vw] md:w-[800px] md:h-[800px] rounded-full bg-[#00D2FF]/40 blur-[130px] dark:bg-[#00D2FF]/20 animate-pulse-slow"></div>
+        <div className="absolute bottom-[-30%] right-[-20%] w-[140vw] h-[140vw] md:w-[800px] md:h-[800px] rounded-full bg-[#0062FF]/50 blur-[140px] dark:bg-[#0062FF]/25 animate-pulse-slow" style={{ animationDelay: "2.5s" }}></div>
       </div>
 
       {/* Phase 2 Calibration Upgrade Banner */}
@@ -8116,7 +8142,7 @@ Please create the specified number of backlog tasks representing the project pha
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-3 bg-primary hover:bg-primary-dark text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-primary/10 cursor-pointer"
+                  className="flex-1 py-3 bg-primary-gradient hover:opacity-90 text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-primary/10 cursor-pointer"
                 >
                   Log Progress
                 </button>
@@ -8342,7 +8368,7 @@ Please create the specified number of backlog tasks representing the project pha
               {(activeTab === "today" || activeTab === "backlog") && (
                 <button
                   onClick={() => handleOpenAddFlexible(activeTab === "today")}
-                  className="px-3 py-1.5 rounded-xl bg-primary hover:bg-primary-dark text-white active:scale-95 transition-all duration-150 flex items-center justify-center gap-1.5 cursor-pointer font-display font-bold text-xs shadow-xs"
+                  className="px-3 py-1.5 rounded-xl bg-primary-gradient hover:opacity-90 text-white active:scale-95 transition-all duration-150 flex items-center justify-center gap-1.5 cursor-pointer font-display font-bold text-xs shadow-xs"
                   title="Add Task Manually"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -8480,7 +8506,7 @@ Please create the specified number of backlog tasks representing the project pha
                     <div className="flex items-center gap-2 shrink-0">
                       <button 
                         onClick={handleUndoAIChanges}
-                        className="bg-primary hover:bg-primary-dark text-white font-bold px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs active:scale-95 text-[11px] font-display"
+                        className="bg-primary-gradient hover:opacity-90 text-white font-bold px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs active:scale-95 text-[11px] font-display"
                       >
                         Undo Changes
                       </button>
@@ -8538,7 +8564,7 @@ Please create the specified number of backlog tasks representing the project pha
                       </button>
                       <button 
                         onClick={() => runAIResolution("drift")}
-                        className="bg-primary hover:bg-primary-dark text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] flex items-center gap-1"
+                        className="bg-primary-gradient hover:opacity-90 text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] flex items-center gap-1"
                         disabled={isProcessingAIReasoning}
                       >
                         {isProcessingAIReasoning && <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />}
@@ -8708,76 +8734,7 @@ Please create the specified number of backlog tasks representing the project pha
                     
 
 
-                {/* Cognitive Load Budget Indicator (System 1) */}
-                {daySchedule.items.length > 0 && (
-                  <div className="mx-3 mb-4 p-4 bg-white border border-neutral-200/60 rounded-2xl text-xs space-y-2.5 shadow-3xs font-sans text-left">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-neutral-800 flex items-center gap-1.5">
-                        <Activity className="w-4 h-4 text-primary" /> Cognitive Load Budget
-                      </span>
-                      {behaviorSignals.coldStartMode ? (
-                        <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full uppercase tracking-wider font-mono">
-                          Cold Start Mode
-                        </span>
-                      ) : (
-                        <span className="text-[9px] font-bold text-neutral-450 uppercase tracking-wider font-mono">
-                          Daily Limits
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      {/* High Energy Budget */}
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between items-center text-[10px] font-bold text-neutral-500 uppercase tracking-wider">
-                          <span>⚡ High-Energy</span>
-                          <span className={`${energyBudgets.highExceeded ? "text-red-500 font-extrabold" : "text-neutral-700"}`}>
-                            {energyBudgets.high}/{energyBudgets.highMax}m
-                          </span>
-                        </div>
-                        <div className="h-1.5 bg-neutral-100 rounded-full overflow-hidden flex">
-                          <div
-                            className={`h-full rounded-full transition-all duration-500 ${
-                              energyBudgets.highExceeded ? "bg-red-550" : "bg-primary"
-                            }`}
-                            style={{ width: `${Math.min(100, (energyBudgets.high / energyBudgets.highMax) * 100)}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      {/* Medium Energy Budget */}
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between items-center text-[10px] font-bold text-neutral-500 uppercase tracking-wider">
-                          <span>⚡ Medium-Energy</span>
-                          <span className={`${energyBudgets.mediumExceeded ? "text-red-550 font-extrabold" : "text-neutral-700"}`}>
-                            {energyBudgets.medium}/{energyBudgets.mediumMax}m
-                          </span>
-                        </div>
-                        <div className="h-1.5 bg-neutral-100 rounded-full overflow-hidden flex">
-                          <div
-                            className={`h-full rounded-full transition-all duration-500 ${
-                              energyBudgets.mediumExceeded ? "bg-red-550" : "bg-emerald-500"
-                            }`}
-                            style={{ width: `${Math.min(100, (energyBudgets.medium / energyBudgets.mediumMax) * 100)}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {(energyBudgets.highExceeded || energyBudgets.mediumExceeded) && (
-                      <div className="flex items-start gap-1.5 text-[11px] text-red-750 bg-red-50 border border-red-100/60 p-2.5 rounded-xl font-medium animate-pulse">
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-red-500 mt-0.5" />
-                        <span>
-                          {energyBudgets.highExceeded && energyBudgets.mediumExceeded
-                            ? "Cognitive load exceeded! Offload High and Medium energy tasks to backlog to stay consistent."
-                            : energyBudgets.highExceeded
-                            ? "High-energy task limit exceeded. Consider scaling back or moving items to prevent burnout."
-                            : "Medium-energy task limit exceeded. Cognitive load is high for today."}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                )}
+                {/* Cognitive Load Budget Indicator removed per user request */}
 
                 {/* Overbooked conflicts warning banner */}
                 {daySchedule.conflicts.length > 0 && (
@@ -8809,7 +8766,7 @@ Please create the specified number of backlog tasks representing the project pha
                       <div className="flex items-center gap-2.5">
                         <button
                           onClick={handleOpenAICopilot}
-                          className="px-4 py-2 bg-primary hover:bg-primary-dark text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
+                          className="px-4 py-2 bg-primary-gradient hover:opacity-90 text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
                         >
                           <Sparkles className="w-3.5 h-3.5" /> Launch AI Copilot
                         </button>
@@ -9824,31 +9781,55 @@ Please create the specified number of backlog tasks representing the project pha
             {activeTab === "backlog" && (
               <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto">
                 
-                {/* Search / Filter Pills header */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-3">
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-[#9999B3]">Backlog Filter</span>
-                    <button
-                      onClick={() => handleOpenAddFlexible(false)}
-                      className="px-3.5 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs font-bold rounded-xl cursor-pointer transition-all flex items-center gap-1.5 border border-primary/20"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Add Task
-                    </button>
-                  </div>
-                  <div className="flex gap-1.5 overflow-x-auto py-0.5 shrink-0 scrollbar-none">
-                    {(["all", "deadline", "anytime", "done"] as const).map((filter) => (
+                {/* Search / Filter Pills header with Center Toggle */}
+                <div className="flex flex-col mb-4 gap-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-[#9999B3]">Backlog Filter</span>
                       <button
-                        key={filter}
-                        onClick={() => setBacklogFilter(filter)}
-                        className={`px-4 py-2 text-xs rounded-full cursor-pointer font-bold capitalize transition-all border whitespace-nowrap ${
-                          backlogFilter === filter
-                            ? "bg-primary text-white border-primary shadow-sm shadow-primary/10"
-                            : "bg-transparent text-neutral-600 border-neutral-200 hover:bg-neutral-100/30"
+                        onClick={() => handleOpenAddFlexible(false)}
+                        className="px-3.5 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs font-bold rounded-xl cursor-pointer transition-all flex items-center gap-1.5 border border-primary/20"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add Task
+                      </button>
+                    </div>
+
+                    {/* CENTER TOGGLE */}
+                    <div className="flex bg-neutral-100/80 p-1 rounded-xl items-center shadow-inner">
+                      <button
+                        onClick={() => setBacklogTab("carried")}
+                        className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                          backlogTab === "carried" ? "bg-white text-primary shadow-sm" : "text-neutral-500 hover:text-neutral-700"
                         }`}
                       >
-                        {filter === "all" ? "Active" : filter === "deadline" ? "Has Deadline" : filter}
+                        Carried Forward
                       </button>
-                    ))}
+                      <button
+                        onClick={() => setBacklogTab("dropped")}
+                        className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                          backlogTab === "dropped" ? "bg-white text-rose-600 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
+                        }`}
+                      >
+                        Dropped
+                      </button>
+                    </div>
+
+                    {/* Filter Pills (only show in carried forward tab) */}
+                    <div className={`flex gap-1.5 overflow-x-auto py-0.5 shrink-0 scrollbar-none transition-opacity ${backlogTab === "dropped" ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
+                      {(["all", "deadline", "anytime", "done"] as const).map((filter) => (
+                        <button
+                          key={filter}
+                          onClick={() => setBacklogFilter(filter)}
+                          className={`px-4 py-2 text-xs rounded-full cursor-pointer font-bold capitalize transition-all border whitespace-nowrap ${
+                            backlogFilter === filter
+                              ? "bg-primary text-white border-primary shadow-sm shadow-primary/10"
+                              : "bg-transparent text-neutral-600 border-neutral-200 hover:bg-neutral-100/30"
+                          }`}
+                        >
+                          {filter === "all" ? "Active" : filter === "deadline" ? "Has Deadline" : filter}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -9867,7 +9848,7 @@ Please create the specified number of backlog tasks representing the project pha
                       </div>
                       <button
                         onClick={() => handleOpenAddFlexible(false)}
-                        className="px-4 py-2 bg-primary hover:bg-primary-dark text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
+                        className="px-4 py-2 bg-primary-gradient hover:opacity-90 text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
                       >
                         <Plus className="w-3.5 h-3.5" /> Add Backlog Task
                       </button>
@@ -9936,7 +9917,16 @@ Please create the specified number of backlog tasks representing the project pha
                               </div>
 
                               {/* Small details control */}
-                              <div className="flex gap-1">
+                              <div className="flex gap-1 items-center">
+                                {task.status !== "done" && (
+                                  <button
+                                    onClick={() => handleToggleTaskDone(task.id)}
+                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition-colors"
+                                    title="Mark Task as Done"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                                 <button 
                                   onClick={() => handleOpenEditFlexible(task)}
                                   className="p-1 hover:bg-neutral-100 text-[#9999B3] hover:text-neutral-700 rounded transition-colors"
@@ -9976,13 +9966,75 @@ Please create the specified number of backlog tasks representing the project pha
                                 {estimateStr}
                               </span>
 
-                              {task.status !== "done" && (
+                              {backlogTab === "dropped" ? (
+                                <button 
+                                  onClick={() => {
+                                    setFlexibleTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: "backlog", scheduled_date: null } : t));
+                                    setBacklogTab("carried");
+                                    showToast("Task restored to active backlog", "success");
+                                  }}
+                                  className="px-2.5 py-1 text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold border border-indigo-200 rounded-lg transition-colors cursor-pointer flex items-center gap-1 shrink-0"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" /> Recover to Backlog
+                                </button>
+                              ) : task.status !== "done" && (
                                 <button 
                                   onClick={() => handleScheduleTaskToday(task)}
-                                  className="px-2.5 py-1 text-xs bg-primary hover:bg-primary-dark font-bold text-white rounded-lg transition-colors cursor-pointer flex items-center gap-0.5 text-right shrink-0"
+                                  className="px-2.5 py-1 text-xs bg-primary-gradient hover:opacity-90 font-bold text-white rounded-lg transition-colors cursor-pointer flex items-center gap-0.5 text-right shrink-0"
                                 >
                                   Schedule today →
                                 </button>
+                              )}
+                            </div>
+
+                            {/* Expansion Details & Consequences for Flexible Tasks */}
+                            <div className="mt-2">
+                              <button
+                                onClick={() => setExpandedTaskIds(prev => ({ ...prev, [task.id]: !prev[task.id] }))}
+                                className="flex items-center gap-1 text-[10px] font-bold text-primary/70 hover:text-primary cursor-pointer transition-colors"
+                              >
+                                <ChevronDown className={`w-3 h-3 transition-transform ${expandedTaskIds[task.id] ? "rotate-180" : ""}`} />
+                                {expandedTaskIds[task.id] ? "Hide details" : "See details & consequences"}
+                              </button>
+                              {expandedTaskIds[task.id] && (
+                                <div className="mt-2 space-y-3">
+                                  {/* Standard Description Box */}
+                                  {task.description && (
+                                    <div className="p-3 bg-neutral-50 border border-neutral-200/60 rounded-xl">
+                                      <span className="text-[9px] font-black text-neutral-400 uppercase tracking-widest block mb-1">Description / Subtasks</span>
+                                      <p className="text-xs text-neutral-700 whitespace-pre-wrap">{task.description}</p>
+                                    </div>
+                                  )}
+
+                                  {/* AI Consequence Box */}
+                                  {task.status !== "done" && (
+                                    <div className="p-3 bg-amber-50/50 border border-amber-200/60 rounded-xl space-y-2">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest flex items-center gap-1">
+                                          <Zap className="w-3 h-3" /> AI Consequence Analysis
+                                        </span>
+                                        <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            fetchConsequenceInsight(task);
+                                          }}
+                                          className="text-[9px] font-bold text-amber-600 hover:underline cursor-pointer"
+                                        >
+                                          Regenerate
+                                        </button>
+                                      </div>
+                                      {task.consequence_insight ? (
+                                        <p className="text-xs text-amber-800 leading-relaxed">
+                                          {task.consequence_insight}
+                                        </p>
+                                      ) : (
+                                        <p className="text-xs text-amber-800/60 italic">
+                                          Click "Regenerate" to analyze the systemic impact of skipping this task.
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               )}
                             </div>
                           </div>
@@ -10493,7 +10545,7 @@ Please create the specified number of backlog tasks representing the project pha
                             <button
                               onClick={handleSaveRoutineBlock}
                               disabled={!routineBlockForm.title.trim()}
-                              className="px-4 py-2 bg-primary hover:bg-primary-dark text-white rounded-xl text-xs font-bold transition-all shadow-md disabled:opacity-40 flex items-center gap-1 cursor-pointer font-display"
+                              className="px-4 py-2 bg-primary-gradient hover:opacity-90 text-white rounded-xl text-xs font-bold transition-all shadow-md disabled:opacity-40 flex items-center gap-1 cursor-pointer font-display"
                             >
                               <Check className="w-3.5 h-3.5" />
                               <span>{editingRoutineBlockId ? "Update Block" : "Create Block"}</span>
@@ -10658,7 +10710,7 @@ Please create the specified number of backlog tasks representing the project pha
                             <input name="projectDeadline" type="date" className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white focus:outline-none focus:ring-1 focus:ring-primary font-sans" required />
                           </div>
                           <div className="md:col-span-3 flex justify-end">
-                            <button type="submit" className="bg-primary hover:bg-primary-dark text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer font-display">
+                            <button type="submit" className="bg-primary-gradient hover:opacity-90 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer font-display">
                               Create Project
                             </button>
                           </div>
@@ -10971,7 +11023,7 @@ Please create the specified number of backlog tasks representing the project pha
                           </div>
                           <button
                             onClick={() => handleOpenCreateGoal()}
-                            className="bg-primary hover:bg-primary-dark text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1 cursor-pointer font-display"
+                            className="bg-primary-gradient hover:opacity-90 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1 cursor-pointer font-display"
                           >
                             <Plus className="w-4 h-4" />
                             <span>New Goal</span>
@@ -11285,7 +11337,7 @@ Please create the specified number of backlog tasks representing the project pha
                       <div className="flex justify-end pt-2">
                         <button
                           type="submit"
-                          className="px-4 py-2 bg-primary hover:bg-primary-dark text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-primary/20 cursor-pointer"
+                          className="px-4 py-2 bg-primary-gradient hover:opacity-90 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-primary/20 cursor-pointer"
                         >
                           Save Profile Changes
                         </button>
@@ -11325,6 +11377,35 @@ Please create the specified number of backlog tasks representing the project pha
                         }}
                         className="bg-neutral-50 border border-neutral-200 text-center rounded-xl px-3 py-2 text-xs font-mono text-neutral-700 w-full focus:outline-none focus:border-primary"
                       />
+                    </div>
+                  </div>
+
+                  {/* Section: Appearance */}
+                  <div className="bg-white border border-neutral-200 rounded-3xl p-6 shadow-3xs space-y-4 text-left">
+                    <h3 className="text-sm font-bold text-neutral-700 uppercase tracking-wider flex items-center gap-2 font-display">
+                      <Moon className="w-4 h-4 text-primary" /> Appearance
+                    </h3>
+                    <p className="text-neutral-550 text-[11px] leading-relaxed">
+                      Choose a visual theme or sync it automatically with your system.
+                    </p>
+                    <div className="flex bg-neutral-100/80 p-1.5 rounded-xl border border-neutral-200/60 shadow-inner">
+                      {(["light", "dark", "system"] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          onClick={() => {
+                            const settings = { ...appSettings, themeMode: mode };
+                            setAppSettings(settings);
+                            saveSettings(settings);
+                          }}
+                          className={`flex-1 py-2 text-xs font-bold rounded-lg capitalize transition-all ${
+                            appSettings.themeMode === mode
+                              ? "bg-white text-primary shadow-sm"
+                              : "text-neutral-500 hover:text-neutral-700"
+                          }`}
+                        >
+                          {mode}
+                        </button>
+                      ))}
                     </div>
                   </div>
 
@@ -11550,7 +11631,7 @@ Please create the specified number of backlog tasks representing the project pha
             <div className="absolute md:bottom-6 bottom-24 right-4 z-45 flex flex-col gap-2.5 items-end">
               <button
                 onClick={handleOpenAICopilot}
-                className="bg-primary hover:bg-primary-dark text-white pl-6 pr-7 py-4 md:pl-4 md:pr-5 md:py-3 rounded-full text-base md:text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display"
+                className="bg-primary-gradient hover:opacity-90 text-white pl-6 pr-7 py-4 md:pl-4 md:pr-5 md:py-3 rounded-full text-base md:text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display"
                 title="Ask DayFlow AI Copilot"
               >
                 <Sparkles className="w-6 h-6 md:w-5 md:h-5 fill-white stroke-[2px]" />
@@ -11559,8 +11640,9 @@ Please create the specified number of backlog tasks representing the project pha
             </div>
           )}
 
-          {/* BOTTOM NAVIGATION TAB BAR (Fixed boundary, does not move) */}
-          <nav id="mobile_sticky_bottom_nav" className="menu h-20 border-t border-neutral-200/30 bg-white/40 backdrop-blur-md grid grid-cols-4 items-center z-45 flex-shrink-0 md:!hidden pb-1" role="navigation" style={{ '--component-active-color': '#7C3AED' } as React.CSSProperties}>
+          {/* BOTTOM NAVIGATION TAB BAR (Floating Pill) */}
+          <div className="h-24 flex-shrink-0 md:hidden pointer-events-none" /> {/* Spacer for flex container */}
+          <nav id="mobile_sticky_bottom_nav" className="menu fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-[72px] bg-white/95 backdrop-blur-xl shadow-2xl shadow-green-900/10 rounded-[36px] grid grid-cols-4 items-center z-45 md:!hidden px-2 border border-neutral-100" role="navigation">
             {menuItems.map((item, index) => {
               const isActive = item.value === activeTab;
               const IconComponent = item.icon;
@@ -11571,7 +11653,6 @@ Please create the specified number of backlog tasks representing the project pha
                   className={`menu__item ${isActive ? 'active' : ''}`}
                   onClick={() => changeTabWithHaptic(item.value)}
                   ref={(el) => { itemRefs.current[index] = el; }}
-                  style={{ '--lineWidth': '0px' } as React.CSSProperties}
                 >
                   <div className="menu__icon">
                     <IconComponent className="icon" />
@@ -11583,7 +11664,7 @@ Please create the specified number of backlog tasks representing the project pha
                     {item.label}
                   </strong>
                   {item.value === "backlog" && dashboardStats.backlog > 0 && (
-                    <span className="absolute top-2 right-4 w-4.5 h-4.5 bg-primary text-white text-[9px] font-bold rounded-full flex items-center justify-center font-mono z-10">
+                    <span className="absolute top-1 right-2 w-4.5 h-4.5 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center font-mono z-10 shadow-sm border-2 border-white">
                       {dashboardStats.backlog}
                     </span>
                   )}
@@ -12209,7 +12290,7 @@ Please create the specified number of backlog tasks representing the project pha
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <button
                             onClick={() => handleEodMoveToTomorrow(task.id)}
-                            className="text-[10px] font-bold bg-primary hover:bg-primary-dark text-white px-2 py-1 rounded cursor-pointer transition-colors"
+                            className="text-[10px] font-bold bg-primary-gradient hover:opacity-90 text-white px-2 py-1 rounded cursor-pointer transition-colors"
                           >
                             Do Tomorrow
                           </button>
@@ -12484,7 +12565,7 @@ Please create the specified number of backlog tasks representing the project pha
               <button 
                 type="button"
                 onClick={handleSaveProfile}
-                className="flex-1 py-3 text-sm font-bold rounded-xl bg-primary hover:bg-primary-dark text-white transition-colors cursor-pointer text-center font-display"
+                className="flex-1 py-3 text-sm font-bold rounded-xl bg-primary-gradient hover:opacity-90 text-white transition-colors cursor-pointer text-center font-display"
               >
                 Save Profile
               </button>
@@ -12632,7 +12713,7 @@ Please create the specified number of backlog tasks representing the project pha
               <button 
                 type="button"
                 onClick={handleSaveGoal}
-                className="flex-1 py-3 text-sm font-bold rounded-xl bg-primary hover:bg-primary-dark text-white transition-colors cursor-pointer text-center font-display"
+                className="flex-1 py-3 text-sm font-bold rounded-xl bg-primary-gradient hover:opacity-90 text-white transition-colors cursor-pointer text-center font-display"
               >
                 {editingGoal ? "Save Changes" : "Create Goal"}
               </button>
@@ -12724,7 +12805,7 @@ Please create the specified number of backlog tasks representing the project pha
                       setLastReflectedDate(TODAY);
                       localStorage.setItem("dayflow_last_reflected_date", TODAY);
                     }}
-                    className="flex-1 py-3 text-xs font-bold rounded-2xl bg-primary hover:bg-primary-dark text-white transition-colors cursor-pointer text-center font-display"
+                    className="flex-1 py-3 text-xs font-bold rounded-2xl bg-primary-gradient hover:opacity-90 text-white transition-colors cursor-pointer text-center font-display"
                   >
                     Apply proposals
                   </button>

@@ -16,11 +16,13 @@ const TASK_EXECUTION_LOGS_KEY = "dayflow_task_execution_logs";
 export interface AppSettings {
   day_start: string;
   day_end: string;
+  themeMode: "light" | "dark" | "system";
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   day_start: "07:00",
-  day_end: "23:00"
+  day_end: "23:00",
+  themeMode: "system"
 };
 
 // Called once on app boot — if version doesn't match, wipe everything
