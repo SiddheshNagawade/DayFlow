@@ -7982,10 +7982,10 @@ Please create the specified number of backlog tasks representing the project pha
   };
 
   return (
-    <div id="dayflow_app_container" className="h-[100dvh] w-screen text-slate-850 bg-[#F9FAFB] flex items-stretch justify-stretch overflow-hidden select-none select-text relative">
+    <div id="dayflow_app_container" className="h-[100dvh] w-screen text-slate-900 bg-transparent flex items-stretch justify-stretch overflow-hidden select-none select-text relative">
       
       {/* Background ambient light blobs */}
-      <div className="absolute inset-0 -z-10 overflow-hidden pointer-events-none">
+      <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[40%] left-[-30%] w-[160vw] h-[160vw] md:w-[800px] md:h-[800px] rounded-full bg-[#00D2FF]/40 blur-[130px] dark:bg-[#00D2FF]/20 animate-pulse-slow"></div>
         <div className="absolute bottom-[-30%] right-[-20%] w-[140vw] h-[140vw] md:w-[800px] md:h-[800px] rounded-full bg-[#0062FF]/50 blur-[140px] dark:bg-[#0062FF]/25 animate-pulse-slow" style={{ animationDelay: "2.5s" }}></div>
       </div>
@@ -8155,7 +8155,7 @@ Please create the specified number of backlog tasks representing the project pha
 
 
       {/* PARENT BODY CONTAINER GIVING RESPONSIVE LAYOUT */}
-      <div id="app_responsive_layout" className="w-full h-full flex items-stretch bg-transparent overflow-hidden">
+      <div id="app_responsive_layout" className="w-full h-full flex items-stretch bg-transparent overflow-hidden relative z-10">
         
         {/* SIDE BAR DESKTOP NAVIGATION & CONTROL PANEL (Adaptive desktop menu view) */}
         <aside 
@@ -8576,7 +8576,7 @@ Please create the specified number of backlog tasks representing the project pha
                 
 
                 {/* Segmented Control for Mobile */}
-                <div className="md:hidden flex border-b border-neutral-200/60 bg-white p-2 shrink-0 gap-1">
+                <div className="md:hidden flex border-b border-neutral-200/60 bg-transparent p-2 shrink-0 gap-1">
                   {(["timeline", "copilot"] as const).map((tab) => (
                     <button
                       key={tab}
@@ -11628,21 +11628,21 @@ Please create the specified number of backlog tasks representing the project pha
 
           {/* UNIFIED FLOATING ACTION AREA */}
           {activeTab !== "routines" && (
-            <div className="absolute md:bottom-6 bottom-24 right-4 z-45 flex flex-col gap-2.5 items-end">
+            <div className="absolute md:bottom-6 bottom-[88px] right-4 z-45 flex flex-col gap-2.5 items-end">
               <button
                 onClick={handleOpenAICopilot}
-                className="bg-primary-gradient hover:opacity-90 text-white pl-6 pr-7 py-4 md:pl-4 md:pr-5 md:py-3 rounded-full text-base md:text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display"
+                className="bg-primary-gradient hover:opacity-90 text-white pl-4 pr-5 py-3 rounded-full text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display"
                 title="Ask DayFlow AI Copilot"
               >
-                <Sparkles className="w-6 h-6 md:w-5 md:h-5 fill-white stroke-[2px]" />
+                <Sparkles className="w-5 h-5 fill-white stroke-[2px]" />
                 <span>{copilotButtonLabel}</span>
               </button>
             </div>
           )}
 
           {/* BOTTOM NAVIGATION TAB BAR (Floating Pill) */}
-          <div className="h-24 flex-shrink-0 md:hidden pointer-events-none" /> {/* Spacer for flex container */}
-          <nav id="mobile_sticky_bottom_nav" className="menu fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-[72px] bg-white/95 backdrop-blur-xl shadow-2xl shadow-green-900/10 rounded-[36px] grid grid-cols-4 items-center z-45 md:!hidden px-2 border border-neutral-100" role="navigation">
+          <div className="h-20 flex-shrink-0 md:hidden pointer-events-none" /> {/* Spacer for flex container */}
+          <nav id="mobile_sticky_bottom_nav" className="menu fixed bottom-4 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-[60px] bg-neutral-0/95 backdrop-blur-xl shadow-2xl shadow-neutral-900/10 rounded-full grid grid-cols-4 items-center z-45 md:!hidden px-2 border border-neutral-100" role="navigation">
             {menuItems.map((item, index) => {
               const isActive = item.value === activeTab;
               const IconComponent = item.icon;
