@@ -95,25 +95,62 @@
 }
 
 .dark {
-  /* Override Tailwind core colors */
-  --color-white: #2A2B36; /* Cards become slate */
-  --color-neutral-50: #25262E;
-  --color-neutral-100: #2A2B36;
-  --color-neutral-200: #3E404D;
-  --color-neutral-800: #F3F4F6;
-  --color-slate-100: #2A2B36;
+  /* Comprehensive Neutral Scale Inversion */
+  --color-neutral-0: #1E2028; /* Pure white becomes deep slate */
+  --color-neutral-50: #1E2028;
+  --color-neutral-100: #25262E;
+  --color-neutral-150: #2A2B36;
+  --color-neutral-200: #2A2B36;
+  --color-neutral-300: #3E404D;
+  --color-neutral-400: #9CA3AF;
+  --color-neutral-500: #D1D5DB;
+  --color-neutral-600: #E5E7EB;
+  --color-neutral-700: #F3F4F6;
+  --color-neutral-800: #F9FAFB;
+  --color-neutral-900: #FFFFFF;
+
+  /* Tailwind built-in colors override for Dark Mode */
+  --color-white: #2A2B36;
+  
+  --color-slate-50: #1E2028;
+  --color-slate-100: #25262E;
+  --color-slate-200: #2A2B36;
+  --color-slate-300: #3E404D;
+  --color-slate-400: #9CA3AF;
+  --color-slate-500: #D1D5DB;
+  --color-slate-600: #E5E7EB;
   --color-slate-700: #F3F4F6;
   --color-slate-800: #F9FAFB;
-  --color-indigo-50: #2A2B36;
-  --color-indigo-100: #3E404D;
-  --color-indigo-800: #F3F4F6;
-  --color-amber-50: #2A2B36;
-  --color-amber-100: #3E404D;
-  --color-amber-800: #F3F4F6;
-  --color-amber-900: #F9FAFB;
-  --color-rose-50: #2A2B36;
-  --color-rose-100: #3E404D;
-  --color-rose-800: #F3F4F6;
+  --color-slate-900: #FFFFFF;
+
+  --color-indigo-50: #1E2A36;
+  --color-indigo-100: #203A4D;
+  --color-indigo-200: #2D4C66;
+  --color-indigo-800: #E5E7EB;
+  --color-indigo-900: #F3F4F6;
+
+  --color-amber-50: #2A2318;
+  --color-amber-100: #3A2F1E;
+  --color-amber-800: #FCD34D;
+  --color-amber-900: #FBBF24;
+
+  --color-rose-50: #2A1C20;
+  --color-rose-100: #3D252A;
+  --color-rose-800: #FDA4AF;
+  --color-rose-900: #FB7185;
+
+  --color-emerald-50: #1E2A26;
+  --color-emerald-100: #203A30;
+  --color-emerald-800: #6EE7B7;
+  --color-emerald-900: #34D399;
+
+  --color-blue-50: #1E2536;
+  --color-blue-100: #20314D;
+  --color-blue-600: #3B82F6;
+
+  --color-red-50: #2A1C20;
+  --color-red-100: #3D252A;
+  --color-red-500: #F43F5E;
 
   /* Override Custom Variables */
   --bg-body: #1E2028; /* Deep dark slate background */
