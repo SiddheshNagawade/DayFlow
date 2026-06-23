@@ -1245,6 +1245,7 @@ export default function App() {
     title: "", start_time: "09:00", end_time: "10:00", color: "#E24B4A"
   });
   const [expandedProfileId, setExpandedProfileId] = useState<string | null>(null);
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   
   // Active Date selection
   const [selectedDate, setSelectedDate] = useState(TODAY);
@@ -9104,6 +9105,66 @@ Please create the specified number of backlog tasks representing the project pha
                                       </button>
                                     )}
                                   </div>
+                                  {/* Expand/Collapse details button */}
+                                  {!isFixedType && (
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); setExpandedTaskId(expandedTaskId === item.id ? null : item.id); }}
+                                      className="mt-2 text-[10px] uppercase font-bold text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 flex items-center gap-1 cursor-pointer transition-colors"
+                                    >
+                                      {expandedTaskId === item.id ? "▴ Hide Details" : "▾ View Details & Actions"}
+                                    </button>
+                                  )}
+
+                                  {/* --- EXPANDED DETAILS VIEW --- */}
+                                  {expandedTaskId === item.id && !isFixedType && (
+                                    <div className="mt-3 text-sm text-neutral-600 dark:text-[#E2E8F0] space-y-3 p-3 bg-neutral-50 dark:bg-[#1E2028] border border-neutral-150 dark:border-[#3E404D] rounded-xl animate-fade-in cursor-default" onClick={(e) => e.stopPropagation()}>
+                                      
+                                      {/* Description block */}
+                                      <div>
+                                        <h5 className="text-[10px] uppercase font-bold text-neutral-400 mb-1">Description</h5>
+                                        {task?.description ? (
+                                          <p className="whitespace-pre-wrap leading-relaxed text-xs">{task.description}</p>
+                                        ) : (
+                                          <p className="italic text-neutral-400 text-xs">No description provided.</p>
+                                        )}
+                                      </div>
+
+                                      {/* Edit/Delete row */}
+                                      <div className="flex gap-2 pt-2 border-t border-neutral-200/50 dark:border-[#3E404D]">
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); handleOpenEditFlexible(task!); }}
+                                          className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-[#2A2B36] border border-neutral-200 dark:border-[#3E404D] hover:border-primary text-neutral-600 hover:text-primary rounded-lg text-xs font-semibold shadow-3xs cursor-pointer transition-all"
+                                        >
+                                          <Edit2 className="w-3.5 h-3.5" /> Edit
+                                        </button>
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); handleDeleteFlexible(item.id); }}
+                                          className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-[#2A2B36] border border-neutral-200 dark:border-[#3E404D] hover:border-red-400 text-neutral-600 hover:text-red-500 rounded-lg text-xs font-semibold shadow-3xs cursor-pointer transition-all"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" /> Delete
+                                        </button>
+                                      </div>
+
+                                      {/* AI Consequence Box */}
+                                      <div className="mt-3 p-3 bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200/60 dark:border-amber-700/30 rounded-lg">
+                                        <h5 className="text-[10px] uppercase font-bold text-amber-600 flex items-center gap-1 mb-1.5">
+                                          <Zap className="w-3 h-3 fill-amber-500/20" /> Consequence Insight
+                                        </h5>
+                                        {task?.consequence_insight ? (
+                                          <p className="text-xs text-amber-900/80 dark:text-amber-200/70 leading-relaxed whitespace-pre-wrap">{task.consequence_insight}</p>
+                                        ) : (
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); fetchConsequenceInsight(task!); }}
+                                            disabled={isProcessingAIReasoning}
+                                            className="w-full py-2 bg-white dark:bg-[#2A2B36] border border-amber-200 dark:border-amber-700/50 hover:bg-amber-100/50 text-amber-700 dark:text-amber-400 rounded text-xs font-semibold shadow-3xs cursor-pointer transition-colors"
+                                          >
+                                            {isProcessingAIReasoning && openInsightTaskId === item.id ? "Analyzing..." : "Generate Consequence Insight"}
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                  
                               </div>
 
                               {/* Prominent Action Button Bar (System 1) */}
