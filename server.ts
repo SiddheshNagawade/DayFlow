@@ -1005,8 +1005,20 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      index: false, // Prevents Express from automatically serving index.html blindly
+      setHeaders: (res, filePath) => {
+        // If the browser requests the main index page, tell it to check for updates every time
+        if (filePath.endsWith('index.html')) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        } else {
+          // It is completely fine to cache your hashed JS/CSS assets indefinitely
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      }
+    }));
     app.get("*", (req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
