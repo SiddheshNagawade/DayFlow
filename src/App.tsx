@@ -8500,26 +8500,11 @@ Please create the specified number of backlog tasks representing the project pha
  )}
  
 
- {/* Segmented Control for Mobile */}
- <div className="md:hidden flex border-b border-[var(--border-strong)] dark:border-[var(--border)]/60 bg-transparent p-2 shrink-0 gap-1">
- {(["timeline", "copilot"] as const).map((tab) => (
- <button
- key={tab}
- onClick={() => setTodaySubTab(tab)}
- className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all capitalize cursor-pointer flex items-center justify-center gap-1.5 ${ todaySubTab === tab ? "bg-primary text-white shadow-xs" : "text-neutral-500 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)]" }`}
- >
- {tab === "timeline" && <Clock className="w-3.5 h-3.5" />}
- {tab === "copilot" && <Sparkles className="w-3.5 h-3.5" />}
- <span>{tab === "copilot" ? "Day Coach" : tab}</span>
- </button>
- ))}
- </div>
-
  {/* 3-Column Layout Container */}
  <div className="flex-1 flex flex-col md:flex-row overflow-hidden h-full">
  
  {/* Column 1: Daily Timeline */}
- <div className={`${todaySubTab === "timeline" ? "flex" : "hidden"} md:flex flex-col flex-1 h-full overflow-y-auto pb-24 md:pb-6 md:pr-3`}>
+ <div className="flex flex-col flex-1 h-full overflow-y-auto pb-24 md:pb-6 md:pr-3">
  
  {/* Daily Reflection Card */}
  {showReflectionCard && (
