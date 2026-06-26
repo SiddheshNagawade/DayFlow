@@ -159,334 +159,499 @@ Never guess a start time for flexible tasks. Please output correct JSON structur
   }
 });
 
-// 3. Schedule Adjustment API — user describes changes in plain text, AI returns structured modifications
-app.post("/api/adjust-schedule", async (req, res) => {
+// 2.1. Lightweight Semantic Parser fallback (Tier 2B - Temporary fallback, targeted for deprecation in v2)
+app.post("/api/parse-command", async (req, res) => {
   try {
-    // V3.1: Read compressed text summaries instead of raw task arrays
-    const { userText, scheduleSummary, pendingSummary, currentSchedule, pendingTasks, today, image, routineBlocksSummary, calendarEventsSummary } = req.body;
-    if (!userText || typeof userText !== "string" || userText.trim() === "") {
-      res.status(400).json({ error: "Change description is required" });
+    const { message, activeTasks, currentTime } = req.body;
+    if (!message || typeof message !== "string" || message.trim() === "") {
+      res.status(400).json({ error: "message prompt is required" });
+      return;
+    }
+
+    const ai = getGeminiClient();
+    const systemPrompt = `You are a lightweight semantic command parser for the DayFlow scheduling app.
+Your job is to analyze the user's messy command and map it to a structured action.
+Today's currentTime is ${currentTime || "09:00"}.
+
+Active tasks on today's schedule:
+${(activeTasks || []).map((t: any) => `- "${t.title}" id="${t.id}" start_time="${t.start_time || ''}"`).join("\n") || "(none)"}
+
+Actions you can map to:
+1. "change_time": Schedule/move a task to a specific start time (requires "newTime" in HH:MM format).
+2. "delete": Delete or remove a task.
+3. "move_to_tomorrow": Postpone or shift a task to tomorrow.
+4. "add": Add a new task (requires "newTaskTitle" and optionally "durationMinutes").
+5. "done": Mark a task complete.
+6. "delay": Postpone a task by a duration (requires "delayMinutes").
+7. "unknown": The message is highly ambiguous (e.g., "I don't think I can finish this before dinner") or requires scheduling reasoning (e.g., "replan my day").
+
+Instructions:
+- If the user refers to a task in the active list (e.g. "done gym", "move study"), match it and set its taskId.
+- If it's ambiguous (e.g., "move that thing later" when multiple tasks exist), map intent to "unknown" and list the candidate tasks in "options".
+- Keep it extremely fast and return ONLY the JSON representation conforming exactly to the schema.`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `User message command: "${message}"`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.1,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            intent: { type: Type.STRING, enum: ["change_time", "delete", "move_to_tomorrow", "add", "done", "delay", "unknown"] },
+            taskId: { type: Type.STRING, description: "Matched active task ID or null" },
+            taskTitle: { type: Type.STRING, description: "Matched active task title or null" },
+            confidence: { type: Type.NUMBER, description: "Confidence score 0.0 to 1.0" },
+            parameters: {
+              type: Type.OBJECT,
+              properties: {
+                newTime: { type: Type.STRING, description: "HH:MM start time" },
+                delayMinutes: { type: Type.INTEGER, description: "Minutes to delay" },
+                newTaskTitle: { type: Type.STRING, description: "Title of task to add" },
+                durationMinutes: { type: Type.INTEGER, description: "Duration in minutes" }
+              }
+            },
+            options: {
+              type: Type.ARRAY,
+              description: "List of task options if user referred to something ambiguous",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING }
+                },
+                required: ["id", "title"]
+              }
+            }
+          },
+          required: ["intent", "confidence"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response from command parser");
+    res.json(JSON.parse(text));
+  } catch (error: any) {
+    console.error("Parse command error:", error);
+    handleApiError(res, error, "Failed to parse command.");
+  }
+});
+
+// 2.2. Schedule Optimization API (Tier 3)
+app.post(["/api/schedule", "/api/adjust-schedule"], async (req, res) => {
+  try {
+    const { userText, currentSchedule, pendingTasks, behaviorSignals, schedulerMath, today } = req.body;
+    const ai = getGeminiClient();
+
+    const scheduleContext = (currentSchedule || [])
+      .map((item: any) => `- "${item.title}" [${item.type}] ${item.start_time}–${item.end_time} id="${item.id}" status="${item.status}"`)
+      .join("\n");
+
+    const pendingContext = (pendingTasks || [])
+      .slice(0, 10)
+      .map((t: any) => `- "${t.title}" (${t.duration_minutes}min) id="${t.id}" scheduled="${t.scheduled_date || 'backlog'}"`)
+      .join("\n");
+
+    const systemPrompt = `You are the Schedule Optimization Brain for the DayFlow app.
+Your job is to optimize the user's schedule, resolve overload, handle emotional paralysis, and explain your changes.
+Do NOT perform deadline or scheduling math yourself. Rely strictly on the pre-calculated schedulerMath provided by the frontend:
+${JSON.stringify(schedulerMath || {})}
+
+Today's date is: ${today}.
+Current schedule:
+${scheduleContext || "(none)"}
+Pending backlog:
+${pendingContext || "(none)"}
+Behavior Signals (avoidance/delay statistics):
+${JSON.stringify(behaviorSignals || {})}
+
+Core Coaching Philosophy:
+Optimize for momentum and avoidance reduction. If a user is avoiding specific tasks (e.g. portfolio work shows repeated avoidance), prioritize breaking down the task, reducing its scope, or placing it during peak focus slots.
+
+Provide your output as a JSON object containing a conversational message and a structured "schedule_proposal" card.
+Your response must contain exactly:
+{
+  "message": "Conversational coach feedback explaining the changes.",
+  "card": {
+    "type": "schedule_proposal",
+    "payload": {
+      "changes": [
+        {
+          "action": "delete" | "move_to_tomorrow" | "change_time" | "reduce_duration" | "add",
+          "taskId": "task ID to modify (empty/omit for add)",
+          "newTime": "HH:MM (for change_time)",
+          "durationMinutes": 60,
+          "newTaskTitle": "title for add",
+          "reasoning": "Individual change reasoning"
+        }
+      ],
+      "explanation": {
+        "changed": "Brief summary of what was optimized (e.g. 'Gym moved to evening, study shortened')",
+        "why": "Clear behavioral rationale (e.g. 'You repeatedly avoid studying after workouts. Separated them to keep focus high.')",
+        "confidence": "high" | "medium" | "low"
+      }
+    }
+  }
+}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `User's replanning request: "${userText || 'Optimize my day'}"`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.3,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            message: { type: Type.STRING },
+            card: {
+              type: Type.OBJECT,
+              properties: {
+                type: { type: Type.STRING, enum: ["schedule_proposal"] },
+                payload: {
+                  type: Type.OBJECT,
+                  properties: {
+                    changes: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          action: { type: Type.STRING, enum: ["delete", "move_to_tomorrow", "change_time", "reduce_duration", "add"] },
+                          taskId: { type: Type.STRING },
+                          newTime: { type: Type.STRING },
+                          durationMinutes: { type: Type.INTEGER },
+                          newTaskTitle: { type: Type.STRING },
+                          reasoning: { type: Type.STRING }
+                        },
+                        required: ["action", "reasoning"]
+                      }
+                    },
+                    explanation: {
+                      type: Type.OBJECT,
+                      properties: {
+                        changed: { type: Type.STRING },
+                        why: { type: Type.STRING },
+                        confidence: { type: Type.STRING, enum: ["high", "medium", "low"] }
+                      },
+                      required: ["changed", "why", "confidence"]
+                    }
+                  },
+                  required: ["changes", "explanation"]
+                }
+              },
+              required: ["type", "payload"]
+            }
+          },
+          required: ["message", "card"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response from schedule optimizer");
+    res.json(JSON.parse(text));
+  } catch (error: any) {
+    console.error("Schedule optimize error:", error);
+    handleApiError(res, error, "Failed to optimize schedule.");
+  }
+});
+
+// 2.3. Project & Study Planner API (Tier 3)
+app.post("/api/planner", async (req, res) => {
+  try {
+    const { planType, title, goal, deadline, details } = req.body;
+    if (!planType || !title) {
+      res.status(400).json({ error: "planType and title are required" });
       return;
     }
 
     const ai = getGeminiClient();
 
-    // Support both legacy raw arrays and new V3.1 compressed text summaries
-    const scheduleContext = scheduleSummary ||
-      (currentSchedule || [])
-        .map((item: any) => `- "${item.title}" [${item.type}] ${item.start_time}–${item.end_time} id="${item.id}"`)
-        .join("\n");
+    let systemInstruction = "";
+    let responseSchemaType = ""; // study_roadmap or project_milestone
 
-    const pendingContext = pendingSummary ||
-      (pendingTasks || [])
-        .slice(0, 15) // hard cap even for legacy path
-        .map((t: any) => `- "${t.title}" (${t.duration_minutes}min) id="${t.id}" scheduled="${t.scheduled_date || 'backlog'}"`)
-        .join("\n");
-
-    const systemPrompt = `You are a narrow personal schedule assistant for the DayFlow app.
-Today's Date is: ${today}.
-
-## Strict Scope of Responsibilities
-You are NOT a general assistant, life coach, or generic conversational partner. You have ONLY 4 jobs:
-1. Parse messy input: Convert messy user statements ("wasted 3 hours doomscrolling") into structured changes (e.g. log friction, delay, or park tasks).
-2. Explain suggestions: Provide a brief, evidence-based reason when a user clicks "Why?" or asks for schedule suggestions.
-3. Reflection coaching: Conduct the evening check-in review Conversational flow.
-4. Decompose vague tasks: Break large/vague tasks (>120 mins, carryover >= 3, or unclear tasks) into exactly 3 bite-sized concrete steps.
-
-If the user attempts to chat about unrelated subjects (programming, life advice, recipes, general talk), politely refuse and bring the focus back to schedule and execution coaching.
-
-Current schedule for today:
-${scheduleContext || "(empty)"}
-
-Pending flexible tasks (backlog):
-${pendingContext || "(none)"}
-
-Active routine blocks (recurring templates):
-${routineBlocksSummary || "(none)"}
-
-Calendar events / Vacations / Holidays logged:
-${calendarEventsSummary || "(none)"}
-
-Based on the user's input, return a response matching the JSON structure blueprint below.
-
-### JSON STRUCTURE BLUEPRINT:
-Your response must conform exactly to this structure. Return only keys from this template:
+    // Route internally by planType to keep prompts small and specialized
+    switch (planType) {
+      case "study":
+      case "exam": {
+        responseSchemaType = "study_roadmap";
+        systemInstruction = `You are a Study Planner Coach for the DayFlow app.
+Your job is to take a course topic, chapters/syllabus details, exam date, and difficulty, and generate a step-by-step study syllabus plan.
+Decompose the materials into structured units (phases) with estimated focus durations (in minutes).
+Do NOT perform deadline date math yourself. Focus purely on decomposing the study topics into manageable learning modules.
+Write the coaching message in a warm, friendly, natural human tone (like a supportive peer, never asking abrupt/rigid questions, never demanding a list of problems, never referencing code or system errors).
+Output a JSON containing a coaching message and a study_roadmap card payload:
 {
-  "changes": [
-    {
-      "action": "delete" | "move_to_tomorrow" | "move_to_date" | "change_time" | "reduce_duration" | "add" | "cant_do_today" | "add_goal" | "update_goal" | "record_weight" | "generate_workout_plan" | "propose_actual_time" | "add_routine" | "add_event" | "add_project",
-      "taskId": "string representing the task/goal ID to modify (empty/omit for add/add_goal/add_project)",
-      "newDate": "YYYY-MM-DD (used only for move_to_date)",
-      "newTime": "HH:MM (used for change_time/add_routine to schedule/pin at specific time)",
-      "durationMultiplier": 0.5, // number (used only for reduce_duration to scale length, e.g. 0.5)
-      "newTaskTitle": "string (used only for action=add/add_routine/add_event)",
-      "newTaskDuration": 30, // integer minutes (used only for action=add)
-      "newTaskDescription": "string (used when action=add and the task has workout steps or class details. One item per line.)",
-      "insertImmediately": true | false, // boolean (used when action=add or action=change_time to pin/start a task/break immediately at the current time without doing calendar time math)
-      "goalTitle": "string (used to set/find a goal for add_goal or update_goal)",
-      "goalCategory": "fitness" | "academic" | "project" | "habit" | "personal",
-      "goalMetric": "string (e.g., 'sessions', 'hours', 'pages')",
-      "goalTarget": 10, // integer (new target count for add_goal or update_goal)
-      "goalKeywords": ["keyword1", "keyword2"], // array of keywords to auto-match task titles
-      "weightValue": 75.5, // number in kg (used only for action=record_weight)
-      "proposedDurationMinutes": 120, // integer minutes (used only for action=propose_actual_time)
-      "confidence": 0.3 | 0.8 | 1.0, // memory confidence (used for add_routine and add_event)
-      "source": "user_direct" | "ai_inferred", // memory source (used for add_routine and add_event)
-      "daysOfWeek": [1, 2, 3, 4, 5], // array of integers 0-6 (where 0=Sunday) used for add_routine
-      "endTime": "10:00", // HH:MM end time used for add_routine
-      "routineType": "sleep" | "class" | "meal" | "commute" | "custom", // category of routine
-      "rigidity": "hard" | "soft", // rigidity for add_routine
-      "startDate": "YYYY-MM-DD", // date used for add_event
-      "endDate": "YYYY-MM-DD", // date used for add_event
-      "eventType": "routine_override" | "event", // event type for add_event
-      "suspendRoutineTypes": ["sleep", "class", "meal", "commute", "custom"], // array of routine types to suspend during routine_override
-      "projectTitle": "string (used only for action=add_project)",
-      "projectGoal": "string (used only for action=add_project)",
-      "projectDeadline": "YYYY-MM-DD (used only for action=add_project)",
-      "projectPhases": [
+  "message": "Friendly study guide message explaining the study roadmap.",
+  "card": {
+    "type": "study_roadmap",
+    "payload": {
+      "title": "Study Roadmap for ${title}",
+      "topic": "${title}",
+      "deadline": "${deadline || ''}",
+      "phases": [
         {
-          "title": "string (e.g. Phase 1 / Unit 1)",
-          "order": 1,
+          "name": "Phase Name (e.g. Unit 1: Foundations)",
+          "estimatedMinutes": 180,
           "subtasks": [
-            { "title": "string (e.g. Diffusion study)", "duration_minutes": 90 }
+            { "title": "Read Chapter 1 notes", "durationMinutes": 60 },
+            { "title": "Solve Chapter 1 practice problems", "durationMinutes": 120 }
           ]
         }
-      ],
-      "reasoning": "Brief explanation for the change"
+      ]
     }
-  ],
-  "message": "A supportive, conversational explanation of the changes. If there are clarifying questions (e.g. missing room number, unclear times), include them here.",
-  "clarificationNeeded": false, // set to true if critical info is missing or you need clarification to formulate a detailed multi-task schedule plan
-  "clarificationQuestions": [
-    {
-      "id": "project_type",
-      "label": "What stage/type of project is this?",
-      "type": "select" | "text",
-      "options": ["Option 1", "Option 2"], // required if type is select
-      "placeholder": "Enter details..." // optional if type is text
+  }
+}`;
+        break;
+      }
+      case "project":
+      case "career": {
+        responseSchemaType = "project_milestone";
+        systemInstruction = `You are a Career and Design Project Planner Coach for DayFlow.
+Your job is to help users decompose long-horizon projects (like building design portfolios, applying for internships, UCEED preparation) into phased milestones.
+Decompose vague goals into concrete subtasks.
+Write the coaching message in a warm, friendly, natural human tone (like a supportive peer, never asking abrupt/rigid questions, never demanding a list of problems, never referencing code or system errors).
+Output a JSON containing a coaching message and a project_milestone card payload:
+{
+  "message": "Friendly design planning guidance outlining project phases.",
+  "card": {
+    "type": "project_milestone",
+    "payload": {
+      "title": "${title}",
+      "goal": "${goal || ''}",
+      "deadline": "${deadline || ''}",
+      "phases": [
+        {
+          "title": "Phase Title (e.g. Phase 1: Case Studies)",
+          "order": 1,
+          "subtasks": [
+            { "title": "Draft case study text", "durationMinutes": 90 },
+            { "title": "Render visual hero shots", "durationMinutes": 120 }
+          ]
+        }
+      ]
     }
-  ]
-}
-
-### CRITICAL WIZARD CLARIFICATION RULE:
-- If the user enters a vague, open-ended task or plan request (e.g., "create a gym plan", "make a study schedule for my exams", "plan my portfolio website development"), DO NOT immediately schedule a single generic block.
-- Instead, set "clarificationNeeded": true and generate 2 to 4 structured questions in "clarificationQuestions".
-- **Crucial Feature:** If you need the user to manually define their specific chapters, modules, or project steps, include a question with "type": "task_list" (e.g., "What specific tasks or chapters do you want to cover?"). This renders a dynamic UI where the user can click 'Add Task' and type their exact tasks and minute durations.
-
-### TIME CALCULATION RULE (AVOID HALLUCINATION):
-- DO NOT calculate start/end clock hours or absolute times yourself (e.g. do not calculate that 3:15 PM + 45 minutes = 4:00 PM).
-- For relative placements like "add a break now", "give me a rest immediately", or "do this task right now", set "insertImmediately": true on the action ("add" or "change_time") instead of guessing/calculating "newTime".
-
-### ACTION RULES:
-- "add": Propose adding a task (e.g. a rest block like title "Rest / Break" with duration 30 and "insertImmediately": true, or a new backlog item). If the task has exercises or lecture room info, put each item on a new line in "newTaskDescription".
-- "delete": Remove task by taskId.
-- "move_to_tomorrow": Move task by taskId to tomorrow.
-- "change_time": Shift task by taskId to start at "newTime" (absolute) or right now ("insertImmediately": true).
-- "reduce_duration": Shorten task duration using "durationMultiplier".
-- "add_goal": Create a new goal.
-- "update_goal": Change target/parameters of an existing goal when user requests it. Specify the goal by matching "taskId" (goal id) or "goalTitle" (goal name), and specify the new target in "goalTarget".
-- "record_weight": When the user logs their weight (e.g. "today 74.5 kg" or "I weigh 80kg"), create this action with "weightValue" set to the number in kg.
-- "generate_workout_plan": When user shares a workout screenshot or asks you to create a plan, generate one or more "add" actions per day/muscle group. Use "newTaskDescription" to include the individual exercises (one per line) for that day.
-- "propose_actual_time": When the user casually mentions how long a task took (e.g., "gym took 2 hours", "spent around 90 mins on science revision", "reading was 45 minutes"), return action "propose_actual_time". Set "taskId" to the matched task id, "proposedDurationMinutes" to the extracted integer minutes, and "confidence" to a score (0.0 to 1.0). If confidence < 0.6, mention it in the message so the user can verify.
-- "add_routine": Propose a recurring routine template block (e.g. sleep block, work hours, meals, commutes, classes, etc.) with startTime/endTime (using fields newTime and endTime), daysOfWeek, rigidity, and routineType.
-  * Memory Confidence: Set "confidence": 0.3 | 0.8 | 1.0 and "source": "user_direct" | "ai_inferred".
-    - Vague/implicit statement (e.g. "I sleep late", "I usually study in the afternoon") -> confidence: 0.3, source: "ai_inferred".
-    - Explicit request (e.g. "Save sleep 11 PM to 7 AM every day as a routine") -> confidence: 1.0, source: "user_direct".
-- "add_event": Propose a calendar event or routine override.
-  * Replaces separate vacation/holiday types.
-  * Use "eventType": "routine_override" | "event".
-  * If it's a "routine_override" (e.g. family trip, vacation, internship, exam week, holiday), specify "suspendRoutineTypes" with the categories of routines to suspend (e.g. ["class", "commute"]) during the startDate and endDate window.
-  * Memory Confidence: Set "confidence" (0.3 | 0.8 | 1.0) and "source" ("user_direct" | "ai_inferred") based on statement clarity.
-- "add_project": Propose decomposing a large study block, exam prep, portfolio, or major task into a structured project container.
-  * Populate "projectTitle" (e.g., "Material Science Midterm Study"), "projectGoal", "projectDeadline".
-  * Provide "projectPhases": an array of phases (e.g. "Phases / Units", "Final Prep"), each containing sequential subtasks with title and duration_minutes (e.g. "Unit 1 Study", 90).
-  * Enforce safety confirmation: Projects are proposals. The user must click "Confirm" in the UI to save them.
-- Strict Safety Confirmation: You must NOT directly modify or save routines, projects, or overrides without user review. All proposed changes must be outputted as items in the "changes" array so that the UI can present them to the user for explicit confirmation or rejection. Do not make statements claiming changes are active before the user confirms them.
-
-### VISION / IMAGE PARSING RULES:
-If an image is attached (college timetable, workout plan screenshot, scale photo, etc.):
-1. **Workout Split (e.g. "Monday: Chest & Triceps")**:
-   - Create one "add" action per training day.
-   - Set "newTaskTitle" to the muscle group (e.g. "Chest & Triceps").
-   - Set "newTaskDescription" with the exercises listed as multi-line text.
-   - Set "newTaskDuration" to 60 (default gym session).
-   - If specific exercises are not visible, set "clarificationNeeded": true and ask in "message".
-2. **College Timetable**:
-   - Create one "add" action per class/lecture block.
-   - Set "newTaskTitle" to the subject name.
-   - Set "newTaskDescription" with "Room: [room number]\nLecture Hall: [hall name]" if visible.
-   - For any missing room numbers or times, set "clarificationNeeded": true and ask in "message".
-3. **Weighing Scale Photo**: Extract the weight reading and use "record_weight" action.
-
-TREAT SUBJECTIVE INPUTS/MOODS GRACEFULLY:
-- If the user says they are "tired" or "feeling lazy":
-  - Express empathy and recommend a lighter schedule.
-  - Propose moving demanding/optional tasks to tomorrow or the backlog (using action "move_to_tomorrow" or "delete").
-  - Propose shortening remaining tasks (using action "reduce_duration" with a durationMultiplier e.g., 0.5).
-  - Propose adding a rest/break block (using action "add" with title "Rest / Break", "insertImmediately": true, and "newTaskDuration": 30).
-- If the user says they are "feeling very productive" or "energetic":
-  - Celebrate their energy and suggest capitalizing on it.
-  - Propose scheduling 1 or 2 pending tasks from the backlog (using action "add" with the backlog task's title and duration).
-
-DAY SUMMARY & TOMORROW PLANNING:
-- If the user requests to "Summarize my day and plan tomorrow" or wants to review/wrap up their day:
-  - Summarize the tasks completed vs. those still pending today.
-  - Propose shifting all incomplete/pending tasks from today's schedule to tomorrow's date using the action "move_to_tomorrow" for their respective taskIds.
-  - Provide a positive, encouraging recap of completed items, and explain the plan for tomorrow in the "message".
-
-PROACTIVE GOAL SETUP & TRACKING:
-- Proactively offer to set up a new tracking goal or streak (using action "add_goal") in the changes list if the user:
-  - Asks to set a goal or a streak (e.g., "set a gym workout goal for 10 sessions" or "track my study routine").
-  - Schedules a new recurring block or routine (e.g. gym/exercise, study sessions, reading, projects) that doesn't have a goal yet.
-  - For example, if a user schedules "gym", suggest creating a Fitness Goal of e.g. 20 sessions, and define keywords like ["gym", "workout"].
-- Mention the proposed goal or update in your message.
-
-### SPEED AND CONCISENESS RULE (CRITICAL):
-- You MUST generate your response as fast as possible to ensure a snappy user experience.
-- Keep the "message" short and punchy (1-2 sentences maximum).
-- If the user provides answers for a large project (e.g. building a portfolio over a month), DO NOT generate exhaustive daily lists or dozens of tasks. Strict Limit: Generate a maximum of 3 to 5 high-level tasks or phases. Outline just the immediate next steps or major milestones to get the user started. Generating massive JSON payloads will crash the system.
-
-Be concise, warm, non-judgmental, and focused on helping the user stay productive without burning out.
-Avoid aggressive exclamation marks and do not issue scary warnings. Respond ONLY with a raw, valid JSON object. Do not include markdown code block characters, notes, formatting tags, or preambles.`;
-
-    // Build contents array — optionally include image for vision
-    const contents: any[] = [];
-    if (image && image.base64 && image.mimeType) {
-      contents.push({
-        inlineData: { mimeType: image.mimeType, data: image.base64 }
-      });
+  }
+}`;
+        break;
+      }
+      case "fitness": {
+        responseSchemaType = "project_milestone";
+        systemInstruction = `You are a Fitness & Health Planner Coach for DayFlow.
+Your job is to take a fitness goal (e.g. lose 5kg, strength training), frequency, and details, and generate scheduled workout sessions.
+For each phase (representing weeks or splits), specify the targeted workout routines and list exercises.
+Write the coaching message in a warm, friendly, natural human tone (like a supportive peer, never asking abrupt/rigid questions, never demanding a list of problems, never referencing code or system errors).
+Output a JSON containing a coaching message and a fitness project milestone payload:
+{
+  "message": "Friendly, encouraging health coach motivation outlining your training schedule.",
+  "card": {
+    "type": "project_milestone",
+    "payload": {
+      "title": "${title}",
+      "goal": "${goal || ''}",
+      "deadline": "${deadline || ''}",
+      "phases": [
+        {
+          "title": "Workout Splits (e.g. Push, Pull, Legs)",
+          "order": 1,
+          "subtasks": [
+            { "title": "🏋️ Upper Body Strength", "durationMinutes": 60, "description": "Dumbbell Press\\nLat Pulldowns\\nShoulder Raises" }
+          ]
+        }
+      ]
     }
-    contents.push({ text: `User's change request: "${userText}"` });
+  }
+}`;
+        break;
+      }
+      case "habit":
+      default: {
+        responseSchemaType = "study_roadmap";
+        systemInstruction = `You are a Habit and Productivity Coach for DayFlow.
+Decompose this habit building program (e.g. daily reading, meditation) into consistency steps.
+Write the coaching message in a warm, friendly, natural human tone (like a supportive peer, never asking abrupt/rigid questions, never demanding a list of problems, never referencing code or system errors).
+Output a JSON containing a coaching message and a study_roadmap card payload:
+{
+  "message": "Friendly, encouraging habit coaching message for consistency.",
+  "card": {
+    "type": "study_roadmap",
+    "payload": {
+      "title": "${title}",
+      "topic": "${title}",
+      "deadline": "${deadline || ''}",
+      "phases": [
+        {
+          "name": "Phase Name (e.g. Week 1: Friction Reduction)",
+          "estimatedMinutes": 30,
+          "subtasks": [
+            { "title": "Read 10 pages in morning", "durationMinutes": 30 }
+          ]
+        }
+      ]
+    }
+  }
+}`;
+        break;
+      }
+    }
 
-    const t0 = performance.now();
-    // V3.1 Payload logging
-    const payloadBytes = JSON.stringify({ userText, scheduleSummary: scheduleContext, pendingSummary: pendingContext }).length;
-    console.log(`[AI] /api/adjust-schedule payload: ${payloadBytes} bytes (target <12KB = ${payloadBytes < 12288 ? '✓ OK' : '⚠ OVER'})`);
-    console.log(`[AI] prompt build: ${(performance.now() - t0).toFixed(2)}ms`);
+    const payload = `Topic/Goal: "${title}"\nGoal Description: "${goal || ''}"\nDeadline: "${deadline || ''}"\nDetails: "${details || ''}"`;
 
-    const t1 = performance.now();
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents,
+      contents: payload,
       config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.2,
+        systemInstruction,
+        temperature: 0.4,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            changes: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  action: { type: Type.STRING, description: "One of: delete, move_to_tomorrow, move_to_date, change_time, reduce_duration, add, cant_do_today, add_goal, update_goal, record_weight, generate_workout_plan, propose_actual_time, add_routine, add_event, add_project" },
-                  taskId: { type: Type.STRING, description: "Task, goal, or project id to modify (empty for add/add_goal/add_project)" },
-                  newDate: { type: Type.STRING, description: "YYYY-MM-DD for move_to_date" },
-                  newTime: { type: Type.STRING, description: "HH:MM for change_time/add_routine start time" },
-                  durationMultiplier: { type: Type.NUMBER, description: "e.g. 0.5 to scale duration for reduce_duration" },
-                  newTaskTitle: { type: Type.STRING, description: "Title for new task/routine/event when action is add/add_routine/add_event" },
-                  newTaskDuration: { type: Type.INTEGER, description: "Minutes for new task when action=add" },
-                  newTaskDescription: { type: Type.STRING, description: "Multi-line detail: exercises or class info, one item per line. Used when action=add." },
-                  insertImmediately: { type: Type.BOOLEAN, description: "Set to true if the task/break must start right now, avoiding time calculations" },
-                  goalTitle: { type: Type.STRING, description: "Title of the goal if action=add_goal or update_goal" },
-                  goalCategory: { type: Type.STRING, description: "fitness, academic, project, habit, personal if action=add_goal" },
-                  goalMetric: { type: Type.STRING, description: "Metric e.g. sessions, hours, pages if action=add_goal" },
-                  goalTarget: { type: Type.INTEGER, description: "Target count if action=add_goal or update_goal" },
-                  goalKeywords: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                    description: "Keywords to auto-match task titles, e.g. ['gym', 'workout'] if action=add_goal"
-                  },
-                  weightValue: { type: Type.NUMBER, description: "Weight in kg if action=record_weight" },
-                  proposedDurationMinutes: { type: Type.INTEGER, description: "Proposed duration in minutes for propose_actual_time" },
-                  confidence: { type: Type.NUMBER, description: "Confidence score (0.3, 0.8, or 1.0) indicating memory extraction confidence for routines/events" },
-                  source: { type: Type.STRING, description: "Memory source: 'user_direct' or 'ai_inferred'" },
-                  daysOfWeek: {
-                    type: Type.ARRAY,
-                    items: { type: Type.INTEGER },
-                    description: "Days of week 0-6 (0=Sunday) for add_routine"
-                  },
-                  endTime: { type: Type.STRING, description: "HH:MM end time for add_routine" },
-                  routineType: { type: Type.STRING, description: "Category of routine: sleep, class, meal, commute, custom for add_routine" },
-                  rigidity: { type: Type.STRING, description: "Rigidity: hard or soft for add_routine" },
-                  startDate: { type: Type.STRING, description: "YYYY-MM-DD start date for add_event" },
-                  endDate: { type: Type.STRING, description: "YYYY-MM-DD end date for add_event" },
-                  eventType: { type: Type.STRING, description: "Type of override event: routine_override or event for add_event" },
-                  suspendRoutineTypes: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                    description: "Routine categories to suspend during a routine_override, e.g. ['class', 'commute']"
-                  },
-                  projectTitle: { type: Type.STRING, description: "Title of the project (e.g. 'Material Science Midterm Study')" },
-                  projectGoal: { type: Type.STRING, description: "Goal or description of the project" },
-                  projectDeadline: { type: Type.STRING, description: "YYYY-MM-DD deadline for the project" },
-                  projectPhases: {
-                    type: Type.ARRAY,
-                    description: "Structured project phases and subtasks",
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        title: { type: Type.STRING, description: "Phase title (e.g. 'Phases / Units', 'Final Prep')" },
-                        order: { type: Type.INTEGER, description: "Order sequence of phase" },
-                        subtasks: {
-                          type: Type.ARRAY,
-                          items: {
-                            type: Type.OBJECT,
-                            properties: {
-                              title: { type: Type.STRING, description: "Subtask task title" },
-                              duration_minutes: { type: Type.INTEGER, description: "Estimated duration in minutes" }
-                            },
-                            required: ["title", "duration_minutes"]
+            message: { type: Type.STRING },
+            card: {
+              type: Type.OBJECT,
+              properties: {
+                type: { type: Type.STRING, enum: ["study_roadmap", "project_milestone"] },
+                payload: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    goal: { type: Type.STRING },
+                    topic: { type: Type.STRING },
+                    deadline: { type: Type.STRING },
+                    phases: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          title: { type: Type.STRING },
+                          name: { type: Type.STRING },
+                          order: { type: Type.INTEGER },
+                          estimatedMinutes: { type: Type.INTEGER },
+                          subtasks: {
+                            type: Type.ARRAY,
+                            items: {
+                              type: Type.OBJECT,
+                              properties: {
+                                title: { type: Type.STRING },
+                                durationMinutes: { type: Type.INTEGER },
+                                description: { type: Type.STRING }
+                              },
+                              required: ["title", "durationMinutes"]
+                            }
                           }
                         }
-                      },
-                      required: ["title", "order", "subtasks"]
+                      }
                     }
                   },
-                  reasoning: { type: Type.STRING },
-                },
-                required: ["action", "reasoning"],
+                  required: ["title", "phases"]
+                }
               },
-            },
-             message: { type: Type.STRING, description: "A short friendly summary of all changes made, any suggested goals, and clarifying questions if needed" },
-             clarificationNeeded: { type: Type.BOOLEAN, description: "True if AI needs more info from user (e.g. missing room numbers, or when a user enters an open-ended task/plan request that requires custom questions)" },
-             clarificationQuestions: {
-               type: Type.ARRAY,
-               description: "Interactive setup questions to render in a questionnaire wizard if clarificationNeeded is true",
-               items: {
-                 type: Type.OBJECT,
-                 properties: {
-                   id: { type: Type.STRING, description: "Unique question id (e.g. 'project_type', 'session_count')" },
-                   label: { type: Type.STRING, description: "User-facing question text" },
-                   type: { type: Type.STRING, description: "Input type: 'select', 'text', or 'task_list'" },
-                   options: {
-                     type: Type.ARRAY,
-                     items: { type: Type.STRING },
-                     description: "Options array if type is select"
-                   },
-                   placeholder: { type: Type.STRING, description: "Placeholder text if type is text" }
-                 },
-                 required: ["id", "label", "type"]
-               }
-             }
-           },
-           required: ["changes", "message"],
-        },
-      },
+              required: ["type", "payload"]
+            }
+          },
+          required: ["message", "card"]
+        }
+      }
     });
-    console.log(`[AI] gemini inference: ${(performance.now() - t1).toFixed(2)}ms`);
 
-    const t2 = performance.now();
-    const outputText = response.text;
-    if (!outputText) throw new Error("Empty response from model");
-    const result = JSON.parse(outputText.trim());
-    console.log(`[AI] parse overhead: ${(performance.now() - t2).toFixed(2)}ms`);
-    
-    res.json(result);
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response from planner");
+    res.json(JSON.parse(text));
   } catch (error: any) {
-    console.error("Schedule Adjust Error:", error);
-    handleApiError(res, error, "Failed to process schedule changes.");
+    console.error("Planner error:", error);
+    handleApiError(res, error, "Failed to generate plan.");
+  }
+});
+
+// 2.4. Behavioral Reflection API (Tier 3)
+app.post("/api/reflection", async (req, res) => {
+  try {
+    const { completedCount, pendingCount, streak, telemetry, today } = req.body;
+    const ai = getGeminiClient();
+
+    const systemPrompt = `You are the Behavioral Reflection Coach for the DayFlow app.
+Your job is to conduct a gentle, empathetic evening check-in review with the user.
+Evaluate their daily stats:
+- Completed tasks: ${completedCount || 0}
+- Pending/unfinished tasks: ${pendingCount || 0}
+- Active consistency streak: ${streak || 0} days
+
+Simple Telemetry (avoidance and friction patterns):
+${JSON.stringify(telemetry || {})}
+
+Instructions:
+- Acknowledge their effort non-judgmentally.
+- Highlight any avoided tasks/categories (e.g. if portfolio was delayed multiple times).
+- Suggest a single high-impact change for tomorrow to prevent avoidance loop (e.g. reducing duration or breaking down the task).
+- Output your response strictly as a JSON object containing:
+{
+  "message": "Empathetic review summary and encouragement.",
+  "card": {
+    "type": "reflection",
+    "payload": {
+      "stats": {
+        "completed": ${completedCount || 0},
+        "pending": ${pendingCount || 0},
+        "streak": ${streak || 0}
+      },
+      "avoidanceHighlight": "Summary of avoided categories or friction detected.",
+      "advice": "Actionable, concrete step for tomorrow."
+    }
+  }
+}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Conduct review for date: ${today || new Date().toISOString().split("T")[0]}`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.5,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            message: { type: Type.STRING },
+            card: {
+              type: Type.OBJECT,
+              properties: {
+                type: { type: Type.STRING, enum: ["reflection"] },
+                payload: {
+                  type: Type.OBJECT,
+                  properties: {
+                    stats: {
+                      type: Type.OBJECT,
+                      properties: {
+                        completed: { type: Type.INTEGER },
+                        pending: { type: Type.INTEGER },
+                        streak: { type: Type.INTEGER }
+                      },
+                      required: ["completed", "pending", "streak"]
+                    },
+                    avoidanceHighlight: { type: Type.STRING },
+                    advice: { type: Type.STRING }
+                  },
+                  required: ["stats", "avoidanceHighlight", "advice"]
+                }
+              },
+              required: ["type", "payload"]
+            }
+          },
+          required: ["message", "card"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response from reflection coach");
+    res.json(JSON.parse(text));
+  } catch (error: any) {
+    console.error("Reflection error:", error);
+    handleApiError(res, error, "Failed to generate reflection analysis.");
   }
 });
 
@@ -498,16 +663,15 @@ app.post("/api/micro-coach", async (req, res) => {
        return res.status(400).json({ error: "userText required" });
     }
 
-    const systemPrompt = `You are DayFlow's micro-coach.
+    const systemPrompt = `You are DayFlow's friendly micro-coach.
 Your job is to provide short, punchy (1-3 sentences) behavioral coaching, motivation, or friction-busting advice.
-Do not output JSON. Do not schedule tasks. Just reply with plain text.
-Be warm, direct, and empathetic.
+Be warm, empathetic, and speak in a friendly, supportive human tone. Do not ask abrupt questions or output system error details.
 Recent behavior signals: ${behaviorSignals || "(none)"}`;
 
     const t0 = performance.now();
     const ai = getGeminiClient();
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-8b",
+      model: "gemini-2.5-flash",
       contents: `User says: "${userText}"`,
       config: {
         systemInstruction: systemPrompt,
@@ -535,10 +699,14 @@ app.post("/api/chat", async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    const systemPrompt = `You are DayFlow's conversational assistant.
-Your job is to answer general questions, offer advice, or explain scheduling decisions.
-Do not output JSON. Reply with conversational Markdown.
-Current schedule summary:
+    const systemPrompt = `You are DayFlow's conversational assistant, behaving as a warm, friendly, supportive companion and day coach—never as a cold, mechanical system or interrogator.
+Your communication guidelines:
+1. Speak in a natural, supportive, human tone. Talk like a friendly peer who is pair-programming or co-planning their life with them.
+2. NEVER ask abrupt, mechanical questions, and avoid directly demanding their "problems" (which can feel intimidating and hard to answer).
+3. For initial conversations, start with wide-ranged, welcoming questions rather than specific probing (e.g., "Tell me a bit about what you do and what your day-to-day life is like right now. What are you working on or hoping to build?", or "What is the urgent work or goals you want to plan today?").
+4. Let the conversation flow naturally. Do not bombard the user with questions. Only ask targeted follow-up questions *after* they share some details (e.g., if they mention a gym goal, ask about their target weight, preferred split, or plans, rather than random, useless questions).
+5. Never output raw code blocks or technical system errors to the user. Express any issues or warnings in natural, empathetic, conversational language.
+6. Current schedule summary:
 ${scheduleSummary || "(none)"}`;
 
     const t0 = performance.now();
@@ -889,98 +1057,7 @@ Generate the Consequence JSON:`;
 
 
 
-// 5. Unified AI Reasoning API Route
-app.post("/api/ai-reasoning", async (req, res) => {
-  try {
-    const { trigger, context, userMessage } = req.body;
-    if (!trigger) {
-      res.status(400).json({ error: "trigger type is required" });
-      return;
-    }
 
-    const systemPrompt = `You are DayFlow, an intelligent, narrow behavioral scheduling coach.
-You have ONLY 4 jobs:
-1. Parse messy input: Convert messy user statements ("wasted 3 hours doomscrolling") into structured changes (e.g. log friction, delay, or park tasks).
-2. Explain suggestions: Provide a brief, evidence-based reason when a user clicks "Why?" or asks for schedule suggestions.
-3. Reflection coaching: Conduct the evening check-in review Conversational flow.
-4. Decompose vague tasks: Break large/vague tasks (>120 mins, carryover >= 3, or unclear tasks) into exactly 3 bite-sized concrete steps.
-
-You are NOT a general conversational assistant or general life coach. Do not answer questions outside of tasks, schedule logs, friction points, task decomposition, and reflections.
-
-## Trigger Modes
-1. "reflection": User is reflecting on yesterday or recent stale tasks.
-   - Use staleTasksCount, burnoutRisk, procrastinationRisk from signals.
-   - Propose resolutions: carry_over (recoverable tasks), expire (non-recoverable), backlog (low urgency).
-   - If goalImpact is present, acknowledge the goal delay in your message.
-2. "drift": A task has been missed today. Check in softly.
-   - Use missedTask, todayLoadMins, overloadRisk from currentState.
-   - Propose: delay, carry_over, backlog depending on load.
-3. "copilot": User is chatting with you. Provide coach-like feedback strictly regarding their timeline and execution psychology.
-
-## Proposal Actions
-- { "type": "carry_over", "taskId": "..." } — move to today
-- { "type": "backlog", "taskId": "..." } — park for later
-- { "type": "expire", "taskId": "..." } — mark as expired (non-recoverable only)
-- { "type": "suggest", "message": "..." } — coaching suggestion, no task change
-- { "type": "ask", "question": "..." } — clarifying question before acting
-- { "type": "abstain", "reason": "..." } — use when signals are conflicting or insufficient
-
-## proposalRisk
-- "low": simple carry-overs, minor adjustments — auto-applied
-- "medium" or "high": expiring important tasks, large changes — require user confirmation
-
-Respond ONLY with a valid JSON object. No markdown, no backticks, no commentary.`;
-
-    // V3.1 Payload logging
-    const reasoningPayload = JSON.stringify({ trigger, context });
-    const reasoningBytes = reasoningPayload.length;
-    console.log(`[AI] /api/ai-reasoning payload: ${reasoningBytes} bytes (target <8KB = ${reasoningBytes < 8192 ? '✓ OK' : '⚠ OVER'})`);
-
-    const ai = getGeminiClient();
-    const userPayload = `Trigger: "${trigger}"
-User Message: "${userMessage || ''}"
-Context: ${JSON.stringify(context || {})}
-
-Generate the AIProposal response JSON:`;
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: userPayload,
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.5,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            message: { type: Type.STRING },
-            proposalRisk: { type: Type.STRING, enum: ["low", "medium", "high"] },
-            proposals: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  type: { type: Type.STRING, enum: ["carry_over", "backlog", "expire", "suggest", "ask", "abstain"] },
-                  taskId: { type: Type.STRING },
-                  reason: { type: Type.STRING }
-                },
-                required: ["type", "reason"]
-              }
-            }
-          },
-          required: ["message", "proposalRisk", "proposals"]
-        }
-      }
-    });
-
-    const text = response.text?.trim();
-    if (!text) throw new Error("Empty response received from AI reasoning model");
-    const result = JSON.parse(text);
-    res.json(result);
-  } catch (error: any) {
-    console.error("AI reasoning API error:", error);
-    handleApiError(res, error, "Failed to perform AI reasoning.");
-  }
-});
 
 
 

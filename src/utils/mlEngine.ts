@@ -1,4 +1,4 @@
-import { FlexibleTask, CalibrationProfile, HourlyMetric, CategoryBias, TransitionGap, ProcrastinationSignature } from "../types";
+import { FlexibleTask, CalibrationProfile, CategoryBias, TransitionGap, ProcrastinationSignature } from "../types";
 
 // Helper to convert HH:MM string to minutes since midnight
 function timeToMinutes(timeStr: string): number {
@@ -399,6 +399,24 @@ export function generateMockMLData(): FlexibleTask[] {
   for (let i = 0; i < 10; i++) {
     addMock("Clean laundry & house room", 45, 60, 11, 2 + i, 5, 3, 2);
   }
+
+  // 6. Add a highly resistant task for demonstration of the Counter-Move
+  mockTasks.push({
+    id: "mock-resistant-task",
+    title: "Study Material Science Midterm",
+    duration_minutes: 270, // 4.5 hours
+    deadline: null,
+    energy_level: "high",
+    status: "scheduled",
+    scheduled_date: new Date().toISOString().split("T")[0], // Today!
+    scheduled_start_time: "10:00",
+    scheduled_end_time: "14:30",
+    last_friction_reason: "emotional_resistance",
+    category: "work",
+    importance: "critical",
+    task_flexibility: "fixed",
+    description: "Chapter 1: Crystal Structures\nChapter 2: Phase Diagrams\nReview Past Year Papers"
+  });
 
   return mockTasks;
 }

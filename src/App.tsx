@@ -6758,27 +6758,27 @@ Please create the specified number of backlog tasks representing the project pha
     const currentStepIdx = steps.indexOf(onboardingStep);
     
     return (
-      <div className="h-[100dvh] w-screen bg-gradient-to-br from-[#F0EFFE] via-[#F8F9FA] to-[#E8F5EF] flex items-center justify-center p-4 overflow-hidden z-50 relative select-none">
+      <div className="h-[100dvh] w-screen bg-gradient-to-br from-[#F0EFFE] via-[#F8F9FA] to-[#E8F5EF] dark:from-[#0d0c15] dark:via-[#09090b] dark:to-[#05110d] flex items-center justify-center p-4 overflow-hidden z-50 relative select-none">
         {/* Ambient blobs */}
         <div className="absolute inset-0 -z-10 overflow-hidden pointer-events-none">
           <div className="absolute top-[-10%] left-[-10%] w-[55%] h-[55%] rounded-full bg-violet-400/15 blur-[120px] animate-pulse" />
           <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] rounded-full bg-emerald-400/10 blur-[150px] animate-pulse" style={{ animationDelay: "2s" }} />
         </div>
 
-        <div className="w-full max-w-lg bg-white/90 backdrop-blur-xl border border-white/40 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="w-full max-w-lg bg-white/90 dark:bg-zinc-950/90 backdrop-blur-xl border border-white/40 dark:border-zinc-800/40 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
           {/* Header Progress Indicators */}
           {onboardingStep !== "welcome" && (
-            <div className="px-6 pt-5 pb-3 bg-white/50 border-b border-neutral-100 shrink-0">
+            <div className="px-6 pt-5 pb-3 bg-white/50 dark:bg-zinc-900/50 border-b border-neutral-100 dark:border-zinc-850 shrink-0">
               <div className="flex items-center justify-between text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-2">
                 <span>Setup Progress</span>
                 <span>Step {currentStepIdx} of {steps.length - 1}</span>
               </div>
-              <div className="h-1.5 bg-neutral-100 rounded-full flex overflow-hidden">
+              <div className="h-1.5 bg-neutral-100 dark:bg-zinc-800 rounded-full flex overflow-hidden">
                 {steps.slice(1).map((s, idx) => (
                   <div 
                     key={s} 
-                    className={`flex-1 h-full border-r border-white last:border-0 transition-all duration-300 ${
-                      idx < currentStepIdx ? "bg-primary" : "bg-neutral-200/60"
+                    className={`flex-1 h-full border-r border-white dark:border-zinc-900 last:border-0 transition-all duration-300 ${
+                      idx < currentStepIdx ? "bg-primary" : "bg-neutral-200/60 dark:bg-zinc-800/60"
                     }`} 
                   />
                 ))}
@@ -6794,9 +6794,9 @@ Please create the specified number of backlog tasks representing the project pha
                   <Sparkles className="w-8 h-8 text-white fill-white/10" />
                 </div>
                 <div className="space-y-2">
-                  <h1 className="font-display font-black text-2xl text-neutral-900 tracking-tight">Meet DayFlow</h1>
+                  <h1 className="font-display font-black text-2xl text-neutral-900 dark:text-zinc-100 tracking-tight">Meet DayFlow</h1>
                   <span className="inline-block text-[11px] font-bold bg-primary/10 text-primary px-2.5 py-0.5 rounded-full uppercase tracking-wider font-mono">Behavioral Execution Coach</span>
-                  <p className="text-xs text-neutral-500 leading-relaxed max-w-sm mx-auto">
+                  <p className="text-xs text-neutral-500 dark:text-zinc-400 leading-relaxed max-w-sm mx-auto">
                     Traditional planners ask you to schedule tasks. DayFlow learns how you *actually* execute them, intervening to reduce resistance and prevent slips.
                   </p>
                 </div>
@@ -6806,8 +6806,8 @@ Please create the specified number of backlog tasks representing the project pha
             {onboardingStep === "identity" && (
               <div className="space-y-5">
                 <div className="space-y-1">
-                  <h2 className="font-display font-black text-lg text-neutral-900">What is your primary role?</h2>
-                  <p className="text-xs text-neutral-500">Select your current profile to help tailor advice.</p>
+                  <h2 className="font-display font-black text-lg text-neutral-900 dark:text-zinc-100">What is your primary role?</h2>
+                  <p className="text-xs text-neutral-500 dark:text-zinc-400">Select your current profile to help tailor advice.</p>
                 </div>
 
                 <div className="grid grid-cols-1 gap-2.5">
@@ -6825,16 +6825,16 @@ Please create the specified number of backlog tasks representing the project pha
                         onClick={() => setOnboardingRole(opt.id as any)}
                         className={`p-4 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between gap-3 ${
                           isSelected 
-                            ? "bg-primary/5 border-primary text-primary" 
-                            : "bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200/80"
+                            ? "bg-primary/5 dark:bg-zinc-900/40 border-primary text-primary" 
+                            : "bg-white dark:bg-zinc-900 hover:bg-neutral-50 dark:hover:bg-zinc-800 text-neutral-700 dark:text-zinc-300 border-neutral-200/80 dark:border-zinc-800"
                         }`}
                       >
                         <div className="space-y-0.5">
                           <span className="text-xs font-bold block">{opt.label}</span>
-                          <span className={`text-[10px] leading-relaxed block ${isSelected ? "text-primary/70" : "text-neutral-450"}`}>{opt.desc}</span>
+                          <span className={`text-[10px] leading-relaxed block ${isSelected ? "text-primary/70" : "text-neutral-455 dark:text-zinc-400"}`}>{opt.desc}</span>
                         </div>
                         <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
-                          isSelected ? "border-primary bg-primary" : "border-neutral-300 bg-white"
+                          isSelected ? "border-primary bg-primary" : "border-neutral-300 dark:border-zinc-700 bg-white dark:bg-zinc-950"
                         }`}>
                           {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
                         </div>

@@ -120,6 +120,7 @@ export interface FlexibleTask {
   category?: "work" | "exercise" | "relax" | "personal";
   notification_response?: "started" | "delayed_15" | "delayed_30" | "skipped_today";
   delay_count?: number; // how many times this task was delayed today
+  last_friction_reason?: FrictionReason;
 
   // Execution Engine — AI Consequence Insight
   consequence_insight?: string;          // AI-generated narrative cached after first fetch
@@ -350,6 +351,11 @@ export interface BehaviorSignals {
   // Planning accuracy
   planningBias: Signal<number>;            // e.g. value: 1.34 (takes 34% longer), confidence, sampleSize
 
+  // Time-of-day patterns (only hours with real data — no circadian defaults)
+  bestHours: Signal<number[]>;             // hours where success >= 0.75 AND confidence >= 0.4
+  worstHours: Signal<number[]>;            // hours where success < 0.4 AND confidence >= 0.4
+  hourlySuccessMap: Record<number, { rate: number; confidence: number; supportCount: number }>;
+
   // Category performance
   categorySuccessRates: Record<string, { rate: number; confidence: number; supportCount: number }>;
   weakCategories: Signal<string[]>;        // categories where rate < 0.5 and confidence >= 0.4
@@ -428,7 +434,7 @@ export interface AIActionExplanation {
 }
 
 export interface ParsedCommand {
-  action: "start_timer" | "stop_timer" | "add_task" | "delete_task" | "postpone_task" | "move_to_tomorrow" | "change_time" | "add_routine" | "add_event";
+  action: "start_timer" | "stop_timer" | "add_task" | "delete_task" | "postpone_task" | "move_to_tomorrow" | "change_time" | "add_routine" | "add_event" | "done" | "skip";
   taskId?: string;
   taskTitle?: string;
   newTaskTitle?: string;
@@ -564,4 +570,31 @@ export interface Project {
   phases: ProjectPhase[];
   totalHoursEstimate: number;
   progress: number; // calculated percentage
+}
+
+export type GenerativeUICardType = "schedule_proposal" | "study_roadmap" | "project_milestone" | "reflection";
+
+export interface GenerativeUICard {
+  type: GenerativeUICardType;
+  payload: any;
+}
+
+export interface ChatMessage {
+  sender: "ai" | "user";
+  text: string;
+  questionnaire?: any;
+  questionnaireSubmitted?: boolean;
+  durationConfirmation?: any;
+  explanations?: AIActionExplanation[];
+  generativeUI?: GenerativeUICard;
+  parsedCommandCard?: {
+    intent: string;
+    taskId?: string;
+    taskTitle?: string;
+    parameters: any;
+    isApplied?: boolean;
+    isRejected?: boolean;
+    options?: { id: string; title: string }[];
+    confidence: number;
+  };
 }
