@@ -185,13 +185,15 @@ export function getImprovementSummary(history: WeeklyEvalSnapshot[]): string {
 // Automatically backfills snapshots for completed weeks
 export function checkAndGenerateWeeklySnapshot(
   tasks: FlexibleTask[],
-  logs: TaskExecutionLog[],
-  selectedDateStr: string
+  logs: TaskExecutionLog[]
 ): void {
   if (tasks.length === 0 && logs.length === 0) return;
 
+  const now = new Date();
+  const currentWeekMondayStr = getMondayOfDate(now);
+
   // Determine the earliest task/log date to start evaluation history
-  let earliestDateStr = selectedDateStr;
+  let earliestDateStr = currentWeekMondayStr;
   
   tasks.forEach(t => {
     if (t.scheduled_date && t.scheduled_date < earliestDateStr) {
@@ -212,33 +214,40 @@ export function checkAndGenerateWeeklySnapshot(
   const startDate = new Date(startYear, startMonth, startDay);
   let currentMondayStr = getMondayOfDate(startDate);
 
-  // Monday of the current week (uncompleted week)
-  const selParts = selectedDateStr.split("-");
-  const selYear = parseInt(selParts[0], 10);
-  const selMonth = parseInt(selParts[1], 10) - 1;
-  const selDay = parseInt(selParts[2], 10);
-  const selDate = new Date(selYear, selMonth, selDay);
-  const currentWeekMondayStr = getMondayOfDate(selDate);
-
   const history = loadEvalHistory();
   let hasChanges = false;
 
+  const nowMs = now.getTime();
+  const getSnapshotSignature = (s: WeeklyEvalSnapshot) => 
+    `${s.pgsScore || 0}-${s.completionRate}-${s.carryOverRate}-${s.planningAccuracy}-${s.streakDays}-${s.aiSuggestionAcceptanceRate}`;
+
   // Iterate week-by-week up to (but not including) the current uncompleted week
   while (currentMondayStr < currentWeekMondayStr) {
-    const exists = history.some(h => h.weekStart === currentMondayStr);
-    
-    // We compute or update the snapshot for this past week
-    const snap = computeWeeklySnapshot(tasks, logs, currentMondayStr);
-    
-    // Save/update in history
     const existingIdx = history.findIndex(h => h.weekStart === currentMondayStr);
-    if (existingIdx !== -1) {
-      // Overwrite/update if stats changed (e.g. backdated changes)
-      history[existingIdx] = snap;
-    } else {
-      history.push(snap);
+    
+    // Live Zone is the last 14 days (current week + previous week).
+    // If it is older than 14 days and already exists, we skip recalculating it.
+    const startPartsLoop = currentMondayStr.split("-");
+    const y = parseInt(startPartsLoop[0], 10);
+    const m = parseInt(startPartsLoop[1], 10) - 1;
+    const d = parseInt(startPartsLoop[2], 10);
+    const loopMondayDate = new Date(y, m, d);
+    const diffDays = Math.floor((nowMs - loopMondayDate.getTime()) / (1000 * 60 * 60 * 24));
+    const isRecent = diffDays <= 14;
+
+    if (existingIdx === -1 || isRecent) {
+      const snap = computeWeeklySnapshot(tasks, logs, currentMondayStr);
+      if (existingIdx !== -1) {
+        const oldSnap = history[existingIdx];
+        if (getSnapshotSignature(oldSnap) !== getSnapshotSignature(snap)) {
+          history[existingIdx] = snap;
+          hasChanges = true;
+        }
+      } else {
+        history.push(snap);
+        hasChanges = true;
+      }
     }
-    hasChanges = true;
 
     // Move to next Monday
     const nextParts = currentMondayStr.split("-");

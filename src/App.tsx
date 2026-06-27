@@ -726,6 +726,190 @@ export default function App() {
  const [projects, setProjects] = useState<Project[]>([]);
  const [appSettings, setAppSettings] = useState({ day_start: "07:00", day_end: "23:00" });
 
+  // Behavioral Intervention States
+  const [selectedFrictionReason, setSelectedFrictionReason] = useState<string | null>(null);
+  const [selectedFrictionTags, setSelectedFrictionTags] = useState<string[]>([]);
+  const [frictionNotes, setFrictionNotes] = useState<string>("");
+  const [decompositionMethod, setDecompositionMethod] = useState<"ai" | "manual">("ai");
+  const [manualSubtasks, setManualSubtasks] = useState<string[]>([]);
+  const [manualSubtaskDurations, setManualSubtaskDurations] = useState<number[]>([]);
+  const [aiDecomposePreview, setAiDecomposePreview] = useState<Array<{ title: string; duration: number }>>([]);  const [isDecomposingLoading, setIsDecomposingLoading] = useState<string | null>(null);
+
+  const executePostponeWithFrictionDetails = (
+    taskId: string,
+    actionType: "delay_15" | "delay_30" | "tomorrow",
+    reason: FrictionReason,
+    notes: string,
+    start_time?: string
+  ) => {
+    const newReflection: ReflectionEvent = {
+      id: "refl_" + Math.random().toString(36).substr(2, 9),
+      date: TODAY,
+      completionRate: 0,
+      type: "failure",
+      cause: reason,
+      notes: notes || `Friction logged for postpone (${actionType})`
+    };
+    
+    const updatedReflections = [...reflectionEvents, newReflection];
+    setReflectionEvents(updatedReflections);
+    saveReflectionEvents(updatedReflections);
+
+    if (actionType === "delay_15") {
+      const st = start_time || "12:00";
+      const startMins = timeToMinutes(st);
+      const newStartMins = startMins + 15;
+      const newTimeStr = minutesToTime(newStartMins);
+      const updated = flexibleTasks.map(t =>
+        t.id === taskId ? {
+          ...t,
+          pinned_start_time: newTimeStr,
+          delay_count: (t.delay_count || 0) + 1,
+          focus_quality_effort: "struggled" as const,
+          last_friction_reason: reason
+        } : t
+      );
+      handleUpdateFlexible(updated);
+      showToast("Delayed by 15m. Friction logged.", "info");
+    } else if (actionType === "delay_30") {
+      const st = start_time || "12:00";
+      const startMins = timeToMinutes(st);
+      const newStartMins = startMins + 30;
+      const newTimeStr = minutesToTime(newStartMins);
+      const updated = flexibleTasks.map(t =>
+        t.id === taskId ? {
+          ...t,
+          pinned_start_time: newTimeStr,
+          delay_count: (t.delay_count || 0) + 1,
+          focus_quality_effort: "struggled" as const,
+          last_friction_reason: reason
+        } : t
+      );
+      handleUpdateFlexible(updated);
+      showToast("Delayed by 30m. Friction logged.", "info");
+    } else if (actionType === "tomorrow") {
+      const tomorrow = new Date(selectedDate);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().split("T")[0];
+      const updated = flexibleTasks.map(t => t.id === taskId ? {
+        ...t,
+        scheduled_date: tomorrowStr,
+        pinned_start_time: undefined,
+        status: "scheduled" as const,
+        focus_quality_effort: "struggled" as const,
+        delay_count: (t.delay_count || 0) + 1,
+        last_friction_reason: reason
+      } : t);
+      handleUpdateFlexible(updated);
+      showToast("Task moved to tomorrow. Friction logged.", "info");
+    }
+  };
+
+  const executeInlineDecomposition = (
+    taskId: string,
+    subtasks: Array<{ title: string; duration: number }>
+  ) => {
+    const task = flexibleTasks.find(t => t.id === taskId);
+    if (!task) return;
+    const dateKey = task.scheduled_date || TODAY;
+    const tasksWithoutOriginal = flexibleTasks.filter(t => t.id !== taskId);
+    const newSubtasks: FlexibleTask[] = subtasks.map((st, sIdx) => ({
+      id: `sub_${taskId}_${sIdx}_${Math.random().toString(36).substr(2, 5)}`,
+      title: st.title,
+      duration_minutes: st.duration,
+      deadline: task.deadline,
+      energy_level: task.energy_level,
+      status: "scheduled" as const,
+      scheduled_date: dateKey,
+      task_nature: "one_time" as const,
+      carry_over_count: 0,
+      delay_count: 0,
+      focus_quality_effort: "good",
+      importance: task.importance || "important",
+      task_flexibility: task.task_flexibility || "movable"
+    }));
+    const finalTasks = [...tasksWithoutOriginal, ...newSubtasks];
+    handleUpdateFlexible(finalTasks);
+    showToast("Task successfully split into actionable steps!", "success");
+    triggerHaptic(45);
+  };  const handleAlignTimeline = () => {
+    const nowMins = currentTimeMins;
+    const dayEndMins = timeToMinutes(appSettings.day_end);
+    
+    const todayIncompleteTasks = flexibleTasks.filter(t => 
+      t.scheduled_date === TODAY && 
+      t.status !== "completed" && 
+      t.status !== "skipped"
+    );
+
+    if (todayIncompleteTasks.length === 0) {
+      showToast("All tasks are already up-to-date!", "success");
+      return;
+    }
+
+    const sortedTasks = [...todayIncompleteTasks].sort((a, b) => {
+      const startA = timeToMinutes(a.scheduled_start_time || "00:00");
+      const startB = timeToMinutes(b.scheduled_start_time || "00:00");
+      return startA - startB;
+    });
+
+    let availableMins = dayEndMins - nowMins;
+    if (availableMins <= 0) {
+      const updated = flexibleTasks.map(t => {
+        if (t.scheduled_date === TODAY && t.status !== "completed" && t.status !== "skipped") {
+          return {
+            ...t,
+            scheduled_date: null,
+            pinned_start_time: undefined,
+            status: "backlog" as const
+          };
+        }
+        return t;
+      });
+      handleUpdateFlexible(updated);
+      showToast("Day end reached. Remaining tasks moved to backlog.", "info");
+      return;
+    }
+
+    let totalDuration = sortedTasks.reduce((sum, t) => sum + t.duration_minutes, 0);
+
+    let shrinkRatio = 1.0;
+    if (totalDuration > availableMins) {
+      shrinkRatio = Math.max(0.7, availableMins / totalDuration);
+    }
+
+    let currentStartMins = nowMins;
+    const updatedTasks = flexibleTasks.map(t => {
+      const isTaskToReschedule = sortedTasks.some(st => st.id === t.id);
+      if (!isTaskToReschedule) return t;
+
+      const originalDuration = t.duration_minutes;
+      const newDuration = Math.round(originalDuration * shrinkRatio);
+
+      if (currentStartMins + newDuration <= dayEndMins) {
+        const startTimeStr = minutesToTime(currentStartMins);
+        currentStartMins += newDuration;
+        return {
+          ...t,
+          duration_minutes: newDuration,
+          pinned_start_time: startTimeStr,
+          focus_quality_effort: "okay" as const
+        };
+      } else {
+        return {
+          ...t,
+          scheduled_date: null,
+          pinned_start_time: undefined,
+          status: "backlog" as const
+        };
+      }
+    });
+
+    handleUpdateFlexible(updatedTasks);
+    showToast(`Rescheduled as per remaining time today. Compacted by ${Math.round((1 - shrinkRatio) * 100)}%.`, "success");
+    triggerHaptic(40);
+  };
+
  // Behavioral Memory States
  const [reflectionEvents, setReflectionEvents] = useState<ReflectionEvent[]>([]);
  const [taskExecutionLogs, setTaskExecutionLogs] = useState<TaskExecutionLog[]>([]);
@@ -1176,28 +1360,34 @@ export default function App() {
  });
 
  const navigate = useCallback((path: string) => {
- window.history.pushState(null, "", path);
- setCurrentPath(path);
- }, []);
+    window.history.pushState(null, "", path);
+    setCurrentPath(path);
+    if (path === "/settings") {
+      setShowSettingsModal(true);
+    }
+  }, []);
 
  useEffect(() => {
- const handlePopState = () => {
- const p = window.location.pathname;
- setCurrentPath(p === "/" || p === "" ? "/today" : p);
- };
- window.addEventListener("popstate", handlePopState);
- return () => window.removeEventListener("popstate", handlePopState);
- }, []);
+    const handlePopState = () => {
+      const p = window.location.pathname;
+      setCurrentPath(p === "/" || p === "" ? "/today" : p);
+      if (p === "/settings") {
+        setShowSettingsModal(true);
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
  const activeTab = useMemo(() => {
- if (currentPath === "/settings") return "settings";
- if (currentPath === "/backlog") return "backlog";
- if (currentPath === "/calendar") return "calendar";
- if (currentPath === "/routines" || currentPath === "/routines/grid") return "routines";
- if (currentPath === "/goals" || currentPath === "/routines/goals") return "routines";
- if (currentPath === "/projects" || currentPath === "/routines/projects") return "routines";
- return "today";
- }, [currentPath]);
+    if (currentPath === "/settings") return "routines";
+    if (currentPath === "/backlog") return "backlog";
+    if (currentPath === "/calendar") return "calendar";
+    if (currentPath === "/routines" || currentPath === "/routines/grid") return "routines";
+    if (currentPath === "/goals" || currentPath === "/routines/goals") return "routines";
+    if (currentPath === "/projects" || currentPath === "/routines/projects") return "routines";
+    return "today";
+  }, [currentPath]);
 
  const pageTitle = useMemo(() => {
  switch (activeTab) {
@@ -1218,12 +1408,13 @@ export default function App() {
  }, [activeTab, currentPath]);
 
  const profileViewTab = useMemo(() => {
- if (currentPath === "/goals" || currentPath === "/routines/goals") return "goals";
- if (currentPath === "/projects" || currentPath === "/routines/projects") return "projects";
- return "grid";
- }, [currentPath]);
+    if (currentPath === "/goals" || currentPath === "/routines/goals") return "goals";
+    if (currentPath === "/projects" || currentPath === "/routines/projects") return "projects";
+    if (currentPath === "/routines/editor") return "routines";
+    return "insights";
+  }, [currentPath]);
 
- const changeTabWithHaptic = (tab: "today" | "backlog" | "calendar" | "routines" | "settings") => {
+ const changeTabWithHaptic = (tab: "today" | "backlog" | "calendar" | "routines") => {
  if (tab === "routines") {
  navigate("/routines");
  } else {
@@ -1260,6 +1451,9 @@ export default function App() {
  
  // Notification States
  const [showNotificationPrompt, setShowNotificationPrompt] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(() => {
+    return typeof window !== "undefined" && window.location.pathname === "/settings";
+  });
  const notificationTimeouts = useRef<number[]>([]);
 
  // Sound feedback ref
@@ -2751,17 +2945,15 @@ export default function App() {
  } finally {
  setIsProcessingAIReasoning(false);
  }
- };
-
- const yesterdayCompletionRate = useMemo(() => {
- const yesterdayDate = new Date();
- yesterdayDate.setDate(yesterdayDate.getDate() - 1);
- const yesterdayStr = getLocalTodayStr(yesterdayDate);
- const yesterdayTasks = flexibleTasks.filter(t => t.scheduled_date === yesterdayStr);
- if (yesterdayTasks.length === 0) return 1.0;
- const completedCount = yesterdayTasks.filter(t => t.status === "done").length;
- return completedCount / yesterdayTasks.length;
- }, [flexibleTasks]);
+ };  const yesterdayCompletionRate = useMemo(() => {
+  const yesterdayDate = new Date();
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterdayStr = getLocalTodayStr(yesterdayDate);
+  const yesterdayTasks = flexibleTasks.filter(t => t.scheduled_date === yesterdayStr);
+  if (yesterdayTasks.length === 0) return null;
+  const completedCount = yesterdayTasks.filter(t => t.status === "done").length;
+  return completedCount / yesterdayTasks.length;
+  }, [flexibleTasks]);
 
  // Toast Dispatcher Helper
  const showToast = (message: string, type: "success" | "info" | "warning" = "success") => {
@@ -2775,28 +2967,58 @@ export default function App() {
  // Calculate Streak count
  const completedStreak = useMemo(() => {
  let streak = 0;
- const todayRef = new Date(selectedDate);
- 
- for (let i = 0; i < 30; i++) {
- const target = new Date(todayRef);
- target.setDate(todayRef.getDate() - i);
- const targetStr = target.toISOString().split("T")[0];
- 
- const dayTasks = flexibleTasks.filter(t => t.scheduled_date === targetStr);
- if (dayTasks.length > 0) {
- const allDone = dayTasks.every(t => t.status === "done");
- if (allDone) {
- streak++;
- } else {
- break; // streak broke!
- }
- } else {
- // No tasks scheduled, carries over if we already had a streak, or doesn't break
- if (streak > 0) continue;
- }
- }
- return streak;
- }, [flexibleTasks, selectedDate]);
+ const todayRef = new Date(selectedDate);  for (let i = 0; i < 30; i++) {
+  const target = new Date(todayRef);
+  target.setDate(todayRef.getDate() - i);
+  const targetStr = target.toISOString().split("T")[0];
+  
+  const dayTasks = flexibleTasks.filter(t => t.scheduled_date === targetStr);
+  if (dayTasks.length > 0) {
+  const allDone = dayTasks.every(t => t.status === "done");
+  if (allDone) {
+  streak++;
+  } else {
+  break; // streak broke!
+  }
+  } else {
+  // No tasks scheduled, carries over if we already had a streak, or doesn't break
+  if (streak > 0) continue;
+  }
+  }
+  return streak;
+  }, [flexibleTasks, selectedDate]);
+
+  const dailyCoachReflection = useMemo(() => {
+    const avoidedTask = [...flexibleTasks]
+      .filter(t => t.scheduled_date === TODAY && t.status !== "completed")
+      .sort((a, b) => {
+        const scoreA = (a.delay_count || 0) + (a.carry_over_count || 0);
+        const scoreB = (b.delay_count || 0) + (b.carry_over_count || 0);
+        return scoreB - scoreA;
+      })[0];
+
+    const avoidanceScore = avoidedTask ? (avoidedTask.delay_count || 0) + (avoidedTask.carry_over_count || 0) : 0;
+    const highStakesKeywords = ["portfolio", "study", "exam", "gym", "workout", "thesis", "code", "project", "presentation", "report", "apply", "job"];
+    const hasHighStakesTask = avoidedTask && highStakesKeywords.some(kw => avoidedTask.title.toLowerCase().includes(kw));
+
+    if (avoidedTask && avoidanceScore >= 2) {
+      if (hasHighStakesTask) {
+        return `You are selectively avoiding high-stakes evaluative work like "${avoidedTask.title}". It's completely natural to feel anxiety about starting, but breaking it into tiny pieces will help you rebuild momentum today.`;
+      } else {
+        return `We noticed you've postponed "${avoidedTask.title}" several times. When resistance is high, the best strategy is to shrink the task scope to a ridiculously easy first step.`;
+      }
+    }    if (yesterdayCompletionRate !== null && yesterdayCompletionRate >= 0.8) {
+      return `You had an exceptional flow yesterday, completing ${Math.round((yesterdayCompletionRate ?? 0) * 100)}% of your commitments. Let's keep that momentum alive today—focus on the single most important task first.`;
+    } else if (yesterdayCompletionRate !== null && yesterdayCompletionRate > 0 && yesterdayCompletionRate < 0.5) {
+      return `Yesterday felt a bit heavy with a ${Math.round((yesterdayCompletionRate ?? 0) * 100)}% completion rate. Today is a fresh page. Let's pick one clear task and protect your energy to get it done.`;
+    }
+
+    if (completedStreak >= 3) {
+      return `You are on a strong consistency streak of ${completedStreak} days. Your brain is building powerful execution habits. Protect this streak today by starting your routines early.`;
+    }
+
+    return "Your day is a blank slate. Focus on steady, gentle progress over perfection. Small, consistent actions compound into massive shifts.";
+  }, [flexibleTasks, yesterdayCompletionRate, completedStreak]);
 
  // Compute stats metrics
  const dashboardStats = useMemo(() => {
@@ -2863,26 +3085,31 @@ export default function App() {
 
  const delayPatterns = useMemo(() => {
  return detectHighDelayPatterns(flexibleTasks);
- }, [flexibleTasks]);
+ }, [flexibleTasks]);  const daySchedule = useMemo(() => {
+  const suspendedTypes = getSuspendedRoutineTypesForDate(selectedDate);
+  const activeRoutines = routineBlocks.filter(r => !suspendedTypes.has(r.type));
 
- 
- const daySchedule = useMemo(() => {
- const suspendedTypes = getSuspendedRoutineTypesForDate(selectedDate);
- const activeRoutines = routineBlocks.filter(r => !suspendedTypes.has(r.type));
-
- return generateSchedule(
- selectedDate,
- effectiveFixedBlocks,
- flexibleTasks,
- appSettings.day_start,
- appSettings.day_end,
- null,
- 60,
- calibrationProfile,
- delayPatterns,
- activeRoutines
- );
- }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile, delayPatterns, routineBlocks, getSuspendedRoutineTypesForDate]);
+  return generateSchedule(
+  selectedDate,
+  effectiveFixedBlocks,
+  flexibleTasks,
+  appSettings.day_start,
+  appSettings.day_end,
+  null,
+  60,
+  calibrationProfile,
+  delayPatterns,
+  activeRoutines
+  );
+  }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile, delayPatterns, routineBlocks, getSuspendedRoutineTypesForDate]);  const hasUnverifiedPastTasks = useMemo(() => {
+    if (selectedDate !== TODAY) return false;
+    return daySchedule.items.some(item => {
+      if (item.type === "fixed" || item.status === "done" || item.status === "skipped" || item.status === "expired") return false;
+      const endMins = timeToMinutes(item.end_time);
+      const nowMins = currentTimeMins;
+      return endMins < nowMins;
+    });
+  }, [daySchedule.items, currentTimeMins, selectedDate]);
 
  const hasMeaningfulContext = useMemo(() => {
  const hasActiveSchedule = daySchedule?.items?.length > 0;
@@ -2892,13 +3119,14 @@ export default function App() {
  }, [daySchedule?.items, staleTasks, evalHistory, reflectionEvents, weightLog]);
 
  const showReflectionCard = useMemo(() => {
- if (lastReflectedDate === TODAY) return false;
- if (!hasMeaningfulContext) return false;
- const hourNow = new Date().getHours();
- const hasAnyStaleTasks = staleTasks.length > 0;
- const isEvening = hourNow >= 18;
- return hasAnyStaleTasks || isEvening;
- }, [staleTasks, lastReflectedDate, TODAY, hasMeaningfulContext]);
+  if (lastReflectedDate === TODAY) return false;
+  if (!hasMeaningfulContext) return false;
+  if (yesterdayCompletionRate === null) return false;
+  const hourNow = new Date().getHours();
+  const hasAnyStaleTasks = staleTasks.length > 0;
+  const isEvening = hourNow >= 18;
+  return hasAnyStaleTasks || isEvening;
+  }, [staleTasks, lastReflectedDate, TODAY, hasMeaningfulContext, yesterdayCompletionRate]);
 
  // These memos depend on daySchedule — must be declared AFTER daySchedule
  const driftedTask = useMemo(() => {
@@ -3045,7 +3273,107 @@ export default function App() {
  }, [daySchedule.items]);
 
  // Run predictions for all backlog items
- const futurePredictions = useMemo(() => {
+   const formatCause = (cause: string) => {
+    if (!cause) return "General reflection";
+    return cause
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  const frictionReport = useMemo(() => {
+    const frictionCounts = {
+      low_energy: 0,
+      distraction: 0,
+      resistance: 0,
+      emotional_resistance: 0,
+      unclear_task: 0,
+      external_interrupt: 0,
+      unknown: 0
+    };
+    
+    let totalCount = 0;
+    reflectionEvents.forEach(evt => {
+      if (evt.type === "failure" && evt.cause && evt.cause in frictionCounts) {
+        frictionCounts[evt.cause]++;
+        totalCount++;
+      }
+    });
+
+    if (totalCount === 0) return null;
+
+    const categoriesMap = {
+      low_energy: "⚡ Fatigue / Low Energy",
+      distraction: "🔊 Distraction / Phone",
+      resistance: "🐢 Resistance to Start",
+      emotional_resistance: "😨 Emotional Resistance",
+      unclear_task: "❓ Unclear / Vague Task",
+      external_interrupt: "🚨 External Interruption",
+      unknown: "🤷 Other Friction"
+    };
+
+    const sortedReport = Object.keys(frictionCounts)
+      .map(key => ({
+        key,
+        label: categoriesMap[key] || key,
+        count: frictionCounts[key],
+        percentage: Math.round((frictionCounts[key] / totalCount) * 100)
+      }))
+      .filter(item => item.count > 0)
+      .sort((a, b) => b.count - a.count);
+
+    let insight = "Keep tracking to identify your main execution friction patterns.";
+    if (sortedReport.length > 0) {
+      const top = sortedReport[0].key;
+      if (top === "unclear_task") {
+        insight = "Your biggest blocker is unclear task definition. Try breaking tasks down into tiny, actionable micro-steps before scheduling.";
+      } else if (top === "low_energy") {
+        insight = "Fatigue is holding you back. Protect your energy levels, take breaks, and schedule demanding tasks during peak alert hours.";
+      } else if (top === "distraction") {
+        insight = "Distractions are breaking your flow. Use site blockers, put your phone in another room, or set up a quiet workspace.";
+      } else if (top === "resistance") {
+        insight = "Friction is highest before starting. Use the 5-minute rule: commit to working on the task for just 5 minutes.";
+      } else if (top === "emotional_resistance") {
+        insight = "Fear of failing or perfectionism is causing avoidance. Focus on progress over perfection, and permit yourself to write messy drafts.";
+      } else if (top === "external_interrupt") {
+        insight = "External meetings/events interrupt you. Reserve blocks of 'Do Not Disturb' time on your calendar to protect deep work.";
+      }
+    }
+
+    return {
+      total: totalCount,
+      report: sortedReport,
+      insight
+    };
+  }, [reflectionEvents]);
+
+  const recentReflections = useMemo(() => {
+    return [...reflectionEvents]
+      .sort((a, b) => b.id.localeCompare(a.id))
+      .slice(0, 7);
+  }, [reflectionEvents]);
+
+  const sortedWeightLog = useMemo(() => {
+    return [...weightLog].sort((a, b) => a.date.localeCompare(b.date));
+  }, [weightLog]);
+
+  const sparklinePoints = useMemo(() => {
+    const last8 = sortedWeightLog.slice(-8);
+    if (last8.length < 2) return "";
+    const weights = last8.map(w => w.weight);
+    const min = Math.min(...weights);
+    const max = Math.max(...weights);
+    const range = max - min || 1;
+    const width = 100;
+    const height = 30;
+    const points = last8.map((w, idx) => {
+      const x = (idx / (last8.length - 1)) * width;
+      const y = height - ((w.weight - min) / range) * height;
+      return x + "," + y;
+    }).join(" ");
+    return points;
+  }, [sortedWeightLog]);
+
+const futurePredictions = useMemo(() => {
  return calculateFuturePredictions(
  flexibleTasks,
  effectiveFixedBlocks,
@@ -8249,16 +8577,16 @@ Please create the specified number of backlog tasks representing the project pha
  )}
  </button>
 
- <button
- onClick={() => changeTabWithHaptic("settings")}
- className={`w-full flex items-center rounded-xl text-xs font-bold transition-all cursor-pointer ${ isSidebarCollapsed ? "justify-center p-2.5" : "justify-between px-3 py-2.5" } ${ activeTab === "settings" ? "bg-primary text-white shadow-lg shadow-primary/25" : "text-[var(--text-secondary)] hover:bg-[var(--bg-card-hover)] hover:text-[var(--text-primary)]" }`}
- title={isSidebarCollapsed ? "Settings" : undefined}
- >
- <div className="flex items-center gap-2.5">
- <SettingsIcon className="w-4.5 h-4.5" />
- {!isSidebarCollapsed && <span>Settings</span>}
- </div>
- </button>
+   <button
+  onClick={() => { setShowSettingsModal(true); triggerHaptic(12); }}
+  className={`w-full flex items-center rounded-xl text-xs font-bold transition-all cursor-pointer ${ isSidebarCollapsed ? "justify-center p-2.5" : "justify-between px-3 py-2.5" } ${ showSettingsModal ? "bg-primary-light text-primary" : "text-[var(--text-secondary)] hover:bg-[var(--bg-card-hover)] hover:text-[var(--text-primary)]" }`}
+  title={isSidebarCollapsed ? "Settings" : undefined}
+  >
+  <div className="flex items-center gap-2.5">
+  <SettingsIcon className="w-4.5 h-4.5" />
+  {!isSidebarCollapsed && <span>Settings</span>}
+  </div>
+  </button>
  </div>
 
  </div>
@@ -8508,8 +8836,23 @@ Please create the specified number of backlog tasks representing the project pha
  {/* Column 1: Daily Timeline */}
  <div className="flex flex-col flex-1 h-full overflow-y-auto pb-24 md:pb-6 md:pr-3">
  
- {/* Daily Reflection Card */}
- {showReflectionCard && (
+ 
+
+            {/* Daily Reflection Card */}
+            {/* Dynamic Behavior-Aware Coach Reflection Card */}
+            <div className="mx-3.5 mb-5 p-5 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl shadow-sm text-left space-y-3.5 animate-slide-up">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-[#EEEDFE] dark:bg-zinc-800 rounded-xl text-primary shrink-0">
+                  <Sparkles className="w-4 h-4 fill-primary/10" />
+                </div>
+                <span className="text-xs font-bold text-primary uppercase tracking-wider font-display">Daily Coach Reflection</span>
+              </div>
+              <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-medium leading-relaxed font-sans">
+                {dailyCoachReflection}
+              </p>
+            </div>
+
+            {showReflectionCard && (
  <div className="mx-3.5 mb-5 p-5 bg-white dark:bg-[var(--bg-card)] border border-indigo-100 rounded-3xl shadow-md text-left space-y-4 animate-slide-up">
  <div className="flex items-center gap-2.5">
  <div className="p-2 bg-[#EEEDFE] rounded-xl text-primary shrink-0">
@@ -8517,19 +8860,19 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
  <div>
  <h4 className="text-sm font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)]">
- {yesterdayCompletionRate >= 0.7 ? "🎉 Celebrate Yesterday" : "💡 Adjust & Align"}
+ {(yesterdayCompletionRate ?? 0) >= 0.7 ? "🎉 Celebrate Yesterday" : "💡 Adjust & Align"}
  </h4>
  <p className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">
- {yesterdayCompletionRate >= 0.7 
- ? `Excellent work! You completed ${Math.round(yesterdayCompletionRate * 100)}% of yesterday's tasks. What helped you win?` 
- : `Yesterday you completed ${Math.round(yesterdayCompletionRate * 100)}% of tasks. What caused the slip?`}
+ {(yesterdayCompletionRate ?? 0) >= 0.7 
+ ? `Excellent work! You completed ${Math.round((yesterdayCompletionRate ?? 0) * 100)}% of yesterday's tasks. What helped you win?` 
+ : `Yesterday you completed ${Math.round((yesterdayCompletionRate ?? 0) * 100)}% of tasks. What caused the slip?`}
  </p>
  </div>
  </div>
 
  {/* Cause selection grid */}
  <div className="grid grid-cols-2 gap-2">
- {yesterdayCompletionRate >= 0.7 ? (
+ {(yesterdayCompletionRate ?? 0) >= 0.7 ? (
  <>
  {[
  { key: "success_planning", label: "📋 Good Planning" },
@@ -8589,13 +8932,13 @@ Please create the specified number of backlog tasks representing the project pha
  </button>
  <button
  onClick={async () => {
- const finalCause = selectedCause || (yesterdayCompletionRate >= 0.7 ? "success_planning" : "planning");
+ const finalCause = selectedCause || ((yesterdayCompletionRate ?? 0) >= 0.7 ? "success_planning" : "planning");
  
  const newEvent: ReflectionEvent = {
  id: Math.random().toString(36).substring(2, 9),
  date: TODAY,
- completionRate: yesterdayCompletionRate,
- type: yesterdayCompletionRate >= 0.7 ? "success" : "failure",
+ completionRate: yesterdayCompletionRate || 0,
+ type: (yesterdayCompletionRate ?? 0) >= 0.7 ? "success" : "failure",
  cause: finalCause as any,
  notes: reflectionNotes
  };
@@ -8687,10 +9030,14 @@ Please create the specified number of backlog tasks representing the project pha
  const isCompleted = item.status === "done";
  const isSkipped = item.status === "skipped";
  const isExpired = item.status === "expired";
- const isPinned = !!(item as any).pinned;
- const isDragging = draggedTaskId === item.id;
- const isDragOver = dragOverTaskId === item.id;
- const task = !isFixedType ? flexibleTasks.find(t => t.id === item.id) : null;
+  const isPinned = !!(item as any).pinned;
+  const isDragging = draggedTaskId === item.id;
+  const isDragOver = dragOverTaskId === item.id;
+  const task = !isFixedType ? flexibleTasks.find(t => t.id === item.id) : null;  const isPastUnverified = !isFixedType && !isCompleted && !isSkipped && !isExpired && (() => {
+    const endMins = timeToMinutes(item.end_time);
+    const nowMins = currentTimeMins;
+    return endMins < nowMins && selectedDate === TODAY;
+  })();
  
  // Parse duration display
  const hrs = Math.floor(item.duration_minutes / 60);
@@ -8733,7 +9080,22 @@ Please create the specified number of backlog tasks representing the project pha
 
  {/* TIMELINE CARD */}
  <div 
- className={`rounded-2xl border p-4.5 relative transition-all text-left shadow-xs ${ isDragging ? "opacity-40 scale-95 ring-2 ring-primary/30" : isDragOver ? "ring-2 ring-primary/20" : isActiveNow ? "bg-white dark:bg-[var(--bg-card)] border-primary/30 ring-2 ring-primary/15 shadow-md shadow-primary/10" : isUpNext ? "bg-white dark:bg-[var(--bg-card)] border-neutral-200 dark:border-[var(--border)] border-dashed" : isCompleted ? "opacity-60 bg-emerald-50 dark:bg-emerald-950/20 border-[var(--border)]" : isSkipped || isExpired ? "opacity-50 bg-[var(--bg-card-hover)] border-[var(--border)]" : "bg-white dark:bg-[var(--bg-card)] border-neutral-150 dark:border-[var(--border)] hover:scale-[1.005] hover:shadow-sm hover:border-neutral-200/80" }`}
+ className={`rounded-2xl border p-4.5 relative transition-all text-left shadow-xs ${(() => {
+    const avoidance = task ? Math.max(task.delay_count || 0, task.carry_over_count || 0) : 0;
+    let avoidanceStyle = "";
+    if (avoidance === 1) avoidanceStyle = "border-neutral-300 dark:border-zinc-700 shadow-3xs";
+    else if (avoidance === 2) avoidanceStyle = "border-neutral-400 dark:border-zinc-600 shadow-2xs";
+    else if (avoidance >= 3) avoidanceStyle = "border-primary/40 dark:border-primary/30 ring-1 ring-primary/10 shadow-xs";
+    
+    if (isDragging) return "opacity-40 scale-95 ring-2 ring-primary/30";
+    if (isDragOver) return "ring-2 ring-primary/20";
+    if (isActiveNow) return "bg-white dark:bg-[var(--bg-card)] border-primary/30 ring-2 ring-primary/15 shadow-md shadow-primary/10";
+    if (isUpNext) return "bg-white dark:bg-[var(--bg-card)] border-neutral-200 dark:border-[var(--border)] border-dashed";
+    if (isCompleted) return "opacity-60 bg-emerald-50 dark:bg-emerald-950/20 border-[var(--border)]";
+    if (isSkipped || isExpired) return "opacity-50 bg-[var(--bg-card-hover)] border-[var(--border)]";
+    if (isPastUnverified) return "border-dashed border-neutral-300 dark:border-zinc-750 bg-neutral-50/40 dark:bg-zinc-900/30 opacity-75 hover:opacity-100 hover:scale-[1.005] hover:shadow-3xs transition-all";
+    return `bg-white dark:bg-[var(--bg-card)] ${avoidanceStyle || "border-neutral-150 dark:border-[var(--border)]"} hover:scale-[1.005] hover:shadow-sm hover:border-neutral-200/80`;
+  })()}`}
  style={{
  borderLeft: `3px solid ${
  isCompleted
@@ -8772,8 +9134,13 @@ Please create the specified number of backlog tasks representing the project pha
  <div className="flex items-start justify-between gap-1 flex-1 min-w-0">
  <div className="space-y-1 flex-1 min-w-0 pr-1">
  {/* Top meta tags */}
- <div className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] leading-none shrink-0 font-semibold uppercase tracking-wider flex-wrap">
- {isActiveNow && (
+  <div className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] leading-none shrink-0 font-semibold uppercase tracking-wider flex-wrap">
+  {isPastUnverified && (
+    <span className="text-neutral-550 dark:text-neutral-400 bg-neutral-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0 flex items-center gap-0.5 border border-neutral-200 dark:border-zinc-700">
+      ⏱ Unverified
+    </span>
+  )}
+  {isActiveNow && (
  <span className="text-primary bg-primary/10 px-1.5 py-0.5 rounded-md text-[9px] font-bold animate-pulse normal-case shrink-0">
  ⚡ Active
  </span>
@@ -8986,9 +9353,243 @@ Please create the specified number of backlog tasks representing the project pha
  {expandedTaskId === item.id && !isFixedType && (
  <div className="mt-3 text-sm text-[var(--text-secondary)] dark:text-[var(--text-primary)] dark:text-[#E2E8F0] space-y-3 p-3 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] dark:bg-[#1E2028] border border-neutral-150 dark:border-[var(--border)] dark:border-[#3E404D] rounded-xl animate-fade-in cursor-default" onClick={(e) => e.stopPropagation()}>
  
- {/* Description block */}
- <div>
- <h5 className="text-[10px] uppercase font-bold text-[var(--text-tertiary)] mb-1">Description</h5>
+ {(() => {
+    const avoidance = task ? Math.max(task.delay_count || 0, task.carry_over_count || 0) : 0;
+    return (
+      <>
+        {avoidance === 1 && (
+          <div className="p-3 mb-3 bg-amber-50/50 dark:bg-amber-950/20 border border-amber-250/30 rounded-xl text-xs text-amber-800 dark:text-amber-300 font-medium animate-fade-in text-left">
+            ⚠️ You've postponed this task once. Starting is often the hardest part—commit to working on it for just 5 minutes!
+          </div>
+        )}
+
+        {avoidance === 2 && (
+          <div className="p-4 mb-3 bg-gradient-to-br from-[#FFFDF9] to-white dark:from-zinc-900 dark:to-zinc-850 border border-amber-250 dark:border-zinc-750 rounded-2xl space-y-3.5 shadow-xs animate-fade-in text-left">
+            <div className="flex items-center gap-1 text-[10px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider font-mono">
+              <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10" /> Logging Avoidance Friction
+            </div>
+            
+            <div className="grid grid-cols-2 gap-1.5">
+              {[
+                { key: "low_energy", label: "⚡ Low Energy", desc: "Mentally drained" },
+                { key: "distraction", label: "🔊 Distraction", desc: "Doomscrolling/phone" },
+                { key: "resistance", label: "🐢 Resistance", desc: "Starting is hard" },
+                { key: "emotional_resistance", label: "😨 Emotional Resistance", desc: "Fear or anxiety" },
+                { key: "unclear_task", label: "❓ Unclear Task", desc: "Too vague" },
+                { key: "external_interrupt", label: "🚨 Interruption", desc: "External meeting" },
+                { key: "unknown", label: "🤷 Other", desc: "Unknown blocker" }
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setSelectedFrictionReason(opt.key)}
+                  className={`p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-0.5 ${ selectedFrictionReason === opt.key ? "bg-amber-50 dark:bg-amber-950/40 border-amber-450 text-amber-850 dark:text-amber-300 ring-1 ring-amber-450/20" : "bg-white dark:bg-zinc-800 hover:bg-neutral-50 dark:hover:bg-zinc-750 text-neutral-700 dark:text-[var(--text-primary)] border-neutral-200 dark:border-zinc-750" }`}
+                >
+                  <span className="text-xs font-bold leading-none">{opt.label}</span>
+                  <span className="text-[9px] text-neutral-450 dark:text-[var(--text-secondary)] leading-none">{opt.desc}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="space-y-1">
+              <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">Friction Tags:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {["#intimidating", "#boring", "#tired", "#distracted", "#perfectionist", "#confused"].map(tag => (
+                  <button
+                    key={tag}
+                    onClick={() => {
+                      setSelectedFrictionTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+                    }}
+                    className={`px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all cursor-pointer ${ selectedFrictionTags.includes(tag) ? "bg-primary border-primary text-white" : "bg-neutral-50 dark:bg-zinc-850 border-neutral-200 dark:border-zinc-750 text-neutral-600 dark:text-[var(--text-primary)] hover:bg-neutral-100" }`}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">Friction Notes (optional):</span>
+              <input
+                type="text"
+                placeholder="e.g. Too lazy to open the IDE..."
+                value={frictionNotes}
+                onChange={(e) => setFrictionNotes(e.target.value)}
+                className="w-full px-3 py-2 border border-neutral-250 dark:border-zinc-750 rounded-xl text-xs bg-white dark:bg-zinc-800 focus:outline-none focus:border-amber-450 focus:ring-1 focus:ring-amber-450/20 text-neutral-800 dark:text-[var(--text-primary)]"
+              />
+            </div>
+
+            <div className="flex gap-2">
+              {[
+                { type: "delay_15", label: "⏱ Delay 15m" },
+                { type: "delay_30", label: "☕ Delay 30m" },
+                { type: "tomorrow", label: "📅 Tomorrow" }
+              ].map(act => (
+                <button
+                  key={act.type}
+                  disabled={!selectedFrictionReason}
+                  onClick={() => {
+                    const tagString = selectedFrictionTags.join(" ");
+                    const notes = frictionNotes ? `${tagString}: ${frictionNotes}` : tagString;
+                    executePostponeWithFrictionDetails(item.id, act.type as any, selectedFrictionReason as any, notes, item.start_time);
+                    setSelectedFrictionReason(null);
+                    setSelectedFrictionTags([]);
+                    setFrictionNotes("");
+                  }}
+                  className={`flex-1 py-2 text-xs font-bold rounded-xl text-white cursor-pointer transition-colors text-center ${ selectedFrictionReason ? "bg-amber-550 hover:bg-amber-600 active:bg-amber-700 shadow-sm" : "bg-neutral-205 dark:bg-zinc-750 text-neutral-400 cursor-not-allowed border border-neutral-200 dark:border-zinc-800" }`}
+                >
+                  {act.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {avoidance >= 3 && (
+          <div className="p-4 mb-3 bg-gradient-to-br from-rose-50/20 to-white dark:from-zinc-900 dark:to-zinc-850 border border-rose-200 dark:border-rose-950 rounded-2xl space-y-4 shadow-sm text-left animate-fade-in">
+            <div className="flex items-center gap-1.5 text-[10px] font-bold text-rose-600 dark:text-rose-455 uppercase tracking-wider font-mono">
+              <AlertCircle className="w-4 h-4" /> 🛑 Avoidance Block: Decomposition Required
+            </div>
+            <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] leading-relaxed">
+              You've postponed <strong>"${item.title}"</strong> multiple times. Let's break it down into exactly 3 smaller, actionable subtasks to get you started.
+            </p>
+
+            <div className="flex gap-2 border-b border-neutral-200 dark:border-zinc-750 pb-2">
+              <button
+                onClick={() => setDecompositionMethod("ai")}
+                className={`text-xs font-bold pb-1 transition-all cursor-pointer ${ decompositionMethod === "ai" ? "border-b-2 border-primary text-primary" : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)]" }`}
+              >
+                ✨ AI Auto-Split
+              </button>
+              <button
+                onClick={() => setDecompositionMethod("manual")}
+                className={`text-xs font-bold pb-1 transition-all cursor-pointer ${ decompositionMethod === "manual" ? "border-b-2 border-primary text-primary" : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)]" }`}
+              >
+                ✍️ Split Manually
+              </button>
+            </div>
+
+            {decompositionMethod === "manual" ? (
+              <div className="space-y-3">
+                {[0, 1, 2].map(idx => (
+                  <div key={idx} className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder={`Action Step ${idx + 1}`}
+                      value={manualSubtasks[idx] || ""}
+                      onChange={(e) => {
+                        const updated = [...manualSubtasks];
+                        updated[idx] = e.target.value;
+                        setManualSubtasks(updated);
+                      }}
+                      className="flex-1 px-3 py-2 border border-neutral-250 dark:border-zinc-750 rounded-xl text-xs bg-white dark:bg-zinc-800 focus:outline-none focus:border-primary text-neutral-805 dark:text-[var(--text-primary)]"
+                    />
+                    <input
+                      type="number"
+                      placeholder="Mins"
+                      value={manualSubtaskDurations[idx] || ""}
+                      onChange={(e) => {
+                        const updated = [...manualSubtaskDurations];
+                        updated[idx] = Number(e.target.value);
+                        setManualSubtaskDurations(updated);
+                      }}
+                      className="w-16 px-2 py-2 border border-neutral-250 dark:border-zinc-750 rounded-xl text-xs text-center bg-white dark:bg-zinc-800 focus:outline-none focus:border-primary text-neutral-805 dark:text-[var(--text-primary)]"
+                    />
+                  </div>
+                ))}
+                <button
+                  onClick={() => {
+                    const validSubtasks = manualSubtasks.filter(title => title && title.trim() !== "");
+                    if (validSubtasks.length < 2) {
+                      showToast("Please enter at least 2 subtasks to split the workload.", "warning");
+                      return;
+                    }
+                    executeInlineDecomposition(item.id, validSubtasks.map((title, i) => ({
+                      title,
+                      duration: manualSubtaskDurations[i] || Math.round(item.duration_minutes / validSubtasks.length)
+                    })));
+                    setManualSubtasks([]);
+                    setManualSubtaskDurations([]);
+                  }}
+                  className="w-full py-2.5 bg-primary hover:bg-primary-dark text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-primary/10 active:scale-97 cursor-pointer"
+                >
+                  Confirm Manual Split
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {aiDecomposePreview.length > 0 ? (
+                  <div className="space-y-2.5 bg-[var(--bg-page)] dark:bg-zinc-800 p-3 rounded-2xl border border-neutral-200 dark:border-zinc-750 animate-fade-in">
+                    <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">AI Generated Steps:</span>
+                    {aiDecomposePreview.map((sub, idx) => (
+                      <div key={idx} className="flex justify-between items-center text-xs font-semibold">
+                        <span className="text-[var(--text-primary)] dark:text-[var(--text-primary)]">• {sub.title}</span>
+                        <span className="text-primary font-mono">{sub.duration} mins</span>
+                      </div>
+                    ))}
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        onClick={() => setAiDecomposePreview([])}
+                        className="flex-1 py-2 text-xs font-bold border border-neutral-200 dark:border-zinc-750 rounded-xl hover:bg-neutral-50 dark:hover:bg-zinc-750 transition-all cursor-pointer text-center text-[var(--text-secondary)] dark:text-[var(--text-primary)]"
+                      >
+                        Regenerate
+                      </button>
+                      <button
+                        onClick={() => {
+                          executeInlineDecomposition(item.id, aiDecomposePreview);
+                          setAiDecomposePreview([]);
+                        }}
+                        className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-500/10 active:scale-97 cursor-pointer text-center"
+                      >
+                        Replace & Sched
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={async () => {
+                      setIsDecomposingLoading(item.id);
+                      try {
+                        const response = await fetch("/api/decompose-task", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ taskTitle: item.title, duration: item.duration_minutes })
+                        });
+                        if (!response.ok) throw new Error("AI decomposition failed");
+                        const data = await response.json();
+                        setAiDecomposePreview(data.subtasks || []);
+                      } catch (e) {
+                        showToast("AI Decomposition hit a snag. Try manual split!", "warning");
+                      } finally {
+                        setIsDecomposingLoading(null);
+                      }
+                    }}
+                    disabled={isDecomposingLoading === item.id}
+                    className="w-full py-2.5 bg-gradient-to-r from-primary to-indigo-650 hover:from-primary-dark hover:to-indigo-750 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-primary/10 active:scale-97 cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    {isDecomposingLoading === item.id ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />
+                        <span>Decomposing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 fill-white/10" />
+                        <span>✨ Auto-Decompose with AI Coach</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </>
+    );
+  })()}
+
+  {/* Description block */}
+  <div>
+  <h5 className="text-[10px] uppercase font-bold text-[var(--text-tertiary)] mb-1">Description</h5>
  {task?.description ? (
  <p className="whitespace-pre-wrap leading-relaxed text-xs">{task.description}</p>
  ) : (
@@ -9035,63 +9636,70 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
 
  {/* Prominent Action Button Bar (System 1) */}
- {!isFixedType && !isCompleted && !isSkipped && !isExpired && (
- <div className="mt-3.5 flex flex-wrap items-center gap-2 pt-3 border-t border-[var(--border)] dark:border-[var(--border)]/70 font-sans">
- {/* ✓ Done */}
- <button
- onClick={() => setEffortDialogTaskId(item.id)}
- className="flex-1 min-w-[70px] flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-250 text-emerald-700 font-bold text-xs rounded-xl transition-all cursor-pointer shadow-3xs"
- >
- <Check className="w-3.5 h-3.5" />
- <span>Done</span>
- </button>
+  {!isFixedType && !isCompleted && !isSkipped && !isExpired && (
+  <div className="mt-3.5 grid grid-cols-4 gap-1.5 pt-3 border-t border-[var(--border)] dark:border-[var(--border)]/70 font-sans w-full">
+  {/* ✓ Done */}
+  <button
+  onClick={() => setEffortDialogTaskId(item.id)}
+  className="flex items-center justify-center gap-1 py-2 px-1 bg-emerald-50 dark:bg-emerald-950/20 hover:bg-emerald-100 border border-emerald-250 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-400 text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs w-full"
+  >
+  <Check className="w-3.5 h-3.5" />
+  <span>Done</span>
+  </button>
 
- {/* Timer button */}
- {activeTimer && activeTimer.taskId === item.id ? (
- <button
- onClick={handleStopTimer}
- className="flex-1 min-w-[70px] flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 border border-rose-250 text-rose-700 font-bold text-xs rounded-xl transition-all cursor-pointer shadow-3xs animate-pulse"
- >
- <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-ping shrink-0" />
- <span>Stop</span>
- </button>
- ) : (
- <button
- onClick={() => handleStartTimer(item.id, item.title)}
- className="flex-1 min-w-[70px] flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-50 hover:bg-blue-100 border border-blue-250 text-blue-700 font-bold text-xs rounded-xl transition-all cursor-pointer shadow-3xs"
- >
- <Play className="w-3 h-3 fill-blue-550/20" />
- <span>Start</span>
- </button>
- )}
+  {/* Timer button */}
+  {activeTimer && activeTimer.taskId === item.id ? (
+  <button
+  onClick={handleStopTimer}
+  className="flex items-center justify-center gap-1 py-2 px-1 bg-rose-50 dark:bg-rose-950/20 hover:bg-rose-100 border border-rose-250 dark:border-rose-900/50 text-rose-700 dark:text-rose-455 text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs w-full animate-pulse"
+  >
+  <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-ping shrink-0" />
+  <span>Stop</span>
+  </button>
+  ) : (
+  <button
+  onClick={() => handleStartTimer(item.id, item.title)}
+  className="flex items-center justify-center gap-1 py-2 px-1 bg-blue-50 dark:bg-blue-950/20 hover:bg-blue-100 border border-blue-250 dark:border-blue-900/50 text-blue-700 dark:text-blue-400 text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs w-full"
+  >
+  <Play className="w-3 h-3 fill-blue-550/20" />
+  <span>Start</span>
+  </button>
+  )}
 
- {/* ↗ Delay */}
- <button
- onClick={() => {
- const task = flexibleTasks.find(t => t.id === item.id);
- const delayCount = task?.delay_count || 0;
- if (delayCount >= 2) {
- setFrictionPrompt({
- taskId: item.id,
- start_time: item.start_time
- });
- } else {
- setDelayDurationPromptTaskId(item.id);
- }
- }}
- className="flex-1 min-w-[70px] flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-250 text-amber-700 font-bold text-xs rounded-xl transition-all cursor-pointer shadow-3xs"
- >
- <ArrowUpRight className="w-3.5 h-3.5" />
- <span>Delay</span>
- </button>
+  {/* ↗ Delay */}
+  <button
+  onClick={() => {
+    const task = flexibleTasks.find(t => t.id === item.id);
+    const delayCount = task?.delay_count || 0;
+    const carryOverCount = task?.carry_over_count || 0;
+    const avoidance = Math.max(delayCount, carryOverCount);
+    
+    if (avoidance >= 3) {
+      setExpandedTaskId(item.id);
+      setDecompositionMethod("ai");
+      showToast("Postponement blocked: Split this task to continue", "warning");
+      triggerHaptic(30);
+    } else if (avoidance === 2) {
+      setExpandedTaskId(item.id);
+      showToast("Please log friction before delaying this task", "info");
+      triggerHaptic(20);
+    } else {
+      setDelayDurationPromptTaskId(item.id);
+    }
+  }}
+  className="flex items-center justify-center gap-1 py-2 px-1 bg-amber-50 dark:bg-amber-950/20 hover:bg-amber-100 border border-amber-250 dark:border-amber-900/50 text-amber-700 dark:text-amber-400 text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs w-full"
+  >
+  <ArrowUpRight className="w-3.5 h-3.5" />
+  <span>Delay</span>
+  </button>
 
- {/* ⋮ More options */}
- <button
- onClick={() => setActionTrayTaskId(prev => prev === item.id ? null : item.id)}
- className={`flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${ actionTrayTaskId === item.id ? "bg-neutral-100 dark:bg-[var(--bg-card-hover)] border-neutral-300 dark:border-[var(--border)] text-neutral-800 dark:text-[var(--text-primary)]" : "bg-neutral-50 dark:bg-[var(--bg-card-hover)] border-neutral-200 dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-neutral-600 dark:text-[var(--text-primary)]" }`}
- >
- <span>⋮ More</span>
- </button>
+  {/* ⋮ More options */}
+  <button
+  onClick={() => setActionTrayTaskId(prev => prev === item.id ? null : item.id)}
+  className={`flex items-center justify-center gap-1 py-2 px-1 border text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer w-full ${ actionTrayTaskId === item.id ? "bg-neutral-100 dark:bg-zinc-800 border-neutral-300 dark:border-zinc-700 text-neutral-800 dark:text-[var(--text-primary)]" : "bg-neutral-50 dark:bg-zinc-900 border-neutral-200 dark:border-zinc-800 hover:bg-neutral-100 dark:hover:bg-zinc-800 text-neutral-600 dark:text-[var(--text-primary)]" }`}
+  >
+  <span>More</span>
+  </button>
  </div>
  )}
 
@@ -10031,126 +10639,10 @@ Please create the specified number of backlog tasks representing the project pha
  ))}
  </div>
 
- {/* STATS ROW (between Section A and B) */}
- <div className="grid grid-cols-3 gap-3 shrink-0 font-sans mt-4">
- <div className="bg-white border border-transparent p-3 rounded-xl text-center shadow-2xs hover:bg-white transition-colors">
- <strong className="block text-xl font-medium text-[var(--text-primary)] dark:text-[var(--text-primary)] leading-none">{dashboardStats.thisWeek}</strong>
- <span className="text-xs text-[#9999B3] mt-1.5 block">This week</span>
- </div>
- <div className="bg-white border border-transparent p-3 rounded-xl text-center shadow-2xs hover:bg-white transition-colors">
- <strong className="block text-xl font-medium text-[var(--text-primary)] dark:text-[var(--text-primary)] leading-none">{dashboardStats.backlog}</strong>
- <span className="text-xs text-[#9999B3] mt-1.5 block">In backlog</span>
- </div>
- <div className="bg-white border border-transparent p-3 rounded-xl text-center shadow-2xs hover:bg-white transition-colors">
- <strong className="block text-xl font-medium text-emerald-600 leading-none">{dashboardStats.streak}d</strong>
- <span className="text-xs text-[#9999B3] mt-1.5 block">Streak</span>
- </div>
- </div>
- </div>
-
- {/* Execution Score + Momentum Badge Card */}
- {executionScore !== null && (
- <div className="glass-card rounded-2xl p-5 space-y-3.5 font-sans text-left mt-4">
- <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5">
- <Flame className="w-3.5 h-3.5 text-orange-500 fill-orange-500/10" /> Daily Execution & Momentum
- </h4>
-
- <div className="flex items-center justify-between">
- <div className="space-y-0.5">
- <span className="text-2xl font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{executionScore.score}%</span>
- <span className="block text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">Tasks: {executionScore.done} / {executionScore.total} completed</span>
- </div>
  
- <div className="text-right">
- <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${ momentumState === "high" ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : momentumState === "stable" ? "bg-amber-50 text-amber-700 border border-amber-100" : "bg-red-50 text-red-700 border border-red-100" }`}>
- <span className={`w-1.5 h-1.5 rounded-full ${ momentumState === "high" ? "bg-emerald-500" : momentumState === "stable" ? "bg-amber-500" : "bg-red-500" }`} />
- {momentumState === "high" ? "High Momentum" :
- momentumState === "stable" ? "Steady" :
- "Behind"}
- </span>
- {completedStreak > 0 && (
- <span className="block text-[10px] text-[var(--text-tertiary)] mt-1 font-medium font-mono">
- 🔥 {completedStreak}-DAY STREAK
- </span>
- )}
- </div>
- </div>
-
- <div className="w-full h-1.5 bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
- <div 
- className={`h-full rounded-full transition-all duration-500 ${ momentumState === "high" ? "bg-emerald-500" : momentumState === "stable" ? "bg-amber-500" : "bg-red-500" }`}
- style={{ width: `${executionScore.score}%` }}
- />
- </div>
- </div>
- )}
-
- {/* Circadian Calibration Matrix Card */}
- <div className="glass-card rounded-2xl p-5 space-y-3 font-sans text-left mt-4">
- <div className="flex items-center justify-between">
- <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5">
- <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10 animate-pulse" /> Circadian Calibration Matrix
- </h4>
- <span className={`text-xs font-bold px-2 py-0.5 rounded font-mono ${ calibrationProfile.phase === 2 ? "bg-emerald-50 text-emerald-700 border border-emerald-200/50 animate-pulse" : "bg-amber-50 text-amber-700 border border-amber-200/50" }`}>
- {calibrationProfile.phase === 2 ? "Phase 2: Calibrated" : "Phase 1: Smart Defaults"}
- </span>
- </div>
- 
- <div className="space-y-2">
- <div className="flex justify-between items-center text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">
- <span>Calibration Status ({calibrationProfile.totalCompletions} / 15 tasks):</span>
- <span className="font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">{calibrationPercentage}%</span>
- </div>
- <div className="w-full h-2 bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
- <div 
- className="h-full bg-primary rounded-full transition-all duration-700 ease-out" 
- style={{ width: `${calibrationPercentage}%` }}
- />
- </div>
- </div>
-
- <div className="grid grid-cols-2 gap-2 pt-1">
- <div className="bg-white border border-transparent p-2.5 rounded-xl hover:bg-white transition-colors">
- <span className="block text-xs uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Peak Focus Time</span>
- <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] capitalize flex items-center gap-1 mt-0.5">
- {calibrationProfile.peakFocusTime === "morning" && <Clock className="w-3.5 h-3.5 text-primary" />}
- {calibrationProfile.peakFocusTime === "afternoon" && <Sparkles className="w-3.5 h-3.5 text-amber-500" />}
- {calibrationProfile.peakFocusTime === "evening" && <Moon className="w-3.5 h-3.5 text-indigo-700" />}
- {calibrationProfile.peakFocusTime} focus
- </span>
- </div>
- <div className="bg-white border border-transparent p-2.5 rounded-xl hover:bg-white transition-colors">
- <span className="block text-xs uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Underestimate Multiplier</span>
- <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
- {calibrationProfile.underestimateRatio.toFixed(2)}x duration
- </span>
- </div>
- <div className="bg-white border border-transparent p-2.5 rounded-xl hover:bg-white transition-colors">
- <span className="block text-xs uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Adaptive Work Gap</span>
- <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
- {calibrationProfile.optimalWorkGap} minutes
- </span>
- </div>
- <div className="bg-white border border-transparent p-2.5 rounded-xl hover:bg-white transition-colors">
- <span className="block text-xs uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Post-Exercise Gap</span>
- <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
- {calibrationProfile.exerciseRecoveryGap} minutes
- </span>
- </div>
- </div>
-
- <div className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] bg-[var(--bg-card)] border border-transparent p-2.5 rounded-xl leading-relaxed text-left">
- {calibrationProfile.phase === 2 ? (
- <span>🚀 <strong>Personalization Active!</strong> DayFlow has adapted your buffers, recovery gaps, and slot duration multipliers to match your completed execution history.</span>
- ) : (
- <span>💡 <strong>Onboarding active:</strong> Using generic smart defaults (15m work breaks, 25m workout recovery) until 15 tasks are completed.</span>
- )}
- </div>
- </div>
-
- </div>
-
- {/* Right Column (SECTION B: Day Detail Panel - Only visible beside calendar on desktop) */}
+  </div>
+  </div>
+  {/* Right Column (SECTION B: Day Detail Panel - Only visible beside calendar on desktop) */}
  <div className="lg:col-span-4 glass-card rounded-2xl p-5 space-y-3 shrink-0 w-full lg:overflow-y-auto lg:h-full pb-24 lg:pb-6">
  <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-wider font-display border-b border-[var(--border)] dark:border-[var(--border)] pb-2 flex items-center justify-between">
  <span>Day Frame: {new Date(selectedDate).toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short" })}</span>
@@ -10289,10 +10781,10 @@ Please create the specified number of backlog tasks representing the project pha
             </div>
           </div>
 
-          {/* Settings Icon Button in the top right corner */}
+                    {/* Settings Icon Button in the top right corner */}
           <button 
             onClick={() => {
-              navigate("/settings");
+              setShowSettingsModal(true);
               triggerHaptic(15);
             }}
             className="absolute top-0 right-0 p-2 rounded-xl bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 text-[var(--text-secondary)] dark:text-[var(--text-primary)] transition-all cursor-pointer shadow-3xs"
@@ -10310,7 +10802,7 @@ Please create the specified number of backlog tasks representing the project pha
  navigate("/routines");
  triggerHaptic(12);
  }}
- className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${ profileViewTab === "grid" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
+ className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${ profileViewTab === "routines" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
  >
  <Grid className="w-3.5 h-3.5" />
  <span>Routines</span>
@@ -10339,7 +10831,271 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
 
  {/* Tab Content */}
- {profileViewTab === "grid" && (
+ 
+        {profileViewTab === "insights" && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
+            {/* Section B: Daily Execution Summary */}
+            {executionScore !== null && (
+              <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-3.5 font-sans">
+                <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
+                  <Flame className="w-3.5 h-3.5 text-orange-500 fill-orange-500/10" /> Daily Execution & Momentum
+                </h4>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <span className="text-2xl font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{executionScore.score}%</span>
+                    <span className="block text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">Tasks: {executionScore.done} / {executionScore.total} completed</span>
+                  </div>
+                  <div className="text-right">
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${ momentumState === "high" ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : momentumState === "stable" ? "bg-amber-50 text-amber-700 border border-amber-100" : "bg-red-50 text-red-700 border border-red-100" }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${ momentumState === "high" ? "bg-emerald-500" : momentumState === "stable" ? "bg-amber-500" : "bg-red-500" }`} />
+                      {momentumState === "high" ? "High Momentum" : momentumState === "stable" ? "Steady" : "Behind"}
+                    </span>
+                  </div>
+                </div>
+                <div className="w-full h-1.5 bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full rounded-full transition-all duration-500 ${ momentumState === "high" ? "bg-emerald-500" : momentumState === "stable" ? "bg-amber-500" : "bg-red-500" }`}
+                    style={{ width: `${executionScore.score}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Section C: AI Calibration */}
+            <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-3 font-sans">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10 animate-pulse" /> Circadian Calibration Matrix
+                </h4>
+                <span className={`text-xs font-bold px-2 py-0.5 rounded font-mono ${ calibrationProfile.phase === 2 ? "bg-emerald-50 text-emerald-700 border border-emerald-200/50 animate-pulse" : "bg-amber-50 text-amber-700 border border-amber-200/50" }`}>
+                  {calibrationProfile.phase === 2 ? "Phase 2: Calibrated" : "Phase 1: Defaults"}
+                </span>
+              </div>
+              <div className="space-y-2">
+                <div className="flex justify-between items-center text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">
+                  <span>Calibration Status ({calibrationProfile.totalCompletions} / 15 tasks):</span>
+                  <span className="font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">{calibrationPercentage}%</span>
+                </div>
+                <div className="w-full h-2 bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
+                  <div className="h-full bg-primary rounded-full transition-all duration-700 ease-out" style={{ width: `${calibrationPercentage}%` }} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <div className="bg-neutral-50 dark:bg-zinc-850/50 border border-transparent p-2.5 rounded-xl">
+                  <span className="block text-[9px] uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Peak Focus Time</span>
+                  <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] capitalize flex items-center gap-1 mt-0.5">
+                    {calibrationProfile.peakFocusTime === "morning" && <Clock className="w-3.5 h-3.5 text-primary" />}
+                    {calibrationProfile.peakFocusTime === "afternoon" && <Sparkles className="w-3.5 h-3.5 text-amber-500" />}
+                    {calibrationProfile.peakFocusTime === "evening" && <Moon className="w-3.5 h-3.5 text-indigo-750" />}
+                    {calibrationProfile.peakFocusTime} focus
+                  </span>
+                </div>
+                <div className="bg-neutral-50 dark:bg-zinc-850/50 border border-transparent p-2.5 rounded-xl">
+                  <span className="block text-[9px] uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Underestimate Multiplier</span>
+                  <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
+                    {calibrationProfile.underestimateRatio.toFixed(2)}x duration
+                  </span>
+                </div>
+                <div className="bg-neutral-50 dark:bg-zinc-850/50 border border-transparent p-2.5 rounded-xl">
+                  <span className="block text-[9px] uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Adaptive Work Gap</span>
+                  <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
+                    {calibrationProfile.optimalWorkGap} minutes
+                  </span>
+                </div>
+                <div className="bg-neutral-50 dark:bg-zinc-850/50 border border-transparent p-2.5 rounded-xl">
+                  <span className="block text-[9px] uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Post-Exercise Gap</span>
+                  <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
+                    {calibrationProfile.exerciseRecoveryGap} minutes
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Section D: Weekly Performance History */}
+            <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-4 md:col-span-2">
+              <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
+                <TrendingUp className="w-4 h-4 text-primary" /> Weekly Snapshots
+              </h3>
+              {evalHistory.length === 0 ? (
+                <div className="text-center py-6 border border-dashed border-slate-250/70 rounded-2xl bg-[var(--bg-page)] ">
+                  <Award className="w-8 h-8 text-neutral-350 mx-auto mb-2" />
+                  <span className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] block font-semibold">No performance snapshots available yet</span>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {evalHistory.map((snap) => {
+                    const formattedDate = new Date(snap.weekStart).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+                    const adherence = snap.aiSuggestionAcceptanceRate;
+                    const accuracyDiffPct = Math.round((1 - snap.planningAccuracy) * 100);
+                    const accuracyLabel = accuracyDiffPct > 0 
+                      ? `Underestimate by ${accuracyDiffPct}%` 
+                      : accuracyDiffPct < 0 
+                        ? `Overestimate by ${Math.abs(accuracyDiffPct)}%` 
+                        : "On target";
+                    
+                    const pushPct = Math.round(snap.carryOverRate * 100);
+                    const pushLabel = `${pushPct}% tasks pushed`;
+
+                    return (
+                      <div key={snap.weekStart} className="border border-[var(--border)] dark:border-[var(--border)] bg-neutral-50 dark:bg-zinc-800/30 rounded-2xl p-4 space-y-3 hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 transition-colors">
+                        <div className="flex items-center justify-between border-b border-[var(--border)] dark:border-[var(--border)] pb-2">
+                          <span className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display">Week of ${formattedDate}</span>
+                          <span className="text-[10px] font-mono font-bold bg-primary-light text-primary px-2 py-0.5 rounded-full">
+                            🔥 ${snap.streakDays}d Streak
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                          <div>
+                            <span className="block text-[9px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Completion</span>
+                            <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">${Math.round(snap.completionRate * 100)}%</span>
+                          </div>
+                          <div>
+                            <span className="block text-[9px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Tasks Pushed</span>
+                            <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">${pushLabel}</span>
+                          </div>
+                          <div>
+                            <span className="block text-[9px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Time Accuracy</span>
+                            <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">${accuracyLabel}</span>
+                          </div>
+                          <div>
+                            <span className="block text-[9px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">AI Adherence</span>
+                            <span className="font-bold text-indigo-600 font-mono">
+                              {adherence === 1.0 && !localStorage.getItem("dayflow_ai_suggestion_events") ? "N/A" : `${Math.round(adherence * 100)}%`}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section E: Weekly Friction Report */}
+            {frictionReport && (
+              <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-4 text-left">
+                <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
+                  <Zap className="w-4 h-4 text-amber-500 fill-amber-500/10" /> Weekly Friction Report
+                </h3>
+                <div className="space-y-3">
+                  {frictionReport.report.map((item) => (
+                    <div key={item.key} className="space-y-1">
+                      <div className="flex justify-between text-xs font-semibold">
+                        <span className="text-[var(--text-primary)]">${item.label}</span>
+                        <span className="text-amber-600 font-mono">${item.percentage}%</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-neutral-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-amber-500 rounded-full" style={{ width: `${item.percentage}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="text-xs bg-amber-50/50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/30 p-3 rounded-2xl leading-relaxed text-amber-800 dark:text-amber-300 font-medium">
+                  💡 <strong>Coach Insight:</strong> ${frictionReport.insight}
+                </div>
+              </div>
+            )}
+
+            {/* Section F: Reflection History */}
+            <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-4 text-left">
+              <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
+                <BookMarked className="w-4 h-4 text-primary" /> Recent Reflections
+              </h3>
+              {recentReflections.length === 0 ? (
+                <div className="text-center py-4 text-xs text-[var(--text-tertiary)] italic">
+                  No reflections recorded yet. Reflect daily in the Today view!
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
+                  {recentReflections.map((refl) => (
+                    <div key={refl.id} className="p-3 bg-neutral-50 dark:bg-zinc-800/30 rounded-2xl border border-[var(--border)] space-y-1">
+                      <div className="flex justify-between items-center text-[10px] font-bold text-[var(--text-tertiary)] font-mono">
+                        <span>${new Date(refl.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
+                        <span className={`px-2 py-0.5 rounded-full uppercase ${ refl.type === "success" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700" }`}>
+                          ${refl.type}
+                        </span>
+                      </div>
+                      <p className="text-xs font-semibold text-[var(--text-primary)]">
+                        ${refl.notes || formatCause(refl.cause)}
+                      </p>
+                      {refl.notes && refl.cause && (
+                        <span className="text-[10px] italic text-[var(--text-tertiary)] block">
+                          Blocker: ${formatCause(refl.cause)}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => {
+                      if (confirm("Clear your reflection history?")) {
+                        setReflectionEvents([]);
+                        saveReflectionEvents([]);
+                      }
+                    }}
+                    className="text-[10px] text-rose-500 font-bold hover:underline cursor-pointer block text-right mt-1 w-full"
+                  >
+                    Clear reflection history
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Section G: Fitness Tracking */}
+            {sortedWeightLog.length > 0 ? (
+              <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-4 text-left">
+                <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
+                  <Heart className="w-4 h-4 text-rose-500 fill-rose-500/10" /> Fitness & Weight Trend
+                </h3>
+                {(() => {
+                  const earliest = sortedWeightLog[0];
+                  const latest = sortedWeightLog[sortedWeightLog.length - 1];
+                  const diff = latest.weight - earliest.weight;
+                  const diffStr = diff > 0 ? '+' + diff.toFixed(1) + 'kg' : diff.toFixed(1) + 'kg';
+                  const timeWeeks = Math.max(1, Math.round((new Date(latest.date).getTime() - new Date(earliest.date).getTime()) / (1000 * 60 * 60 * 24 * 7)));
+                  const points = sparklinePoints;
+
+                  return (
+                    <div className="space-y-4">
+                      <div className="flex items-baseline gap-2.5">
+                        <span className="text-2xl font-bold text-[var(--text-primary)]">${latest.weight} kg</span>
+                        <span className={`text-xs font-bold ${ diff > 0 ? "text-rose-500" : "text-emerald-600" }`}>
+                          ${diffStr} in ${timeWeeks} ${timeWeeks === 1 ? "week" : "weeks"}
+                        </span>
+                      </div>
+                      
+                      {points && (
+                        <div className="flex items-center justify-between border-t border-[var(--border)] pt-3">
+                          <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase font-mono">Weight Sparkline (last 8 logs)</span>
+                          <svg className="w-28 h-8 text-primary overflow-visible animate-pulse" viewBox="0 0 100 30">
+                            <polyline
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              points={points}
+                            />
+                          </svg>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 text-center space-y-2 text-left">
+                <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
+                  <Heart className="w-4 h-4 text-rose-500" /> Fitness Tracking
+                </h3>
+                <p className="text-xs text-[var(--text-tertiary)] italic leading-relaxed font-sans">
+                  No weight telemetry recorded. Tell Day Coach to "log my weight as 70kg" to track body weight trends automatically!
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {profileViewTab === "routines" && (
  <div className="space-y-6 text-left">
  {/* Routine Blocks Manager */}
  <div className={
@@ -11130,21 +11886,26 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
  )}
 
- {activeTab === "settings" && (
-    <div className="flex-1 flex flex-col p-4 pb-24 md:p-6 lg:p-8 h-full overflow-y-auto bg-[var(--bg-page)] text-slate-800 dark:text-[var(--text-primary)] animate-fade-in">
- <div className="flex flex-col gap-6 md:gap-8 max-w-2xl mx-auto w-full">
- 
- {/* Settings Header */}
- <div className="flex items-center gap-2 mb-4">
-          <button
-            onClick={() => navigate("/routines")}
-            className="p-1.5 rounded-xl hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] transition-colors cursor-pointer md:hidden"
-            title="Back to Profile"
+ {showSettingsModal && (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-neutral-900/40 backdrop-blur-xs animate-fade-in text-left">
+      <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-scale-up">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-strong)] dark:border-[var(--border)]">
+          <div className="flex items-center gap-2 text-primary font-bold font-display">
+            <SettingsIcon className="w-5 h-5" />
+            <span className="text-sm uppercase tracking-wider font-extrabold">App Settings</span>
+          </div>
+          <button 
+            onClick={() => { setShowSettingsModal(false); if (currentPath === "/settings") navigate("/routines"); }}
+            className="p-1.5 rounded-xl hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 text-neutral-455 hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] cursor-pointer transition-colors"
           >
-            <ChevronLeft className="w-6 h-6" />
+            <X className="w-5 h-5" />
           </button>
-          <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display">Settings</h1>
         </div>
+        
+        {/* Scrollable Content wrapper */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="flex flex-col gap-6 md:gap-8 max-w-2xl mx-auto w-full">
 
  {/* Form Container */}
  <form 
@@ -11344,67 +12105,6 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
  </div>
 
- {/* Section: Weekly Evaluation History & AI Adherence */}
- <div className="bg-white dark:bg-[var(--bg-card)] border border-slate-200 dark:border-[var(--border)] rounded-3xl p-6 shadow-3xs space-y-4 text-left">
- <h3 className="text-sm font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-2 font-display">
- <TrendingUp className="w-4 h-4 text-primary" /> Weekly Performance & AI Adherence
- </h3>
- <p className="text-neutral-550 dark:text-[var(--text-secondary)] text-[11px] leading-relaxed font-sans">
- Performance snapshots computed automatically at the close of each calendar week. Track carry-overs, accuracy, and Copilot adjustment adherence.
- </p>
-
- {evalHistory.length === 0 ? (
- <div className="text-center py-6 border border-dashed border-slate-250/70 rounded-2xl bg-[var(--bg-page)] ">
- <Award className="w-8 h-8 text-neutral-350 mx-auto mb-2" />
- <span className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] block font-semibold">No performance snapshots available yet</span>
- <span className="text-[10px] text-[var(--text-tertiary)] block mt-1">Complete tasks to automatically generate weekly snapshots.</span>
- </div>
- ) : (
- <div className="space-y-3">
- {evalHistory.map((snap) => {
- const formattedDate = new Date(snap.weekStart).toLocaleDateString("en-US", {
- month: "short",
- day: "numeric",
- year: "numeric"
- });
- const adherence = snap.aiSuggestionAcceptanceRate;
- return (
- <div key={snap.weekStart} className="border border-[var(--border)] dark:border-[var(--border)] bg-neutral-50 rounded-2xl p-4 space-y-3 hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 transition-colors">
- <div className="flex items-center justify-between border-b border-[var(--border)] dark:border-[var(--border)] pb-2">
- <span className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display">Week of {formattedDate}</span>
- <span className="text-[10px] font-mono font-bold bg-primary-light text-primary px-2 py-0.5 rounded-full">
- 🔥 {snap.streakDays}d Streak
- </span>
- </div>
- <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
- <div>
- <span className="block text-[10px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Completion</span>
- <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">{Math.round(snap.completionRate * 100)}%</span>
- </div>
- <div>
- <span className="block text-[10px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Carry Overs</span>
- <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">{snap.carryOverRate.toFixed(2)} / task</span>
- </div>
- <div>
- <span className="block text-[10px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Accuracy Ratio</span>
- <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">{snap.planningAccuracy.toFixed(2)}x</span>
- </div>
- <div>
- <span className="block text-[10px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">AI Adherence</span>
- <span className="font-bold text-indigo-600 font-mono">
- {adherence === 1.0 && !localStorage.getItem("dayflow_ai_suggestion_events") 
- ? "N/A" 
- : `${Math.round(adherence * 100)}%`}
- </span>
- </div>
- </div>
- </div>
- );
- })}
- </div>
- )}
- </div>
-
  {/* Section 4: Developer Options */}
  {showDevTools && (
  <div className="bg-white dark:bg-[var(--bg-card)] border border-[#E0D9FF]/40 rounded-3xl p-6 shadow-3xs space-y-4 text-left animate-fade-in">
@@ -11494,35 +12194,56 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
  )}
  </div>
- </div>
-
- </div>
- </div>
- )}
+  </div>
+  </div>
+  </div>
+  </div>
+  </div>
+  )}
  </main>
 
      {/* UNIFIED FLOATING ACTION AREA */}
-  {activeTab !== "routines" && (
-    <div className="absolute md:bottom-6 bottom-[100px] right-4 z-[80] flex flex-row md:flex-col gap-2.5 items-center md:items-end pointer-events-none">
-      {(activeTab === "today" || activeTab === "backlog") && (
-        <button
-          onClick={() => handleOpenAddFlexible(activeTab === "today")}
-          className="w-12 h-12 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-xl shadow-emerald-500/20 active:scale-95 transition-all cursor-pointer border border-emerald-500/20 pointer-events-auto shrink-0 animate-scale-up"
-          title="Add Task"
-        >
-          <Plus className="w-6 h-6 stroke-[2.5px]" />
-        </button>
-      )}
-      <button
-        onClick={handleOpenAICopilot}
-        className="bg-primary-gradient hover:opacity-90 text-white pl-4 pr-5 py-3 rounded-full text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display pointer-events-auto shrink-0"
-        title="Ask DayFlow AI Copilot"
-      >
-        <Sparkles className="w-5 h-5 fill-white stroke-[2px]" />
-        <span>{copilotButtonLabel}</span>
-      </button>
-    </div>
-  )}
+   {activeTab !== "routines" && (
+     <div className="absolute md:bottom-6 bottom-[100px] right-4 z-[80] flex flex-row md:flex-col gap-2.5 items-center md:items-end pointer-events-none">
+       {activeTab === "today" && selectedDate === TODAY && (
+         <div className="relative pointer-events-auto flex items-center gap-2 group">
+           {hasUnverifiedPastTasks && (
+             <div className="bg-slate-900 dark:bg-zinc-800 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-xl shadow-lg border border-slate-700 dark:border-zinc-700 flex items-center gap-1 animate-pulse max-w-[150px] leading-tight">
+               <span>⚠️ Schedule outdated</span>
+             </div>
+           )}
+           <button
+             onClick={handleAlignTimeline}
+             className={`w-12 h-12 rounded-full text-white flex items-center justify-center shadow-xl active:scale-95 transition-all cursor-pointer border shrink-0 ${
+               hasUnverifiedPastTasks 
+                 ? "bg-primary hover:opacity-95 border-primary/20 shadow-primary/20 animate-bounce ring-2 ring-primary/20" 
+                 : "bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 dark:hover:bg-slate-600 border-slate-700/20 shadow-black/15"
+             }`}
+             title="Reschedule Day / Align Timeline"
+           >
+             <RefreshCw className={`w-5 h-5 stroke-[2.5px] ${hasUnverifiedPastTasks ? "animate-spin" : ""}`} />
+           </button>
+         </div>
+       )}
+       {(activeTab === "today" || activeTab === "backlog") && (
+         <button
+           onClick={() => handleOpenAddFlexible(activeTab === "today")}
+           className="w-12 h-12 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-xl shadow-emerald-500/20 active:scale-95 transition-all cursor-pointer border border-emerald-500/20 pointer-events-auto shrink-0 animate-scale-up"
+           title="Add Task"
+         >
+           <Plus className="w-6 h-6 stroke-[2.5px]" />
+         </button>
+       )}
+       <button
+         onClick={handleOpenAICopilot}
+         className="bg-primary-gradient hover:opacity-90 text-white pl-4 pr-5 py-3 rounded-full text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display pointer-events-auto shrink-0"
+         title="Ask DayFlow AI Copilot"
+       >
+         <Sparkles className="w-5 h-5 fill-white stroke-[2px]" />
+         <span>{copilotButtonLabel}</span>
+       </button>
+     </div>
+   )}
 
 {/* BOTTOM NAVIGATION TAB BAR (Floating Pill) */}
  

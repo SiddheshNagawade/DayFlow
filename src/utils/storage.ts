@@ -22,7 +22,7 @@ export interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
   day_start: "07:00",
   day_end: "23:00",
-  themeMode: "system"
+  themeMode: "light"
 };
 
 // Called once on app boot — if version doesn't match, wipe everything
