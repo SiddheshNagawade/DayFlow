@@ -1405,14 +1405,12 @@ export default function App() {
  default:
  return "Today";
  }
- }, [activeTab, currentPath]);
-
- const profileViewTab = useMemo(() => {
-    if (currentPath === "/goals" || currentPath === "/routines/goals") return "goals";
-    if (currentPath === "/projects" || currentPath === "/routines/projects") return "projects";
-    if (currentPath === "/routines/editor") return "routines";
-    return "insights";
-  }, [currentPath]);
+ }, [activeTab, currentPath]);  const profileViewTab = useMemo(() => {
+     if (currentPath === "/goals" || currentPath === "/routines/goals") return "goals";
+     if (currentPath === "/projects" || currentPath === "/routines/projects") return "projects";
+     if (currentPath === "/routines/editor" || currentPath === "/routines/list") return "routines";
+     return "insights";
+   }, [currentPath]);
 
  const changeTabWithHaptic = (tab: "today" | "backlog" | "calendar" | "routines") => {
  if (tab === "routines") {
@@ -1462,14 +1460,9 @@ export default function App() {
 
  // Bottom Sheets control
  const [activeBottomSheet, setRawActiveBottomSheet] = useState<"fixed" | "flexible" | "emergency" | "assistant" | "profile" | "eodreview" | "goal" | null>(null);
- const [todaySubTab, setTodaySubTab] = useState<"timeline" | "copilot">("timeline");
- 
- const setActiveBottomSheet = (sheet: "fixed" | "flexible" | "emergency" | "assistant" | "profile" | "eodreview" | "goal" | null) => {
- setRawActiveBottomSheet(sheet);
- if (sheet === "assistant" && activeTab === "today") {
- setTodaySubTab("copilot");
- }
- };
+ const [todaySubTab, setTodaySubTab] = useState<"timeline" | "copilot">("timeline");  const setActiveBottomSheet = (sheet: "fixed" | "flexible" | "emergency" | "assistant" | "profile" | "eodreview" | "goal" | null) => {
+    setRawActiveBottomSheet(sheet);
+  };
  
  // Live Clock for Time indicator
  const [currentTimeMins, setCurrentTimeMins] = useState(0);
@@ -7558,7 +7551,7 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
  
  {!isAI && !isProcessingCopilot && (
- <div className="absolute -left-[4.5rem] top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-70 md:opacity-0 group-hover/msg:opacity-100 transition-opacity z-10">
+ <div className="absolute -left-9 sm:-left-[4.5rem] top-1/2 -translate-y-1/2 flex flex-col sm:flex-row items-center gap-1.5 opacity-70 md:opacity-0 group-hover/msg:opacity-100 transition-opacity z-10">
  <button
  type="button"
  onClick={() => {
@@ -8604,7 +8597,7 @@ Please create the specified number of backlog tasks representing the project pha
  <div id="phone_mockup_container" className="flex-1 h-full bg-transparent flex flex-col overflow-hidden relative">
  
  {/* TOP APP HEADER BAR (Fixed boundary, does not move) */}
- <header id="mobile_sticky_header" className="h-16 border-b border-[var(--border-strong)] dark:border-[var(--border)]/50 px-4 flex items-center justify-between bg-white z-30 flex-shrink-0 relative text-slate-800 dark:text-[var(--text-primary)]">
+ <header id="mobile_sticky_header" className="min-h-[64px] pt-[env(safe-area-inset-top,10px)] md:pt-0 border-b border-[var(--border-strong)] dark:border-[var(--border)]/50 px-4 flex items-center justify-between bg-[var(--bg-panel)] z-30 flex-shrink-0 relative text-slate-805 dark:text-[var(--text-primary)]">
  <div 
  onClick={handleLogoClick}
  className="flex items-center gap-1.5 cursor-pointer select-none"
@@ -8675,7 +8668,7 @@ Please create the specified number of backlog tasks representing the project pha
  </header>
 
  {/* MAIN DYNAMIC CONTENT RAIL (Independently scrolling tab viewports) */}
- <main id="mobile_viewport_content" className="flex-1 overflow-y-auto md:overflow-hidden overflow-x-hidden flex flex-col relative bg-[var(--bg-page)]">
+ <main id="mobile_viewport_content" className="flex-1 overflow-y-auto md:overflow-hidden overflow-x-hidden flex flex-col relative bg-[var(--bg-page)] pb-36 md:pb-0">
  
  {/* Floating Notification Permission Request Modal */}
  {showNotificationPrompt && (
@@ -10288,12 +10281,7 @@ Please create the specified number of backlog tasks representing the project pha
  )}
 
  </div>
- </div>
-
- {/* Column 2: Day Coach Chat (only on mobile when tab active; desktop uses slide-over) */}
- <div className={`${todaySubTab === "copilot" ? "flex" : "hidden"} md:hidden flex-col w-full bg-white dark:bg-[var(--bg-card)] h-full overflow-hidden p-4 text-left`}>
- {renderCopilotContent(true)}
- </div>
+ </div>  {/* Column 2: Day Coach Chat removed from background Today page to keep timeline visible */}
 
 
 
@@ -10579,10 +10567,10 @@ Please create the specified number of backlog tasks representing the project pha
  <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto lg:overflow-hidden">
  
  {/* Widescreen Responsive Columns */}
- <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start h-full lg:overflow-hidden">
+ <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 lg:gap-6 items-start h-full lg:overflow-hidden">
  
  {/* Left Column (Stats + Month grid) */}
- <div className="lg:col-span-8 space-y-4 lg:overflow-y-auto h-full pb-24 lg:pb-6 lg:pr-3">
+ <div className="lg:col-span-8 space-y-2.5 lg:space-y-4 lg:overflow-y-auto h-full pb-2 lg:pb-6 lg:pr-3">
  
  {/* SECTION A: Monthly Calendar Grid (top block) */}
  <div className="glass-card rounded-2xl p-5">
@@ -10643,7 +10631,7 @@ Please create the specified number of backlog tasks representing the project pha
   </div>
   </div>
   {/* Right Column (SECTION B: Day Detail Panel - Only visible beside calendar on desktop) */}
- <div className="lg:col-span-4 glass-card rounded-2xl p-5 space-y-3 shrink-0 w-full lg:overflow-y-auto lg:h-full pb-24 lg:pb-6">
+ <div className="lg:col-span-4 glass-card rounded-2xl p-5 space-y-3 shrink-0 w-full lg:overflow-y-auto lg:h-full pb-12 lg:pb-6">
  <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-wider font-display border-b border-[var(--border)] dark:border-[var(--border)] pb-2 flex items-center justify-between">
  <span>Day Frame: {new Date(selectedDate).toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short" })}</span>
  <span className="text-xs font-mono text-[var(--text-tertiary)] font-normal">{daySchedule.items.length} slotted</span>
@@ -10792,43 +10780,51 @@ Please create the specified number of backlog tasks representing the project pha
           >
             <SettingsIcon className="w-5.5 h-5.5" />
           </button>
-        </div>
-
- {/* Tab switcher: Routines vs Goals vs Insights */}
- <div className="flex justify-center border-b border-neutral-250/60 pb-px">
- <div className="flex gap-8">
- <button 
- onClick={() => {
- navigate("/routines");
- triggerHaptic(12);
- }}
- className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${ profileViewTab === "routines" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
- >
- <Grid className="w-3.5 h-3.5" />
- <span>Routines</span>
- </button>
- <button 
- onClick={() => {
- navigate("/projects");
- triggerHaptic(12);
- }}
- className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${ profileViewTab === "projects" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
- >
- <FolderKanban className="w-3.5 h-3.5" />
- <span>Projects</span>
- </button>
- <button 
- onClick={() => {
- navigate("/goals");
- triggerHaptic(12);
- }}
- className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${ profileViewTab === "goals" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
- >
- <Target className="w-3.5 h-3.5" />
- <span>Goals</span>
- </button>
- </div>
- </div>
+        </div>  {/* Tab switcher: Analytics vs Routines vs Projects vs Goals */}
+  <div className="flex justify-center border-b border-neutral-200 dark:border-zinc-700/60 pb-px">
+    <div className="flex gap-6 sm:gap-8 overflow-x-auto max-w-full no-scrollbar">
+      <button 
+        onClick={() => {
+          navigate("/routines");
+          triggerHaptic(12);
+        }}
+        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 shrink-0 ${ profileViewTab === "insights" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
+      >
+        <TrendingUp className="w-3.5 h-3.5" />
+        <span>Analytics</span>
+      </button>
+      <button 
+        onClick={() => {
+          navigate("/routines/editor");
+          triggerHaptic(12);
+        }}
+        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 shrink-0 ${ profileViewTab === "routines" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
+      >
+        <Grid className="w-3.5 h-3.5" />
+        <span>Routines</span>
+      </button>
+      <button 
+        onClick={() => {
+          navigate("/projects");
+          triggerHaptic(12);
+        }}
+        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 shrink-0 ${ profileViewTab === "projects" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
+      >
+        <FolderKanban className="w-3.5 h-3.5" />
+        <span>Projects</span>
+      </button>
+      <button 
+        onClick={() => {
+          navigate("/goals");
+          triggerHaptic(12);
+        }}
+        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 shrink-0 ${ profileViewTab === "goals" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
+      >
+        <Target className="w-3.5 h-3.5" />
+        <span>Goals</span>
+      </button>
+    </div>
+  </div>
 
  {/* Tab Content */}
  
@@ -12247,7 +12243,7 @@ Please create the specified number of backlog tasks representing the project pha
 
 {/* BOTTOM NAVIGATION TAB BAR (Floating Pill) */}
  
- <nav id="mobile_sticky_bottom_nav" className="menu fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-[64px] bg-[var(--bg-panel)] shadow-2xl shadow-black/15 dark:shadow-black/40 rounded-full grid grid-cols-4 items-center z-[80] md:!hidden px-2 border border-[var(--border)]" role="navigation">
+ <nav id="mobile_sticky_bottom_nav" className="menu fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-[64px] bg-white/85 dark:bg-[#1e1e23]/85 backdrop-blur-md shadow-2xl shadow-black/15 dark:shadow-black/40 rounded-full grid grid-cols-4 items-center z-[80] md:!hidden px-2 border border-[var(--border)]" role="navigation">
     {menuItems.map((item, index) => {
       const isActive = item.value === activeTab;
       const IconComponent = item.icon;
