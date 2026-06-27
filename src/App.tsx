@@ -15,9 +15,10 @@ import {
  CheckCircle2, 
  Circle, 
  Settings as SettingsIcon, 
- Info,
- X,
- Zap,
+  Info,
+  Filter,
+  X,
+  Zap,
  HelpCircle,
  Bell,
  RefreshCw,
@@ -1205,9 +1206,9 @@ export default function App() {
  case "calendar":
  return "Calendar";
  case "routines":
- if (currentPath === "/goals" || currentPath === "/routines/goals") return "Goals";
- if (currentPath === "/projects" || currentPath === "/routines/projects") return "Projects";
- return "Routines";
+      if (currentPath === "/goals" || currentPath === "/routines/goals") return "Goals";
+      if (currentPath === "/projects" || currentPath === "/routines/projects") return "Projects";
+      return "Profile";
  case "settings":
  return "Settings";
  case "today":
@@ -2165,11 +2166,13 @@ export default function App() {
  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
  const menuItems = useMemo(() => [
- { label: "today", icon: CalendarCheck, value: "today" as const },
- { label: "backlog", icon: Layers, value: "backlog" as const },
- { label: "calendar", icon: CalendarDays, value: "calendar" as const },
- { label: "routines", icon: BookMarked, value: "routines" as const }
- ], []);
+    { label: "today", icon: CalendarCheck, value: "today" as const },
+    { label: "backlog", icon: Layers, value: "backlog" as const },
+    { label: "calendar", icon: CalendarDays, value: "calendar" as const },
+    { label: "profile", icon: BookMarked, value: "routines" as const }
+  ], []);
+
+  const [showBacklogFilterDropdown, setShowBacklogFilterDropdown] = useState(false);
 
  // EOD Review sheet state
  const [showEodReview, setShowEodReview] = useState(false);
@@ -8293,8 +8296,7 @@ Please create the specified number of backlog tasks representing the project pha
  {(activeTab === "today" || activeTab === "backlog") && (
  <button
  onClick={() => handleOpenAddFlexible(activeTab === "today")}
- className="px-3 py-1.5 rounded-xl bg-primary-gradient hover:opacity-90 text-white active:scale-95 transition-all duration-150 flex items-center justify-center gap-1.5 cursor-pointer font-display font-bold text-xs shadow-xs"
- title="Add Task Manually"
+ className="hidden md:flex px-3 py-1.5 rounded-xl bg-primary-gradient hover:opacity-90 text-white active:scale-95 transition-all duration-150 items-center justify-center gap-1.5 cursor-pointer font-display font-bold text-xs shadow-xs" title="Add Task Manually"
  >
  <Plus className="w-3.5 h-3.5" />
  <span className="hidden md:inline">Add Task</span>
@@ -9696,50 +9698,62 @@ Please create the specified number of backlog tasks representing the project pha
  <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto">
  
  {/* Search / Filter Pills header with Center Toggle */}
- <div className="flex flex-col mb-4 gap-4">
- <div className="flex items-center justify-between">
- <div className="flex items-center gap-3">
- <span className="text-xs font-semibold uppercase tracking-wider text-[#9999B3]">Backlog Filter</span>
- <button
- onClick={() => handleOpenAddFlexible(false)}
- className="px-3.5 py-1.5 bg-primary/10 hover:bg-primary/15 text-primary text-xs font-bold rounded-xl cursor-pointer transition-all flex items-center gap-1.5 border border-primary/20"
- >
- <Plus className="w-3.5 h-3.5" /> Add Task
- </button>
- </div>
+  <div className="flex flex-col mb-4 gap-4">
+    <div className="flex items-center justify-between w-full relative">
+      {/* Spacer to align center toggle on desktop */}
+      <div className="w-8 h-8 hidden md:block" />
 
- {/* CENTER TOGGLE */}
- <div className="flex bg-[var(--bg-card-hover)] p-1 rounded-xl items-center shadow-inner">
- <button
- onClick={() => setBacklogTab("carried")}
- className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${ backlogTab === "carried" ? "bg-white dark:bg-[var(--bg-card)] text-primary shadow-sm" : "text-neutral-500 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
- >
- Carried Forward
- </button>
- <button
- onClick={() => setBacklogTab("dropped")}
- className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${ backlogTab === "dropped" ? "bg-white dark:bg-[var(--bg-card)] text-rose-600 shadow-sm" : "text-neutral-500 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
- >
- Dropped
- </button>
- </div>
+      {/* CENTER TOGGLE */}
+      <div className="flex bg-[var(--bg-card-hover)] p-1 rounded-full items-center shadow-inner mx-auto">
+        <button
+          onClick={() => setBacklogTab("carried")}
+          className={`px-4 py-1.5 text-xs font-bold rounded-full transition-all cursor-pointer ${ backlogTab === "carried" ? "bg-white dark:bg-[var(--bg-card)] text-primary shadow-sm" : "text-neutral-550 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
+        >
+          Carried Forward
+        </button>
+        <button
+          onClick={() => setBacklogTab("dropped")}
+          className={`px-4 py-1.5 text-xs font-bold rounded-full transition-all cursor-pointer ${ backlogTab === "dropped" ? "bg-white dark:bg-[var(--bg-card)] text-rose-600 shadow-sm" : "text-neutral-550 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
+        >
+          Dropped
+        </button>
+      </div>
 
- {/* Filter Pills (only show in carried forward tab) */}
- <div className={`flex gap-1.5 overflow-x-auto py-0.5 shrink-0 scrollbar-none transition-opacity ${backlogTab === "dropped" ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
- {(["all", "deadline", "anytime", "done"] as const).map((filter) => (
- <button
- key={filter}
- onClick={() => setBacklogFilter(filter)}
- className={`px-4 py-2 text-xs rounded-full cursor-pointer font-bold capitalize transition-all border whitespace-nowrap ${ backlogFilter === filter ? "bg-primary text-white border-primary shadow-sm shadow-primary/10" : "bg-transparent text-neutral-600 dark:text-[var(--text-primary)] border-neutral-200 dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 " }`}
- >
- {filter === "all" ? "Active" : filter === "deadline" ? "Has Deadline" : filter}
- </button>
- ))}
- </div>
- </div>
- </div>
-
- {/* Backlog Grid list container */}
+      {/* RIGHT SIDE: FILTER DROPDOWN */}
+      {backlogTab === "carried" ? (
+        <div className="relative">
+          <button
+            onClick={() => setShowBacklogFilterDropdown(!showBacklogFilterDropdown)}
+            className={`p-2 rounded-full hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 border border-[var(--border-strong)] dark:border-[var(--border)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] cursor-pointer transition-all ${showBacklogFilterDropdown ? 'bg-[var(--bg-card-hover)] text-primary border-primary' : ''}`}
+            title="Filter Backlog"
+          >
+            <Filter className="w-4 h-4" />
+          </button>
+          
+          {showBacklogFilterDropdown && (
+            <div className="absolute right-0 mt-2 w-40 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-2xl shadow-xl z-30 py-1.5 animate-scale-up">
+              {(["all", "deadline", "anytime", "done"] as const).map((filter) => (
+                <button
+                  key={filter}
+                  onClick={() => {
+                    setBacklogFilter(filter);
+                    setShowBacklogFilterDropdown(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 text-xs font-bold transition-colors cursor-pointer flex items-center justify-between ${ backlogFilter === filter ? "text-primary bg-primary/5" : "text-neutral-605 dark:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)]" }`}
+                >
+                  <span className="capitalize">{filter === "all" ? "Active" : filter === "deadline" ? "Has Deadline" : filter}</span>
+                  {backlogFilter === filter && <Check className="w-3.5 h-3.5 text-primary" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="w-8 h-8" />
+      )}
+    </div>
+  </div>
+  {/* Backlog Grid list container */}
  <div className="flex-1 space-y-3 pb-24">
  {filteredBacklogTasks.length === 0 ? (
  <div className="py-20 text-center flex flex-col items-center justify-center space-y-3.5">
@@ -10212,61 +10226,81 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
  )}
 
- {/* TAB VIEW 4: ROUTINES & SCHEDULE PROFILES */}
- {activeTab === "routines" && (
- <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto bg-[var(--bg-page)] text-slate-800 dark:text-[var(--text-primary)]">
- <div className="flex flex-col gap-6 md:gap-8 max-w-4xl mx-auto w-full">
- 
- {/* Instagram-style Profile Header (Compact on mobile, horizontal row) */}
- <div className="flex flex-row items-start gap-4 md:gap-6 pb-6 border-b border-[var(--border-strong)] dark:border-[var(--border)] text-left">
- {/* Left: Avatar Circle */}
- <div className="relative group shrink-0">
- <div className="w-16 h-16 sm:w-20 sm:h-20 md:w-28 md:h-28 rounded-full bg-gradient-to-tr from-[#7F77DD] via-[#A894FF] to-[#14B8A6] p-[2.5px] md:p-[3px] flex items-center justify-center shadow-md transition-transform duration-300 hover:rotate-6">
- <div className="w-full h-full rounded-full bg-white dark:bg-[var(--bg-card)] flex items-center justify-center text-2xl sm:text-3xl md:text-4xl select-none">
- {profileEmoji || "👨‍💻"}
- </div>
- </div>
- </div>
- 
- {/* Right: Bio & Details */}
- <div className="flex-1 min-w-0 space-y-2">
- <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
- <h2 className="text-base sm:text-lg md:text-xl font-bold tracking-tight text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display truncate">{profileName}</h2>
- <div className="flex items-center gap-2">
- <span className="px-2.5 py-0.5 text-[10px] sm:text-xs bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] text-neutral-550 dark:text-[var(--text-secondary)] rounded-full font-semibold shrink-0">
- {profileAge} yrs old
- </span>
- <button 
- onClick={() => {
- navigate("/settings");
- triggerHaptic(15);
- }}
- className="px-2 py-0.5 bg-white dark:bg-[var(--bg-card)] hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] hover:border-neutral-300 dark:border-[var(--border)] text-[#475569] hover:text-[#1e293b] text-[10px] sm:text-xs font-bold rounded-lg transition-colors cursor-pointer shrink-0"
- >
- Settings
- </button>
- </div>
- </div>
- 
- {/* Stats row */}
- <div className="flex items-center gap-4 md:gap-6 text-[11px] sm:text-xs md:text-sm font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] py-0.5">
- <div>
- <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{totalCompletedTasks}</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">done</span>
- </div>
- <div>
- <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{profiles.length}</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">routines</span>
- </div>
- <div>
- <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{completedStreak}d</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">streak</span>
- </div>
- </div>
+   {/* TAB VIEW 4: ROUTINES & SCHEDULE PROFILES */}
+  {activeTab === "routines" && (
+    <div className="flex-1 flex flex-col p-4 pb-24 md:p-6 lg:p-8 h-full overflow-y-auto bg-[var(--bg-page)] text-slate-800 dark:text-[var(--text-primary)] relative">
+      <div className="flex flex-col gap-6 md:gap-8 max-w-4xl mx-auto w-full">
+      
+        {/* Instagram-style Profile Header (Compact on mobile, horizontal row) */}
+        <div className="flex flex-col md:flex-row gap-4 md:gap-6 pb-6 border-b border-[var(--border-strong)] dark:border-[var(--border)] text-left relative">
+          
+          <div className="flex flex-row items-center gap-4 md:gap-6 w-full">
+            {/* Left: Avatar Circle */}
+            <div className="relative group shrink-0">
+              <div className="w-16 h-16 sm:w-20 sm:h-20 md:w-28 md:h-28 rounded-full bg-gradient-to-tr from-[#7F77DD] via-[#A894FF] to-[#14B8A6] p-[2.5px] md:p-[3px] flex items-center justify-center shadow-md transition-transform duration-300 hover:rotate-6">
+                <div className="w-full h-full rounded-full bg-white dark:bg-[var(--bg-card)] flex items-center justify-center text-2xl sm:text-3xl md:text-4xl select-none">
+                  {profileEmoji || "👨‍💻"}
+                </div>
+              </div>
+            </div>
 
- {/* Bio text */}
- <div className="text-[11px] sm:text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] leading-relaxed font-sans max-w-md">
- <p className="font-medium text-[var(--text-primary)] dark:text-[var(--text-primary)]">{profileBio || "Productivity enthusiast."}</p>
- </div>
- </div>
- </div>
+            {/* Stats row next to Avatar (only on mobile) */}
+            <div className="flex-1 flex justify-around md:hidden">
+              <div className="flex flex-col items-center">
+                <span className="font-extrabold text-sm text-[var(--text-primary)] dark:text-[var(--text-primary)]">{totalCompletedTasks}</span>
+                <span className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">done</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span className="font-extrabold text-sm text-[var(--text-primary)] dark:text-[var(--text-primary)]">{profiles.length}</span>
+                <span className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">routines</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span className="font-extrabold text-sm text-[var(--text-primary)] dark:text-[var(--text-primary)]">{completedStreak}d</span>
+                <span className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">streak</span>
+              </div>
+            </div>
+          </div>
+          
+          {/* Right: Bio & Details */}
+          <div className="flex-1 min-w-0 space-y-2">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base sm:text-lg md:text-xl font-bold tracking-tight text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display truncate">{profileName}</h2>
+              <span className="px-2.5 py-0.5 text-[10px] sm:text-xs bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] text-neutral-550 dark:text-[var(--text-secondary)] rounded-full font-semibold shrink-0">
+                {profileAge} yrs old
+              </span>
+            </div>
+            
+            {/* Desktop Stats row (hidden on mobile) */}
+            <div className="hidden md:flex items-center gap-6 text-[11px] sm:text-xs md:text-sm font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] py-0.5">
+              <div>
+                <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{totalCompletedTasks}</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">done</span>
+              </div>
+              <div>
+                <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{profiles.length}</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">routines</span>
+              </div>
+              <div>
+                <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{completedStreak}d</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">streak</span>
+              </div>
+            </div>
+           
+            {/* Bio text */}
+            <div className="text-[11px] sm:text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] leading-relaxed font-sans max-w-md">
+              <p className="font-medium text-[var(--text-primary)] dark:text-[var(--text-primary)]">{profileBio || "Productivity enthusiast."}</p>
+            </div>
+          </div>
+
+          {/* Settings Icon Button in the top right corner */}
+          <button 
+            onClick={() => {
+              navigate("/settings");
+              triggerHaptic(15);
+            }}
+            className="absolute top-0 right-0 p-2 rounded-xl bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 text-[var(--text-secondary)] dark:text-[var(--text-primary)] transition-all cursor-pointer shadow-3xs"
+            title="Settings"
+          >
+            <SettingsIcon className="w-5.5 h-5.5" />
+          </button>
+        </div>
 
  {/* Tab switcher: Routines vs Goals vs Insights */}
  <div className="flex justify-center border-b border-neutral-250/60 pb-px">
@@ -11097,23 +11131,20 @@ Please create the specified number of backlog tasks representing the project pha
  )}
 
  {activeTab === "settings" && (
- <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto bg-[var(--bg-page)] text-slate-800 dark:text-[var(--text-primary)] animate-fade-in">
+    <div className="flex-1 flex flex-col p-4 pb-24 md:p-6 lg:p-8 h-full overflow-y-auto bg-[var(--bg-page)] text-slate-800 dark:text-[var(--text-primary)] animate-fade-in">
  <div className="flex flex-col gap-6 md:gap-8 max-w-2xl mx-auto w-full">
  
  {/* Settings Header */}
- <div className="flex items-center gap-3 pb-6 border-b border-neutral-250/60">
- <button
- onClick={() => navigate("/routines")}
- className="p-2 rounded-xl hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] transition-colors cursor-pointer md:hidden"
- title="Back to Profile"
- >
- <ChevronLeft className="w-5 h-5" />
- </button>
- <div>
- <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display">App Settings</h1>
- <p className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-sans mt-0.5">Customize your profile, active scheduling hours, notifications, and data storage.</p>
- </div>
- </div>
+ <div className="flex items-center gap-2 mb-4">
+          <button
+            onClick={() => navigate("/routines")}
+            className="p-1.5 rounded-xl hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] transition-colors cursor-pointer md:hidden"
+            title="Back to Profile"
+          >
+            <ChevronLeft className="w-6 h-6" />
+          </button>
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display">Settings</h1>
+        </div>
 
  {/* Form Container */}
  <form 
@@ -11470,65 +11501,73 @@ Please create the specified number of backlog tasks representing the project pha
  )}
  </main>
 
- {/* UNIFIED FLOATING ACTION AREA */}
- {activeTab !== "routines" && (
- <div className="absolute md:bottom-6 bottom-[88px] right-4 z-45 flex flex-col gap-2.5 items-end">
- <button
- onClick={handleOpenAICopilot}
- className="bg-primary-gradient hover:opacity-90 text-white pl-4 pr-5 py-3 rounded-full text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display"
- title="Ask DayFlow AI Copilot"
- >
- <Sparkles className="w-5 h-5 fill-white stroke-[2px]" />
- <span>{copilotButtonLabel}</span>
- </button>
- </div>
- )}
+     {/* UNIFIED FLOATING ACTION AREA */}
+  {activeTab !== "routines" && (
+    <div className="absolute md:bottom-6 bottom-[100px] right-4 z-[80] flex flex-row md:flex-col gap-2.5 items-center md:items-end pointer-events-none">
+      {(activeTab === "today" || activeTab === "backlog") && (
+        <button
+          onClick={() => handleOpenAddFlexible(activeTab === "today")}
+          className="w-12 h-12 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-xl shadow-emerald-500/20 active:scale-95 transition-all cursor-pointer border border-emerald-500/20 pointer-events-auto shrink-0 animate-scale-up"
+          title="Add Task"
+        >
+          <Plus className="w-6 h-6 stroke-[2.5px]" />
+        </button>
+      )}
+      <button
+        onClick={handleOpenAICopilot}
+        className="bg-primary-gradient hover:opacity-90 text-white pl-4 pr-5 py-3 rounded-full text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display pointer-events-auto shrink-0"
+        title="Ask DayFlow AI Copilot"
+      >
+        <Sparkles className="w-5 h-5 fill-white stroke-[2px]" />
+        <span>{copilotButtonLabel}</span>
+      </button>
+    </div>
+  )}
 
- {/* BOTTOM NAVIGATION TAB BAR (Floating Pill) */}
- <div className="h-20 flex-shrink-0 md:hidden pointer-events-none" /> {/* Spacer for flex container */}
- <nav id="mobile_sticky_bottom_nav" className="menu fixed bottom-4 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-[60px] bg-[var(--bg-panel)] shadow-2xl shadow-black/15 dark:shadow-black/40 rounded-full grid grid-cols-4 items-center z-45 md:!hidden px-2 border border-[var(--border)]" role="navigation">
- {menuItems.map((item, index) => {
- const isActive = item.value === activeTab;
- const IconComponent = item.icon;
+{/* BOTTOM NAVIGATION TAB BAR (Floating Pill) */}
+ 
+ <nav id="mobile_sticky_bottom_nav" className="menu fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-[64px] bg-[var(--bg-panel)] shadow-2xl shadow-black/15 dark:shadow-black/40 rounded-full grid grid-cols-4 items-center z-[80] md:!hidden px-2 border border-[var(--border)]" role="navigation">
+    {menuItems.map((item, index) => {
+      const isActive = item.value === activeTab;
+      const IconComponent = item.icon;
 
- return (
- <button
- key={item.label}
- className={`menu__item ${isActive ? 'active' : ''}`}
- onClick={() => changeTabWithHaptic(item.value)}
- ref={(el) => { itemRefs.current[index] = el; }}
- >
- <div className="menu__icon">
- <IconComponent className="icon" />
- </div>
- <strong
- className={`menu__text ${isActive ? 'active' : ''}`}
- ref={(el) => { textRefs.current[index] = el; }}
- >
- {item.label}
- </strong>
- {item.value === "backlog" && dashboardStats.backlog > 0 && (
- <span className="absolute top-1 right-2 w-4.5 h-4.5 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center font-mono z-10 shadow-sm border-2 border-white">
- {dashboardStats.backlog}
- </span>
- )}
- </button>
- );
- })}
- </nav>
+      return (
+        <button
+          key={item.label}
+          className={`menu__item ${isActive ? 'active' : ''}`}
+          onClick={() => changeTabWithHaptic(item.value)}
+          ref={(el) => { itemRefs.current[index] = el; }}
+        >
+          <div className="menu__icon">
+            <IconComponent className="icon" />
+          </div>
+          <span
+            ref={(el) => { textRefs.current[index] = el; }}
+            className={`text-[9px] font-bold capitalize tracking-tight mt-0.5 transition-colors duration-200 ${isActive ? 'hidden' : 'inline-block text-[#94A3B8] dark:text-neutral-500'}`}
+          >
+            {item.label}
+          </span>
+          {item.value === "backlog" && dashboardStats.backlog > 0 && (
+            <span className="absolute top-1.5 right-2.5 w-4.5 h-4.5 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center font-mono z-10 shadow-sm border-2 border-white">
+              {dashboardStats.backlog}
+            </span>
+          )}
+        </button>
+      );
+    })}
+  </nav>
 
-
- {/* DYNAMIC BACKDROP SHADE FOR BOTTOM SHEETS */}
+{/* DYNAMIC BACKDROP SHADE FOR BOTTOM SHEETS */}
  {activeBottomSheet && (
  <div 
  onClick={() => setActiveBottomSheet(null)}
- className="absolute inset-0 bg-black/40 z-48 pointer-events-auto transition-opacity animate-fade-in cursor-pointer"
+ className="absolute inset-0 bg-black/40 z-[90] pointer-events-auto transition-opacity animate-fade-in cursor-pointer"
  />
  )}
 
  {/* SHEET 1 — Add/Edit Fixed Block */}
  <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-49 overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "fixed" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
+ className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "fixed" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
  >
  {/* Top drag handle indicator bar */}
  <div className="flex justify-center pb-3">
@@ -11678,7 +11717,7 @@ Please create the specified number of backlog tasks representing the project pha
 
  {/* SHEET 2 — Add/Edit Flexible Task */}
  <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-49 overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "flexible" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
+ className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "flexible" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
  >
  <div className="flex justify-center pb-3">
  <span className="w-10 h-1 bg-neutral-200 dark:bg-[var(--bg-card-hover)] rounded-full" />
@@ -12028,7 +12067,7 @@ Please create the specified number of backlog tasks representing the project pha
  const isCopilotFullScreen = userPromptsCount >= 3 && !copilotMinimized;
  return (
  <div 
- className={`fixed z-49 bg-white dark:bg-[var(--bg-card)] transition-all duration-300 ease-in-out flex flex-col overflow-hidden ${ activeBottomSheet === "assistant" ? "opacity-100 pointer-events-auto translate-x-0 md:translate-x-0" : "opacity-0 pointer-events-none invisible translate-y-10 md:translate-y-0 md:translate-x-full" } ${ isCopilotFullScreen ? "top-0 bottom-0 left-0 right-0 w-full h-full max-h-screen md:max-w-3xl md:left-auto md:right-0 md:top-0 md:bottom-0 md:h-screen md:rounded-l-3xl md:rounded-r-none border border-neutral-200 dark:border-[var(--border)]/80 shadow-2xl p-6" : "bottom-0 left-0 right-0 max-h-[90vh] md:max-h-screen md:h-screen md:top-0 md:bottom-0 md:right-0 md:left-auto md:w-[380px] md:max-w-md md:rounded-l-3xl md:rounded-r-none border border-neutral-200 dark:border-[var(--border)]/80 shadow-2xl p-6 transform " + (activeBottomSheet === "assistant" ? "translate-y-0 md:translate-x-0" : "translate-y-full md:translate-x-full") }`}
+ className={`fixed z-[100] bg-white dark:bg-[var(--bg-card)] transition-all duration-300 ease-in-out flex flex-col overflow-hidden ${ activeBottomSheet === "assistant" ? "opacity-100 pointer-events-auto translate-x-0 md:translate-x-0" : "opacity-0 pointer-events-none invisible translate-y-10 md:translate-y-0 md:translate-x-full" } ${ isCopilotFullScreen ? "top-0 bottom-0 left-0 right-0 w-full h-full max-h-screen md:max-w-3xl md:left-auto md:right-0 md:top-0 md:bottom-0 md:h-screen md:rounded-l-3xl md:rounded-r-none border border-neutral-200 dark:border-[var(--border)]/80 shadow-2xl p-6" : "bottom-0 left-0 right-0 max-h-[90vh] md:max-h-screen md:h-screen md:top-0 md:bottom-0 md:right-0 md:left-auto md:w-[380px] md:max-w-md md:rounded-l-3xl md:rounded-r-none border border-neutral-200 dark:border-[var(--border)]/80 shadow-2xl p-6 transform " + (activeBottomSheet === "assistant" ? "translate-y-0 md:translate-x-0" : "translate-y-full md:translate-x-full") }`}
  >
  {!isCopilotFullScreen && (
  <div className="flex justify-center pb-3">
@@ -12044,7 +12083,7 @@ Please create the specified number of backlog tasks representing the project pha
 
  {/* SHEET 5 — End of Day Review */}
  <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-49 overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "eodreview" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
+ className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "eodreview" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
  >
  <div className="flex justify-center pb-3">
  <span className="w-10 h-1 bg-neutral-200 dark:bg-[var(--bg-card-hover)] rounded-full" />
@@ -12185,7 +12224,7 @@ Please create the specified number of backlog tasks representing the project pha
 
  {/* SHEET 6 — Profile Creator / Editor */}
  <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-49 overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "profile" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
+ className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "profile" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
  >
  <div className="flex justify-center pb-3">
  <span className="w-10 h-1 bg-neutral-200 dark:bg-[var(--bg-card-hover)] rounded-full" />
@@ -12365,7 +12404,7 @@ Please create the specified number of backlog tasks representing the project pha
 
  {/* SHEET 7 — Goal Creator / Editor */}
  <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-49 overflow-y-auto transform transition-all duration-300 ease-out flex flex-col text-slate-800 dark:text-[var(--text-primary)] ${ activeBottomSheet === "goal" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
+ className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col text-slate-800 dark:text-[var(--text-primary)] ${ activeBottomSheet === "goal" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
  >
  <div className="flex justify-center pb-3">
  <span className="w-10 h-1 bg-neutral-200 dark:bg-[var(--bg-card-hover)] rounded-full" />
