@@ -1129,10 +1129,13 @@ export const TodayTab: React.FC<TodayTabProps> = React.memo(({
 
                 // Card border style — monochrome, NO colored left border
                 const isImportantTask = !isFixed && (task?.importance === "important" || task?.importance === "critical");
+                const isShifted = item.status === "shifted";
                 const cardBg = isDone
                   ? "bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-850 opacity-60"
                   : isSkipped || isExpired
                   ? "bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-850 opacity-50"
+                  : isShifted
+                  ? "bg-amber-50/5 dark:bg-amber-950/5 border-amber-800/60 dark:border-amber-700/60 text-neutral-600 dark:text-zinc-400 opacity-70 hover:opacity-90 shadow-sm"
                   : isImportantTask
                   ? "bg-amber-50/20 dark:bg-amber-950/10 border-amber-300 dark:border-amber-900/60 shadow-xs"
                   : isPastUnverified
@@ -1207,9 +1210,9 @@ export const TodayTab: React.FC<TodayTabProps> = React.memo(({
                         transform: `translateX(${translateX}px)`,
                         transition: "transform 0.15s ease",
                       }}
-                      onTouchStart={(e) => handleTouchStart(e, item.id)}
-                      onTouchMove={(e) => handleTouchMove(e, item.id)}
-                      onTouchEnd={(e) => handleTouchEnd(e, item.id)}
+                      onTouchStart={(e) => { if (item.status === "shifted") return; handleTouchStart(e, item.id); }}
+                      onTouchMove={(e) => { if (item.status === "shifted") return; handleTouchMove(e, item.id); }}
+                      onTouchEnd={(e) => { if (item.status === "shifted") return; handleTouchEnd(e, item.id); }}
                       onClick={(e) => {
                         if (isSwipeOpen || translateX !== 0) {
                           e.stopPropagation();
@@ -1218,7 +1221,7 @@ export const TodayTab: React.FC<TodayTabProps> = React.memo(({
                         }
                         toggleExpand(item.id);
                       }}
-                      draggable={!isFixed && !isDone}
+                      draggable={!isFixed && !isDone && item.status !== "shifted"}
                       onDragStart={() => handleDragStart(item.id)}
                       onDragOver={(e) => handleDragOver(e, item.id)}
                       onDrop={(e) => handleDrop(e, item.id)}
@@ -1248,14 +1251,14 @@ export const TodayTab: React.FC<TodayTabProps> = React.memo(({
                                   Active
                                 </span>
                               )}
-                              {isUpNext && (
-                                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 text-zinc-500">
-                                  Next
+                              {item.status === "shifted" && (
+                                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-amber-800/30 bg-amber-500/10 text-amber-800 dark:text-amber-450">
+                                  Shifted Forward
                                 </span>
                               )}
                               {isPastUnverified && (
                                 <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
-                                  Unverified
+                                  Did you do this?
                                 </span>
                               )}
                               {isDone && (
@@ -1271,11 +1274,6 @@ export const TodayTab: React.FC<TodayTabProps> = React.memo(({
                               {isFixed && (
                                 <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 text-zinc-400 flex items-center gap-0.5">
                                   <Lock className="w-2 h-2" /> Locked
-                                </span>
-                              )}
-                              {isPinned && (
-                                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 text-zinc-400">
-                                  Pinned
                                 </span>
                               )}
                             </div>
@@ -1336,7 +1334,11 @@ export const TodayTab: React.FC<TodayTabProps> = React.memo(({
                           {/* Done / Action buttons column */}
                           <div className="flex flex-col items-end gap-2 shrink-0">
                             {/* Check / Uncheck */}
-                            {!isFixed && (
+                            {item.status === "shifted" ? (
+                              <span className="w-7 h-7 flex items-center justify-center text-amber-850 dark:text-amber-500 border border-dashed border-amber-800/40 dark:border-amber-700/40 rounded-full bg-amber-500/5" title="Shifted Forward">
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </span>
+                            ) : !isFixed && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();

@@ -159,9 +159,14 @@ export const BacklogTab: React.FC<BacklogTabProps> = React.memo(({
         </button>
         <button
           onClick={() => setBacklogTab("dropped")}
-          className={`px-4 py-1.5 text-xs font-bold rounded-full transition-all cursor-pointer ${ backlogTab === "dropped" ? "bg-white dark:bg-[var(--bg-card)] text-rose-600 shadow-sm" : "text-neutral-550 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
+          className={`px-4 py-1.5 text-xs font-bold rounded-full transition-all cursor-pointer flex items-center gap-1.5 ${ backlogTab === "dropped" ? "bg-white dark:bg-[var(--bg-card)] text-rose-600 shadow-sm" : "text-neutral-550 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
         >
-          Dropped
+          <span>Dropped</span>
+          {droppedTasks.length > 0 && (
+            <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-full ${backlogTab === "dropped" ? "bg-rose-50 text-rose-600 dark:bg-rose-950/20" : "bg-neutral-200 dark:bg-zinc-800 text-neutral-500 dark:text-zinc-400"}`}>
+              {droppedTasks.length}
+            </span>
+          )}
         </button>
       </div>
 

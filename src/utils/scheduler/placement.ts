@@ -19,7 +19,8 @@ export function generateSchedule(
   mlModel?: TrainedModelWeights,
   behaviorSignals?: BehaviorSignals,
   goals?: UserGoal[],
-  calendarEvents?: CalendarEvent[]
+  calendarEvents?: CalendarEvent[],
+  currentTimeMins?: number
 ): DaySchedule {
   const finalScheduledItems: ScheduledItem[] = [];
   const conflicts: FlexibleTask[] = [];
@@ -46,6 +47,11 @@ export function generateSchedule(
   // Determine actual schedule window
   let windowStartMins = timeToMinutes(dayStartStr);
   const windowEndMins = timeToMinutes(dayEndStr);
+
+  const localTodayStr = new Date().toLocaleDateString("en-CA");
+  if (dateStr === localTodayStr && currentTimeMins !== undefined) {
+    windowStartMins = Math.max(windowStartMins, currentTimeMins);
+  }
 
   // If there is an emergency, we keep everything before the emergency locked/unchanged,
   // and re-evaluate only the timeframe after the emergency.
@@ -135,34 +141,83 @@ export function generateSchedule(
     });
   }
 
-  // 3. Sort candidate Flexible Tasks for scheduling
-  const candidateTasks = flexibleTasks.filter(
-    (t) => (t.status === "scheduled" || t.status === "backlog") && (t.scheduled_date === dateStr || t.scheduled_date === null)
+  // 3. Sort candidate Flexible Tasks for scheduling (include done tasks)
+  const rawCandidates = flexibleTasks.filter(
+    (t) => (t.status === "scheduled" || t.status === "backlog" || t.status === "done") && (t.scheduled_date === dateStr || t.scheduled_date === null)
   );
 
-  // --- STEP 3a: Handle PINNED tasks first (user manually dragged to a specific time) ---
-  const pinnedTasks = candidateTasks.filter(t => t.pinned_start_time);
-  const unpinnedTasks = candidateTasks.filter(t => !t.pinned_start_time);
+  // Guard: Do not schedule multiple backlog tasks with the same title on the same day.
+  // We prioritize pinned tasks first, then tasks explicitly scheduled for this day, then backlog.
+  const candidateTasks: FlexibleTask[] = [];
+  const seenTitlesForDay = new Set<string>();
 
-  for (const task of pinnedTasks) {
-    const taskDuration = getCalibratedTaskDuration(task, activeProfile);
-    const pinnedStartMins = timeToMinutes(task.pinned_start_time!);
-    const pinnedEndMins = pinnedStartMins + taskDuration;
+  const sortedRaw = [...rawCandidates].sort((a, b) => {
+    if (a.pinned_start_time && !b.pinned_start_time) return -1;
+    if (!a.pinned_start_time && b.pinned_start_time) return 1;
+    if (a.scheduled_date === dateStr && b.scheduled_date !== dateStr) return -1;
+    if (a.scheduled_date !== dateStr && b.scheduled_date === dateStr) return 1;
+    return 0;
+  });
 
-    if (pinnedEndMins > windowEndMins || pinnedStartMins < windowStartMins) {
-      conflicts.push(task);
-      continue;
+  for (const task of sortedRaw) {
+    const normTitle = task.title.trim().toLowerCase();
+    if (!seenTitlesForDay.has(normTitle)) {
+      seenTitlesForDay.add(normTitle);
+      candidateTasks.push(task);
+    } else {
+      if (task.scheduled_date === dateStr) {
+        conflicts.push(task);
+      }
     }
+  }
+
+  // Helper: check if a task is recently active or completed in the past
+  const isRecentlyActiveOrPast = (t: FlexibleTask): boolean => {
+    if (!t.scheduled_start_time || currentTimeMins === undefined) return false;
+    const startMins = timeToMinutes(t.scheduled_start_time);
+    const endMins = startMins + (t.predictedDuration || t.duration_minutes);
+    
+    // Active now (current time between start and end)
+    const isActiveNow = currentTimeMins >= startMins && currentTimeMins <= endMins;
+    // Past but by less than 3 hours (180 mins)
+    const isPastRecent = currentTimeMins > endMins && (currentTimeMins - endMins < 180);
+    
+    return isActiveNow || isPastRecent;
+  };
+
+  // --- STEP 3a: Separate Locked, Pinned, and Unpinned tasks ---
+  const lockedTasks: FlexibleTask[] = [];
+  const pinnedTasks: FlexibleTask[] = [];
+  const unpinnedTasks: FlexibleTask[] = [];
+
+  for (const t of candidateTasks) {
+    if (t.status === "done" || (t.scheduled_date === dateStr && isRecentlyActiveOrPast(t))) {
+      lockedTasks.push(t);
+    } else if (t.pinned_start_time) {
+      pinnedTasks.push(t);
+    } else {
+      unpinnedTasks.push(t);
+    }
+  }
+
+  // Helper to place a locked/pinned task at a specific time and split the gaps
+  const placeFixedFlexibleTask = (task: FlexibleTask, targetStartTimeStr: string, isLocked: boolean) => {
+    const taskDuration = task.status === "done" && task.actual_duration_minutes 
+      ? task.actual_duration_minutes 
+      : getCalibratedTaskDuration(task, activeProfile);
+      
+    const startMins = timeToMinutes(targetStartTimeStr);
+    const endMins = startMins + taskDuration;
 
     finalScheduledItems.push({
       id: task.id,
       type: "flexible",
       title: task.title,
-      start_time: task.pinned_start_time!,
-      end_time: minutesToTime(pinnedEndMins),
+      start_time: targetStartTimeStr,
+      end_time: minutesToTime(endMins),
       duration_minutes: taskDuration,
       energy_level: task.energy_level,
-      locked: false,
+      locked: isLocked,
       status: task.status === "backlog" ? "scheduled" : task.status,
       deadline: task.deadline,
       pinned: true,
@@ -171,31 +226,28 @@ export function generateSchedule(
       carry_over_count: task.carry_over_count,
     });
 
-    // Split/trim affected gaps (handles partial and full overlaps robustly)
+    // Split/trim affected gaps
     const newGaps: TimeGap[] = [];
     for (const gap of gaps) {
       const gStart = timeToMinutes(gap.start);
       const gEnd = timeToMinutes(gap.end);
       
-      // No overlap
-      if (gEnd <= pinnedStartMins || gStart >= pinnedEndMins) {
+      if (gEnd <= startMins || gStart >= endMins) {
         newGaps.push(gap);
-      } 
-      // Partial or full overlap
-      else {
-        const before = pinnedStartMins - gStart;
-        const after = gEnd - pinnedEndMins;
+      } else {
+        const before = startMins - gStart;
+        const after = gEnd - endMins;
         
         if (before > 0) {
           newGaps.push({
             start: gap.start,
-            end: minutesToTime(pinnedStartMins),
+            end: minutesToTime(startMins),
             duration_minutes: before
           });
         }
         if (after > 0) {
           newGaps.push({
-            start: minutesToTime(pinnedEndMins),
+            start: minutesToTime(endMins),
             end: gap.end,
             duration_minutes: after
           });
@@ -204,6 +256,19 @@ export function generateSchedule(
     }
     gaps.length = 0;
     gaps.push(...newGaps);
+  };
+
+  // First place all locked tasks (done tasks and active/recent tasks)
+  for (const task of lockedTasks) {
+    const targetStartTime = task.status === "done" 
+      ? (task.actual_start_time || task.pinned_start_time || task.scheduled_start_time || "08:00")
+      : task.scheduled_start_time!;
+    placeFixedFlexibleTask(task, targetStartTime, true);
+  }
+
+  // Next place manually pinned tasks
+  for (const task of pinnedTasks) {
+    placeFixedFlexibleTask(task, task.pinned_start_time!, false);
   }
 
   // --- STEP 3b: Sort unpinned tasks by priority → deadline → energy ---
@@ -457,6 +522,29 @@ export function generateSchedule(
         gaps.splice(gapIndex, 1, ...newGaps);
       }
     }
+  }
+
+  // 6. Find tasks that were shifted out of today's schedule to include them in the visual history list
+  const shiftedTasks = flexibleTasks.filter(
+    (t) => t.original_scheduled_date === dateStr && t.scheduled_date !== dateStr
+  );
+
+  for (const t of shiftedTasks) {
+    finalScheduledItems.push({
+      id: t.id,
+      type: "flexible",
+      title: t.title,
+      start_time: t.scheduled_start_time || "07:00",
+      end_time: t.scheduled_end_time || "08:00",
+      duration_minutes: t.duration_minutes,
+      energy_level: t.energy_level,
+      locked: true,
+      status: "shifted" as any,
+      deadline: t.deadline,
+      task_nature: t.task_nature,
+      carried_over_from: t.carried_over_from,
+      carry_over_count: t.carry_over_count,
+    });
   }
 
   // Sort final items by start_time for sequential list representation

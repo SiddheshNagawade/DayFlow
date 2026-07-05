@@ -93,7 +93,9 @@ import { AuthBanner } from "./components/AuthBanner";
 interface Toast {
  id: string;
  message: string;
- type: "success" | "info" | "warning";
+ type: "success" | "info" | "warning" | "upgrade";
+ showUndo?: boolean;
+ duration?: number;
 }
 
 const triggerHaptic = (pattern: number | number[]) => {
@@ -836,6 +838,89 @@ const DEFAULT_VACATION_BLOCKS: RoutineBlock[] = [
   }
 ];
 
+const ToastItem: React.FC<{ 
+  toast: Toast; 
+  onDismiss: (id: string) => void;
+  onUndo?: () => void;
+}> = ({ toast, onDismiss, onUndo }) => {
+  const [swipeX, setSwipeX] = useState(0);
+  const [isExiting, setIsExiting] = useState(false);
+  const swipeTouchStart = React.useRef(0);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    swipeTouchStart.current = e.touches[0].clientX;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const dx = e.touches[0].clientX - swipeTouchStart.current;
+    setSwipeX(dx);
+  };
+
+  const handleTouchEnd = () => {
+    if (Math.abs(swipeX) > 80) {
+      setSwipeX(swipeX > 0 ? 400 : -400);
+      setIsExiting(true);
+      setTimeout(() => {
+        onDismiss(toast.id);
+      }, 150);
+    } else {
+      setSwipeX(0);
+    }
+  };
+
+  useEffect(() => {
+    const duration = toast.duration || (toast.showUndo ? 6000 : 3500);
+    const timer = setTimeout(() => {
+      setIsExiting(true);
+      setTimeout(() => {
+        onDismiss(toast.id);
+      }, 250);
+    }, duration);
+    return () => clearTimeout(timer);
+  }, [toast, onDismiss]);
+
+  const animationClass = isExiting ? "animate-toast-retract" : "animate-toast-drop";
+
+  return (
+    <div
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      style={{
+        transform: `translateX(${swipeX}px)`,
+        transition: swipeX === 0 ? "transform 0.2s ease" : "none",
+        opacity: Math.max(0, 1 - Math.abs(swipeX) / 250),
+      }}
+      className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-semibold text-white ${animationClass} flex items-start justify-between gap-3 pointer-events-auto select-none cursor-grab active:cursor-grabbing w-full ${ 
+        toast.type === "warning" 
+          ? "bg-amber-600 border-amber-500" 
+          : toast.type === "info" 
+          ? "bg-indigo-600 border-indigo-500" 
+          : toast.type === "upgrade"
+          ? "bg-gradient-to-r from-violet-600 to-emerald-600 border-transparent shadow-2xl"
+          : "bg-emerald-600 border-emerald-500" 
+      }`}
+    >
+      <div className="flex items-start gap-2 flex-1 min-w-0">
+        <Sparkles className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+        <span className="whitespace-pre-wrap flex-1 text-left select-all">{toast.message}</span>
+      </div>
+      {toast.showUndo && onUndo && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onUndo();
+          }}
+          className="px-2 py-1 text-[10px] font-bold bg-white text-indigo-700 rounded-md hover:bg-neutral-100 transition-colors cursor-pointer shrink-0 mt-0.5"
+        >
+          Undo
+        </button>
+      )}
+    </div>
+  );
+};
+
 export default function App() {
   const [user, setUser] = useState<any>(null);
 
@@ -983,7 +1068,8 @@ export default function App() {
         status: "scheduled" as const,
         focus_quality_effort: "struggled" as const,
         delay_count: (t.delay_count || 0) + 1,
-        last_friction_reason: reason
+        last_friction_reason: reason,
+        original_scheduled_date: t.original_scheduled_date || t.scheduled_date || selectedDate
       } : t);
       handleUpdateFlexible(updated);
       showToast("Task moved to tomorrow. Friction logged.", "info");
@@ -1027,11 +1113,20 @@ export default function App() {
     const nowMins = currentTimeMins;
     const dayEndMins = timeToMinutes(appSettings.day_end);
     
-    const todayIncompleteTasks = flexibleTasks.filter(t => 
-      t.scheduled_date === TODAY && 
-      t.status !== "done" && 
-      t.status !== "skipped"
-    );
+    const todayIncompleteTasks = flexibleTasks.filter(t => {
+      if (t.scheduled_date !== TODAY) return false;
+      if (t.status === "done" || t.status === "skipped" || t.status === "expired") return false;
+      
+      // Preserve active tasks and tasks that ended less than 3 hours ago (180 mins)
+      if (t.scheduled_start_time) {
+        const startMins = timeToMinutes(t.scheduled_start_time);
+        const endMins = startMins + (t.predictedDuration || t.duration_minutes);
+        
+        if (nowMins >= startMins && nowMins <= endMins) return false;
+        if (nowMins > endMins && (nowMins - endMins < 180)) return false;
+      }
+      return true;
+    });
 
     if (todayIncompleteTasks.length === 0) {
       showToast("All tasks are already up-to-date!", "success");
@@ -1163,12 +1258,55 @@ export default function App() {
  });
 
  useEffect(() => {
- if (activeTimer) {
- localStorage.setItem("dayflow_active_timer", JSON.stringify(activeTimer));
- } else {
- localStorage.removeItem("dayflow_active_timer");
- }
- }, [activeTimer]);
+    if (activeTimer) {
+      localStorage.setItem("dayflow_active_timer", JSON.stringify(activeTimer));
+    } else {
+      localStorage.removeItem("dayflow_active_timer");
+    }
+  }, [activeTimer]);
+
+  // Backlog Grooming recommendation state for backlog duplicates
+  const [groomingRecommendation, setGroomingRecommendation] = useState<{ title: string; count: number; ids: string[] } | null>(null);
+
+  useEffect(() => {
+    if (flexibleTasks.length === 0) return;
+    if (sessionStorage.getItem("dayflow_backlog_groomed") === "true") return;
+
+    // Find active backlog tasks
+    const backlog = flexibleTasks.filter(t => t.status === "backlog" && (!t.scheduled_date || t.scheduled_date < TODAY));
+    
+    // Group by title
+    const titleGroups: Record<string, FlexibleTask[]> = {};
+    backlog.forEach(t => {
+      const normTitle = t.title.trim().toLowerCase();
+      if (!normTitle) return;
+      if (!titleGroups[normTitle]) titleGroups[normTitle] = [];
+      titleGroups[normTitle].push(t);
+    });
+
+    // Find groups with duplicates
+    for (const [title, group] of Object.entries(titleGroups)) {
+      if (group.length > 1) {
+        // Sort by creation or ID
+        const sorted = [...group].sort((a, b) => {
+          const timeA = a.createdDate ? new Date(a.createdDate).getTime() : 0;
+          const timeB = b.createdDate ? new Date(b.createdDate).getTime() : 0;
+          return timeB - timeA; // newer first
+        });
+
+        // The first one is the active one; the rest are duplicates to drop
+        const toDrop = sorted.slice(1);
+        const ids = toDrop.map(t => t.id);
+
+        setGroomingRecommendation({
+          title: sorted[0].title,
+          count: ids.length,
+          ids
+        });
+        break; // Only show one popup suggestion per session at a time
+      }
+    }
+  }, [flexibleTasks, TODAY]);
 
   // Train/retrain BehaviorModel in-memory
   useEffect(() => {
@@ -1192,6 +1330,43 @@ export default function App() {
       }
     }
   }, [flexibleTasks, behaviorSignals]);
+
+  // Cloud Sync Sign-In Reminder Prompt State
+  const [showSyncPromptModal, setShowSyncPromptModal] = useState(false);
+
+  useEffect(() => {
+    // If user is already signed in, do not prompt
+    if (user) return;
+
+    // Set first launch date if missing
+    let firstLaunch = localStorage.getItem("dayflow_first_launch_date");
+    if (!firstLaunch) {
+      firstLaunch = TODAY;
+      localStorage.setItem("dayflow_first_launch_date", TODAY);
+    }
+
+    const usageDays = Math.round(
+      (new Date(TODAY + "T00:00:00").getTime() - new Date(firstLaunch + "T00:00:00").getTime()) /
+        86400000
+    );
+
+    if (usageDays >= 2) {
+      const lastPrompt = localStorage.getItem("dayflow_last_sync_prompt_date");
+      if (!lastPrompt) {
+        // Never prompted before, and 2 days have passed
+        setShowSyncPromptModal(true);
+      } else {
+        // Alt days prompt check (2 days since last prompt)
+        const daysSincePrompt = Math.round(
+          (new Date(TODAY + "T00:00:00").getTime() - new Date(lastPrompt + "T00:00:00").getTime()) /
+            86400000
+        );
+        if (daysSincePrompt >= 2) {
+          setShowSyncPromptModal(true);
+        }
+      }
+    }
+  }, [user, TODAY]);
 
  const handleStartTimer = (taskId: string, title: string) => {
  if (activeTimer) {
@@ -1532,7 +1707,6 @@ export default function App() {
  } | null>(null);
 
  // Phase 2 insight banner
- const [showPhase2Banner, setShowPhase2Banner] = useState(false);
  const prevPhaseRef = useRef<1 | 2>(1);
 
  // Friction logging state modifiers
@@ -1658,6 +1832,7 @@ export default function App() {
  
  // Toasts state
  const [toasts, setToasts] = useState<Toast[]>([]);
+ const [lastDeletedTask, setLastDeletedTask] = useState<FlexibleTask | null>(null);
 
  // Search/Filters in Backlog
  const [backlogFilter, setBacklogFilter] = useState<"all" | "deadline" | "anytime" | "done">("all");
@@ -3290,14 +3465,16 @@ const payload = {
   return completedCount / yesterdayTasks.length;
   }, [flexibleTasks]);
 
- // Toast Dispatcher Helper
- const showToast = (message: string, type: "success" | "info" | "warning" = "success") => {
- const id = Math.random().toString(36).substring(2, 9);
- setToasts((prev) => [...prev, { id, message, type }]);
- setTimeout(() => {
- setToasts((prev) => prev.filter((t) => t.id !== id));
- }, 3000);
- };
+  // Toast Dispatcher Helper
+  const showToast = (
+    message: string, 
+    type: "success" | "info" | "warning" | "upgrade" = "success", 
+    showUndo: boolean = false,
+    duration?: number
+  ) => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { id, message, type, showUndo, duration }]);
+  };
 
  // Calculate Streak count
  const completedStreak = useMemo(() => {
@@ -3369,7 +3546,7 @@ const payload = {
  thisWeekCount += flexibleTasks.filter(t => t.scheduled_date === str).length;
  }
 
- const backlogCount = flexibleTasks.filter(t => t.scheduled_date === null && t.status !== "done").length;
+ const backlogCount = flexibleTasks.filter(t => t.status === "backlog" && (!t.scheduled_date || t.scheduled_date < TODAY)).length;
 
  return {
  thisWeek: thisWeekCount,
@@ -3412,11 +3589,19 @@ const payload = {
 
  // Detect Phase 1 → Phase 2 transition and show banner
  useEffect(() => {
- if (prevPhaseRef.current === 1 && calibrationProfile.phase === 2) {
- setShowPhase2Banner(true);
- setTimeout(() => setShowPhase2Banner(false), 8000);
- }
- prevPhaseRef.current = calibrationProfile.phase;
+   if (prevPhaseRef.current === 1 && calibrationProfile.phase === 2) {
+     const alreadyShown = localStorage.getItem("dayflow_phase2_toast_shown");
+     if (!alreadyShown) {
+       showToast(
+         "DayFlow just got smarter ✨\n15 tasks completed! Your schedule now uses your personal patterns — peak focus time, real durations, and optimal gaps.",
+         "upgrade",
+         false,
+         8000
+       );
+       localStorage.setItem("dayflow_phase2_toast_shown", "true");
+     }
+   }
+   prevPhaseRef.current = calibrationProfile.phase;
  }, [calibrationProfile.phase]);
 
  const delayPatterns = useMemo(() => {
@@ -3426,22 +3611,49 @@ const payload = {
     const activeRoutines = routineBlocks.filter(r => { const pId = r.profileId || 'regular'; return pId === activeRoutineProfileId && !suspendedTypes.has(r.type); });
 
     return generateSchedule(
-    selectedDate,
-    effectiveFixedBlocks,
-    flexibleTasks,
-    appSettings.day_start,
-    appSettings.day_end,
-    null,
-    60,
-    calibrationProfile,
-    delayPatterns,
-    activeRoutines,
-    mlModel,
-    behaviorSignals,
-    goals,
-    calendarEvents
+      selectedDate,
+      effectiveFixedBlocks,
+      flexibleTasks,
+      appSettings.day_start,
+      appSettings.day_end,
+      null,
+      60,
+      calibrationProfile,
+      delayPatterns,
+      activeRoutines,
+      mlModel,
+      behaviorSignals,
+      goals,
+      calendarEvents,
+      currentTimeMins
     );
-    }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile, delayPatterns, routineBlocks, getSuspendedRoutineTypesForDate, mlModel, behaviorSignals, goals, calendarEvents]);  const hasUnverifiedPastTasks = useMemo(() => {
+  }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile, delayPatterns, routineBlocks, getSuspendedRoutineTypesForDate, mlModel, behaviorSignals, goals, calendarEvents, currentTimeMins]);
+
+  useEffect(() => {
+    if (!daySchedule || !daySchedule.items || daySchedule.items.length === 0) return;
+
+    let needsUpdate = false;
+    const updated = flexibleTasks.map(t => {
+      const scheduledItem = daySchedule.items.find(item => item.id === t.id && item.type === "flexible" && item.status !== "shifted");
+      if (scheduledItem) {
+        if (t.scheduled_start_time !== scheduledItem.start_time || t.scheduled_end_time !== scheduledItem.end_time) {
+          needsUpdate = true;
+          return {
+            ...t,
+            scheduled_start_time: scheduledItem.start_time,
+            scheduled_end_time: scheduledItem.end_time
+          };
+        }
+      }
+      return t;
+    });
+
+    if (needsUpdate) {
+      handleUpdateFlexible(updated);
+    }
+  }, [daySchedule, flexibleTasks]);
+
+  const hasUnverifiedPastTasks = useMemo(() => {
     if (selectedDate !== TODAY) return false;
     return daySchedule.items.some(item => {
       if (item.type === "fixed" || item.status === "done" || item.status === "skipped" || item.status === "expired") return false;
@@ -5747,6 +5959,33 @@ Please create the specified number of backlog tasks representing the project pha
  };
 
 
+ // Schedule task directly to specific date from backlog
+ const handleScheduleTaskToday = (task: FlexibleTask, dateStr?: string) => {
+    const targetDate = dateStr || selectedDate;
+    const updated = flexibleTasks.map((t) => 
+      t.id === task.id ? { 
+        ...t, 
+        scheduled_date: targetDate, 
+        status: "scheduled" as const,
+        field_timestamps: { ...t?.field_timestamps, scheduled_date: new Date().toISOString(), status: new Date().toISOString() }
+      } : t
+    );
+    handleUpdateFlexible(updated);
+    
+    const tomorrowStr = new Date(Date.now() + 86400000).toLocaleDateString("en-CA");
+    const formattedDate = targetDate === TODAY ? "today" : targetDate === tomorrowStr ? "tomorrow" : targetDate;
+    showToast(`"${task.title}" scheduled for ${formattedDate}!`, "success");
+    triggerHaptic(40);
+    
+    if (targetDate === TODAY) {
+      setSelectedDate(TODAY);
+      navigate("/today");
+    } else {
+      setSelectedDate(targetDate);
+      navigate("/calendar");
+    }
+  };
+
  // Web Speech API Voice Dictation
  const handleVoiceInput = () => {
  if (!speechSupported) return;
@@ -5780,16 +6019,7 @@ Please create the specified number of backlog tasks representing the project pha
  recognition.start();
  };
 
- // Schedule task directly to today from backlog
- const handleScheduleTaskToday = (task: FlexibleTask) => {
- const updated = flexibleTasks.map((t) => 
- t.id === task.id ? { ...t, scheduled_date: selectedDate, status: "scheduled" as const } : t
- );
- handleUpdateFlexible(updated);
- showToast(`"${task.title}" slotted to today!`, "success");
- triggerHaptic(40);
- navigate("/today");
- };
+ 
 
  // --- DRAG AND DROP: reorder flexible tasks on the timeline ---
  const handleDragStart = (taskId: string) => {
@@ -6802,12 +7032,25 @@ Please create the specified number of backlog tasks representing the project pha
  triggerHaptic(25);
  };
 
- const handleDeleteFlexible = (id: string) => {
- handleUpdateFlexible(flexibleTasks.filter((t) => t.id !== id));
- setDeletingTaskId(null);
- showToast("Backlog task deleted.", "info");
- triggerHaptic(25);
- };
+  const handleUndoDelete = () => {
+    if (lastDeletedTask) {
+      const updated = [...flexibleTasks, lastDeletedTask];
+      handleUpdateFlexible(updated);
+      showToast(`Restored "${lastDeletedTask.title}"!`, "success");
+      setLastDeletedTask(null);
+    }
+  };
+
+  const handleDeleteFlexible = (id: string) => {
+    const taskToDelete = flexibleTasks.find((t) => t.id === id);
+    if (taskToDelete) {
+      setLastDeletedTask(taskToDelete);
+      handleUpdateFlexible(flexibleTasks.filter((t) => t.id !== id));
+      setDeletingTaskId(null);
+      showToast(`Deleted "${taskToDelete.title}"`, "info", true);
+      triggerHaptic(25);
+    }
+  };
 
  // Navigation Calendar dates helper list
  const nextTwoWeeks = useMemo(() => {
@@ -7861,7 +8104,7 @@ Please create the specified number of backlog tasks representing the project pha
  <div className="space-y-2">
  <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-medium">Did you finish any of these tasks but forget to mark them done?</p>
  <div className="flex flex-wrap gap-2 pt-1">
- {msg.questionnaire.openTaskIds.map((taskId: string) => {
+ {(msg.questionnaire.openTaskIds || []).map((taskId: string) => {
  const task = flexibleTasks.find(t => t.id === taskId);
  if (!task) return null;
  return (
@@ -8222,42 +8465,13 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
 
  {/* Suggestions shortcuts — personalized */}
- {!proposedChanges && !isProcessingCopilot && chatHistory.filter(m => m.sender === "user").length === 0 && (() => {
- const firstName = profileName.split(" ")[0] || "there";
- const todayPending = daySchedule.items
- .filter(i => i.type === "flexible" && i.status !== "done")
- .slice(0, 1);
- const backlogTop = flexibleTasks
- .filter(t => t.status !== "done" && t.scheduled_date === null)
- .slice(0, 1);
- const hour = new Date().getHours();
- const timeGreeting = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
-
- const personalized: string[] = [];
-
- if (hour < 10) {
- personalized.push(`Good morning ${firstName}! Start with my highest priority task`);
- } else if (hour >= 21) {
- personalized.push(`Wrap up my day and summarize what I got done`);
- } else {
- personalized.push(`I'm feeling productive this ${timeGreeting}`);
- }
-
- if (todayPending.length > 0) {
- personalized.push(`I can't do "${todayPending[0].title}" today, move it`);
- } else {
- personalized.push(`I'm lazy/tired. Keep it light today`);
- }
-
- if (backlogTop.length > 0) {
- personalized.push(`Schedule "${backlogTop[0].title}" for me today`);
- } else {
- personalized.push(`Add study session for 2 hours`);
- }
-
- personalized.push(`Postpone my gym/workout to tomorrow`);
- personalized.push(`Create a personalized workout plan for me`);
- personalized.push(`Summarize my day and plan tomorrow`);
+  {!proposedChanges && !isProcessingCopilot && chatHistory.filter(m => m.sender === "user").length === 0 && (() => {
+    const firstName = profileName.split(" ")[0] || "there";
+    const personalized = [
+      "I have uploaded my timetable please make a routine of that",
+      "My mornings are not productive, please keep lighter tasks in the morning",
+      "I want to start a reading habit. Add a session for this in my free time"
+    ];
 
  return (
  <div className="space-y-1.5 flex-shrink-0">
@@ -8422,33 +8636,17 @@ Please create the specified number of backlog tasks representing the project pha
  <div className="absolute bottom-[-20%] right-[-15%] w-[60vw] h-[60vw] md:w-[500px] md:h-[500px] rounded-full bg-emerald-400/5 dark:bg-emerald-600/5 blur-[130px] animate-pulse-slow" style={{ animationDelay: "3s" }}></div>
  </div>
 
- {/* Phase 2 Calibration Upgrade Banner */}
- {showPhase2Banner && (
- <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-sm px-4 pointer-events-none">
- <div className="bg-gradient-to-r from-violet-600 to-emerald-600 text-white rounded-2xl shadow-2xl px-5 py-4 flex items-start gap-3 animate-slide-up border border-transparent">
- <Sparkles className="w-5 h-5 shrink-0 mt-0.5 fill-white/20" />
- <div>
- <p className="text-sm font-bold">DayFlow just got smarter ✨</p>
- <p className="text-xs opacity-90 leading-relaxed mt-0.5">
- 15 tasks completed! Your schedule now uses <strong>your personal patterns</strong> — peak focus time, real durations, and optimal gaps.
- </p>
- </div>
- </div>
- </div>
- )}
-
- {/* Dynamic Toast Container wrapper inside device mockup */}
- <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 pointer-events-none max-w-sm w-full px-4">
- {toasts.map((t) => (
- <div
- key={t.id}
- className={`px-4 py-3 rounded-xl shadow-lg border text-xs font-semibold text-white animate-slide-up flex items-center gap-2 ${ t.type === "warning" ? "bg-amber-600 border-amber-500" : t.type === "info" ? "bg-indigo-600 border-indigo-500" : "bg-emerald-600 border-emerald-500" }`}
- >
- <Sparkles className="w-3.5 h-3.5 shrink-0" />
- <span>{t.message}</span>
- </div>
- ))}
- </div>
+  {/* Dynamic Toast Container wrapper inside device mockup */}
+  <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 pointer-events-none max-w-sm w-full px-4">
+    {toasts.map((t) => (
+      <ToastItem 
+        key={t.id} 
+        toast={t} 
+        onDismiss={(id) => setToasts((prev) => prev.filter((toast) => toast.id !== id))}
+        onUndo={handleUndoDelete}
+      />
+    ))}
+  </div>
 
  {notificationResponseTask && (
  <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 animate-fade-in">
@@ -8766,8 +8964,8 @@ Please create the specified number of backlog tasks representing the project pha
  <ChevronLeft className="w-4.5 h-4.5 text-[#475569] dark:text-zinc-650" />
  </button>
  
- <div className="flex flex-col items-center px-1 text-center select-none min-w-[70px]">
-    <span className="text-[10px] font-bold text-[#475569] dark:text-zinc-400 capitalize leading-tight">
+ <div className="flex flex-col items-center px-1 text-center select-none min-w-[94px]">
+    <span className="text-[14.5px] font-bold text-[#475569] dark:text-zinc-400 capitalize leading-tight">
       {(() => {
         const todayStr = getLocalTodayStr();
         if (selectedDate === todayStr) return "Today";
@@ -8780,7 +8978,7 @@ Please create the specified number of backlog tasks representing the project pha
         return new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" });
       })()}
     </span>
-    <span className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 font-mono mt-0.5 leading-none">
+    <span className="text-[12.5px] font-semibold text-neutral-450 dark:text-neutral-500 font-mono mt-0.5 leading-none">
       {new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
     </span>
   </div>
@@ -9122,7 +9320,7 @@ Please create the specified number of backlog tasks representing the project pha
         {/* Row 2: Let's Chat Button */}
         <div
           style={transitionStyle}
-          className={`w-[104px] h-12 overflow-hidden ${
+          className={`min-w-[104px] w-auto h-12 overflow-hidden ${
             isChatVisible 
               ? "opacity-100 translate-y-0 scale-100 pointer-events-auto" 
               : "opacity-0 translate-y-10 scale-75 pointer-events-none"
@@ -9130,11 +9328,11 @@ Please create the specified number of backlog tasks representing the project pha
         >
           <button
             onClick={handleOpenAICopilot}
-            className="bg-primary-gradient hover:opacity-90 text-white w-[104px] h-12 rounded-2xl text-xs font-bold transition-all shadow-xl shadow-primary/20 flex items-center justify-center gap-1.5 cursor-pointer transform hover:scale-105 active:scale-95 font-display shrink-0"
+            className="bg-primary-gradient hover:opacity-90 text-white min-w-[104px] px-4 h-12 rounded-2xl text-xs font-bold transition-all shadow-xl shadow-primary/20 flex items-center justify-center gap-1.5 cursor-pointer transform hover:scale-105 active:scale-95 font-display shrink-0 whitespace-nowrap"
             title="Ask DayFlow AI Copilot"
           >
             <Sparkles className="w-4 h-4 fill-current stroke-[2px]" />
-            <span>Chat</span>
+            <span>{copilotButtonLabel}</span>
           </button>
         </div>
       </div>
@@ -9561,10 +9759,151 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
  )}
 
- </div>
+   {/* BACKLOG GROOMING ASSISTANT MODAL */}
+  {groomingRecommendation && (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-[999] animate-fade-in">
+      <div className="bg-white dark:bg-[var(--bg-card)] border border-neutral-150 dark:border-[var(--border)] rounded-3xl p-6 max-w-md w-full shadow-2xl flex flex-col gap-4.5 animate-scale-up">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center text-2xl shrink-0">
+            🧹
+          </div>
+          <div>
+            <h3 className="text-md font-bold text-[var(--text-primary)]">Clean Up Your Backlog</h3>
+            <p className="text-[10px] text-[var(--text-tertiary)] uppercase tracking-wider font-semibold font-mono">Backlog Grooming Assistant</p>
+          </div>
+        </div>
+        
+        <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] leading-relaxed">
+          We detected <strong>{groomingRecommendation.count} older duplicate</strong> instances of your task <strong>"{groomingRecommendation.title}"</strong> piling up in your backlog.
+        </p>
+        
+        <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 rounded-2xl text-[11px] flex gap-2 font-medium">
+          <span>💡</span>
+          <span>Shifting backlog duplicates to the <strong>Dropped</strong> tab keeps your active lists focused and prevents the scheduler from piling multiple copies on the same day.</span>
+        </div>
 
- </div>
+        <div className="flex gap-2.5 justify-end mt-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              sessionStorage.setItem("dayflow_backlog_groomed", "true");
+              setGroomingRecommendation(null);
+            }}
+            className="px-4 py-2 border border-neutral-250 dark:border-[var(--border)] text-xs font-bold rounded-xl bg-transparent hover:bg-neutral-50 dark:hover:bg-zinc-800 text-[var(--text-secondary)] dark:text-[var(--text-secondary)] transition-colors cursor-pointer"
+          >
+            Keep Them
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const idsToDrop = new Set(groomingRecommendation.ids);
+              setFlexibleTasks(prev => {
+                const updated = prev.map(t => {
+                  if (idsToDrop.has(t.id)) {
+                    return {
+                      ...t,
+                      status: "skipped" as const,
+                      backlog_shifted_at: new Date().toISOString(),
+                      field_timestamps: {
+                        ...t.field_timestamps,
+                        status: new Date().toISOString()
+                      }
+                    };
+                  }
+                  return t;
+                });
+                saveFlexibleTasks(updated);
+                return updated;
+              });
+              sessionStorage.setItem("dayflow_backlog_groomed", "true");
+              setGroomingRecommendation(null);
+              showToast(`Moved ${groomingRecommendation.count} duplicate tasks to the Dropped tab.`, "success");
+            }}
+            className="px-4 py-2 bg-primary-gradient text-white text-xs font-bold rounded-xl transition-all hover:scale-[1.02] cursor-pointer"
+          >
+            Drop Duplicates
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
 
- </div>
- );
+    {/* CLOUD SIGN IN ENGAGEMENT POPUP */}
+  {showSyncPromptModal && (
+    <div 
+      onClick={() => {
+        localStorage.setItem("dayflow_last_sync_prompt_date", TODAY);
+        setShowSyncPromptModal(false);
+      }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4 animate-fade-in"
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()} // Prevent closing when clicking modal content
+        className="bg-white dark:bg-[var(--bg-card)] border border-neutral-150 dark:border-[var(--border)] rounded-3xl p-6 max-w-sm w-full shadow-2xl text-center space-y-4 animate-scale-up relative"
+      >
+        {/* Close Button X */}
+        <button
+          onClick={() => {
+            localStorage.setItem("dayflow_last_sync_prompt_date", TODAY);
+            setShowSyncPromptModal(false);
+          }}
+          className="absolute top-4 right-4 p-1 rounded-full bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 text-[var(--text-secondary)] dark:text-[var(--text-primary)] cursor-pointer"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        <div className="w-12 h-12 rounded-2xl bg-primary-gradient text-white flex items-center justify-center mx-auto shadow-lg shadow-primary/20 text-xl">
+          ☁️
+        </div>
+        
+        <div className="space-y-1.5">
+          <h3 className="font-display font-black text-lg text-[var(--text-primary)]">Secure Your Focus Flows ☁️</h3>
+          <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] leading-relaxed font-medium">
+            You've been tracking your daily flows for a few days! Backup your tasks, projects, routines, and goals automatically on the cloud to prevent losing data.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2 pt-2">
+          <button
+            type="button"
+            onClick={async () => {
+              localStorage.setItem("dayflow_last_sync_prompt_date", TODAY);
+              setShowSyncPromptModal(false);
+              try {
+                await supabase.auth.signInWithOAuth({
+                  provider: "google",
+                  options: {
+                    redirectTo: window.location.origin
+                  }
+                });
+              } catch (err: any) {
+                console.error("Auth error", err);
+                showToast(err.message || "Failed to initiate sign in", "warning");
+              }
+            }}
+            className="w-full py-3 bg-primary-gradient hover:opacity-95 text-white rounded-2xl text-xs font-bold transition-all shadow-md shadow-primary/10 cursor-pointer"
+          >
+            Sign In with Google
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              localStorage.setItem("dayflow_last_sync_prompt_date", TODAY);
+              setShowSyncPromptModal(false);
+            }}
+            className="w-full py-2.5 bg-transparent hover:bg-neutral-50 dark:hover:bg-zinc-800 text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] rounded-2xl text-xs font-semibold transition-all cursor-pointer"
+          >
+            Continue Offline
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
+
+  </div>
+
+  </div>
+
+  </div>
+  );
 }

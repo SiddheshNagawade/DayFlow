@@ -1,6 +1,6 @@
 export type RepeatType = "daily" | "weekdays" | "custom" | "none";
 export type EnergyLevel = "high" | "medium" | "low";
-export type TaskStatus = "backlog" | "scheduled" | "done" | "skipped" | "expired";
+export type TaskStatus = "backlog" | "scheduled" | "done" | "skipped" | "expired" | "shifted";
 export type ProfileAppliesTo = "weekdays" | "weekends" | "everyday" | "manual";
 
 export interface FixedBlock {
@@ -282,7 +282,7 @@ export interface ScheduledItem {
   duration_minutes: number;
   energy_level?: EnergyLevel;
   locked: boolean;
-  status: "done" | "scheduled" | "fixed" | "skipped" | "expired";
+  status: "done" | "scheduled" | "fixed" | "skipped" | "expired" | "shifted";
   deadline?: string | null;
   pinned?: boolean;       // true when user manually pinned the start time
   color?: string;         // custom color theme for fixed block

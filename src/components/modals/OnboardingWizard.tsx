@@ -206,24 +206,40 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = React.memo(({
 
               <div className="bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-2xl p-4 space-y-3 font-sans">
                 <h4 className="text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">Add Commitment Block</h4>
-                <input
-                  type="text"
-                  placeholder="e.g. Math Class, Office Work, Gym"
-                  value={onboardingForm.title}
-                  onChange={e => setOnboardingForm({ ...onboardingForm, title: e.target.value })}
-                  onKeyDown={e => e.key === "Enter" && handleAddOnboardingBlock()}
-                  className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
-                />
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[9px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider mb-0.5">Start Time</label>
-                    <input type="time" value={onboardingForm.start_time} onChange={e => setOnboardingForm({ ...onboardingForm, start_time: e.target.value })} className="w-full px-2 py-1.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)]" />
+                
+                <div className="flex gap-3 items-end">
+                  <div className="flex-1 space-y-3">
+                    <input
+                      type="text"
+                      placeholder="e.g. Math Class, Office Work, Gym"
+                      value={onboardingForm.title}
+                      onChange={e => setOnboardingForm({ ...onboardingForm, title: e.target.value })}
+                      onKeyDown={e => e.key === "Enter" && handleAddOnboardingBlock()}
+                      className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[9px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider mb-0.5">Start Time</label>
+                        <input type="time" value={onboardingForm.start_time} onChange={e => setOnboardingForm({ ...onboardingForm, start_time: e.target.value })} className="w-full px-2 py-1.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)] font-mono" />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider mb-0.5">End Time</label>
+                        <input type="time" value={onboardingForm.end_time} onChange={e => setOnboardingForm({ ...onboardingForm, end_time: e.target.value })} className="w-full px-2 py-1.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)] font-mono" />
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-[9px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider mb-0.5">End Time</label>
-                    <input type="time" value={onboardingForm.end_time} onChange={e => setOnboardingForm({ ...onboardingForm, end_time: e.target.value })} className="w-full px-2 py-1.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)]" />
-                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleAddOnboardingBlock}
+                    disabled={!onboardingForm.title.trim()}
+                    className="h-[74px] px-3.5 bg-primary text-white hover:bg-primary-dark disabled:opacity-40 rounded-xl text-xs font-bold transition-colors cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm shrink-0 font-display"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add</span>
+                  </button>
                 </div>
+
                 <div className="space-y-1.5">
                   <div className="flex gap-1.5">
                     {(["none", "daily", "weekdays"] as const).map(rep => (
@@ -273,14 +289,6 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = React.memo(({
                     })}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleAddOnboardingBlock}
-                  disabled={!onboardingForm.title.trim()}
-                  className="w-full py-2 bg-primary text-white rounded-lg text-xs font-bold disabled:opacity-40 hover:bg-primary-dark transition-colors cursor-pointer flex items-center justify-center gap-1"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Add Block
-                </button>
               </div>
 
               {onboardingBlocks.length > 0 && (

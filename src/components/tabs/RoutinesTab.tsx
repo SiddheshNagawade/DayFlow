@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "../../utils/supabase";
 import {
   User,
   Settings as SettingsIcon,
@@ -139,6 +140,44 @@ export const RoutinesTab: React.FC<RoutinesTabProps> = React.memo(({
   setReflectionEvents,
   saveReflectionEvents
 }) => {
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      setCurrentUser(user);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setCurrentUser(session?.user || null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleSignIn = async () => {
+    try {
+      await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+    } catch (err: any) {
+      console.error("Auth error", err);
+      showToast(err.message || "Failed to initiate sign in", "warning");
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+      showToast("Signed out successfully", "success");
+    } catch (err: any) {
+      console.error("Sign out error", err);
+      showToast(err.message || "Failed to sign out", "warning");
+    }
+  };
+
   const personalManualInsights = React.useMemo(() => {
     return generatePersonalOperatingManual(flexibleTasks);
   }, [flexibleTasks]);
@@ -435,6 +474,24 @@ export const RoutinesTab: React.FC<RoutinesTabProps> = React.memo(({
             {profileBio && (
               <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed font-sans line-clamp-2">{profileBio}</p>
             )}
+
+            {/* Cloud Sync Status/Action Banner in Profile Page */}
+            <div className="pt-1.5">
+              {currentUser ? (
+                <div className="flex items-center gap-1.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-450 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 max-w-fit font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>Cloud Synced: {currentUser.email}</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSignIn}
+                  className="flex items-center gap-2 text-[10px] bg-primary-gradient hover:opacity-95 text-white px-3 py-1.5 rounded-xl shadow-xs font-bold transition-all hover:scale-[1.02] cursor-pointer"
+                >
+                  <span>☁️ Sign In with Google to Save Data</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>  {/* Tab switcher: Analytics vs Routines vs Projects vs Goals */}
   <div className="flex justify-center border-b border-neutral-200 dark:border-zinc-700/60 pb-px">

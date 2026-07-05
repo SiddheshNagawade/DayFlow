@@ -422,6 +422,22 @@ body {
   animation: slideUp 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+@keyframes slideDownFromTop {
+  from { opacity: 0; transform: translateY(-40px) scale(0.95); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-toast-drop {
+  animation: slideDownFromTop 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.18) forwards;
+}
+
+@keyframes slideUpToTop {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(-40px) scale(0.95); }
+}
+.animate-toast-retract {
+  animation: slideUpToTop 0.28s cubic-bezier(0.6, -0.28, 0.735, 0.045) forwards;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
