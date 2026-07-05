@@ -1,4 +1,18 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+
+import { RoutinesTab } from "./components/tabs/RoutinesTab";
+
+import { BacklogTab } from "./components/tabs/BacklogTab";
+
+import { CalendarTab } from "./components/tabs/CalendarTab";
+
+import { TodayTab } from "./components/tabs/TodayTab";
+import { FlexibleTaskModal } from "./components/modals/FlexibleTaskModal";
+import { SettingsModal } from "./components/modals/SettingsModal";
+import { FixedBlockModal } from "./components/modals/FixedBlockModal";
+import { OnboardingWizard } from "./components/modals/OnboardingWizard";
+import { EodCheckinModal } from "./components/modals/EodCheckinModal";
+import { ProfileModal } from "./components/modals/ProfileModal";
 import { 
  Sparkles, 
  Trash2, 
@@ -61,14 +75,20 @@ import {
  FolderKanban,
  RotateCcw
 } from "lucide-react";
-import { FixedBlock, FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone, WeightEntry, ClassificationResult, TaskCategory, TaskRigidity, TaskRecoverability, TaskDependencyChain, TaskProgressType, DeadlinePressure, TaskConsequence, TaskMeta, ConsequenceIntent, ReflectionEvent, TaskExecutionLog, UBMInsights, AIProposal, ActiveTimer, WeeklyEvalSnapshot, PlanningStyle, FrictionReason, OnboardingProfile, RoutineBlock, PendingQuestion, ParsedCommand, CommandResolution, AIActionExplanation, CalendarEvent, Project, ProjectPhase, ProjectSubtask } from "./types";
-import { generateSchedule, calculateFuturePredictions, timeToMinutes, minutesToTime, isFixedBlockActiveOnDate, calculateCalibrationProfile, simulateDelayCost, getActionRisk } from "./utils/scheduler";
-import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData, loadGoals, saveGoals, loadAchievements, saveAchievements, loadWeightLog, saveWeightLog, loadReflectionEvents, saveReflectionEvents, loadTaskExecutionLogs, saveTaskExecutionLogs } from "./utils/storage";
-import { generateMockMLData, getTaskCategory, detectHighDelayPatterns } from "./utils/mlEngine";
+import { FixedBlock,  FlexibleTask, ScheduledItem, EnergyLevel, RepeatType, ScheduleProfile, ProfileBlock, ProfileAppliesTo, UserGoal, Achievement, GoalCategory, GoalStatus, GoalMilestone, WeightEntry, ClassificationResult, TaskCategory, TaskRigidity, TaskRecoverability, TaskDependencyChain, TaskProgressType, DeadlinePressure, TaskConsequence, TaskMeta, ConsequenceIntent, ReflectionEvent, TaskExecutionLog, UBMInsights, AIProposal, ActiveTimer, WeeklyEvalSnapshot, PlanningStyle, FrictionReason, OnboardingProfile, RoutineBlock, PendingQuestion, ParsedCommand, CommandResolution, AIActionExplanation, CalendarEvent, Project, ProjectPhase, ProjectSubtask, createFieldTimestamps } from "./types";
+import { KnowledgeInsight, KnowledgeCategory } from "./types";
+import { generateSchedule, calculateFuturePredictions, timeToMinutes, minutesToTime, isFixedBlockActiveOnDate, simulateDelayCost, getActionRisk } from "./utils/scheduler";
+import { loadFixedBlocks, saveFixedBlocks, loadFlexibleTasks, saveFlexibleTasks, loadSettings, saveSettings, isOnboardingComplete, markOnboardingComplete, loadProfiles, saveProfiles, clearAllData, loadGoals, saveGoals, loadAchievements, saveAchievements, loadWeightLog, saveWeightLog, loadReflectionEvents, saveReflectionEvents, loadTaskExecutionLogs, saveTaskExecutionLogs, loadProjects, saveProjects, loadCalendarEvents, saveCalendarEvents } from "./utils/storage";
+import { generateMockMLData, getTaskCategory, detectHighDelayPatterns, calculateAdvancedCalibration } from "./utils/mlEngine";
 import { updateGoalProgressFromTask, predictGoalCompletion, generateCheckInPrompt, getGoalsDueForCheckIn, suggestGoalsFromTaskHistory, generateMilestones, checkForGlobalAchievements } from "./utils/goalEngine";
 import { computeBehaviorSignals } from "./utils/patternEngine";
+import { trainBehavioralModel, TrainedModelWeights, predictDurationMultiplier, predictCompletion } from "./utils/BehaviorModel";
 import { buildAICompactContext, buildCopilotScheduleSummary } from "./utils/aiContextBuilder";
 import { checkAndGenerateWeeklySnapshot, loadEvalHistory, getImprovementSummary, logProposedSuggestions, logAcceptedSuggestions } from "./utils/evaluationEngine";
+import { supabase } from "./utils/supabase";
+import { pullCloudData, migrateGuestData, triggerReplay } from "./utils/syncEngine";
+import { AuthBanner } from "./components/AuthBanner";
+
 
 interface Toast {
  id: string;
@@ -719,14 +739,179 @@ const getConsequenceCacheKey = (
  return `${task.id}_${intent}_${delayMins}_${hashVal}`;
 };
 
+
+const DEFAULT_REGULAR_BLOCKS: RoutineBlock[] = [
+  {
+    id: "sleep-regular-morning",
+    title: "💤 Sleep (Morning)",
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "00:00",
+    endTime: "07:00",
+    type: "sleep",
+    rigidity: "hard",
+    profileId: "regular"
+  },
+  {
+    id: "sleep-regular-night",
+    title: "💤 Sleep (Night)",
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "23:00",
+    endTime: "23:59",
+    type: "sleep",
+    rigidity: "hard",
+    profileId: "regular"
+  },
+  {
+    id: "meal-regular-breakfast",
+    title: "🍳 Breakfast",
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "08:00",
+    endTime: "08:30",
+    type: "meal",
+    rigidity: "hard",
+    profileId: "regular"
+  },
+  {
+    id: "meal-regular-lunch",
+    title: "🥪 Lunch",
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "13:00",
+    endTime: "13:45",
+    type: "meal",
+    rigidity: "hard",
+    profileId: "regular"
+  },
+  {
+    id: "meal-regular-dinner",
+    title: "🍽️ Dinner",
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "20:00",
+    endTime: "20:45",
+    type: "meal",
+    rigidity: "hard",
+    profileId: "regular"
+  },
+  {
+    id: "work-regular-study",
+    title: "🎓 Work / Study Session",
+    daysOfWeek: [1, 2, 3, 4, 5],
+    startTime: "09:00",
+    endTime: "17:00",
+    type: "class",
+    rigidity: "soft",
+    profileId: "regular"
+  }
+];
+
+const DEFAULT_VACATION_BLOCKS: RoutineBlock[] = [
+  {
+    id: "sleep-vacation-morning",
+    title: "💤 Sleep (Morning)",
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "00:00",
+    endTime: "09:30",
+    type: "sleep",
+    rigidity: "hard",
+    profileId: "vacation"
+  },
+  {
+    id: "sleep-vacation-night",
+    title: "💤 Sleep (Night)",
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "23:30",
+    endTime: "23:59",
+    type: "sleep",
+    rigidity: "hard",
+    profileId: "vacation"
+  },
+  {
+    id: "relax-vacation-leisure",
+    title: "🌴 Vacation Chill & Relax",
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "11:00",
+    endTime: "18:00",
+    type: "custom",
+    rigidity: "soft",
+    profileId: "vacation"
+  }
+];
+
 export default function App() {
- // 1. Core Application State
- const [fixedBlocks, setFixedBlocks] = useState<FixedBlock[]>([]);
+  const [user, setUser] = useState<any>(null);
+
+  // 1. Core Application State
+  const [fixedBlocks, setFixedBlocks] = useState<FixedBlock[]>([]);
  const [flexibleTasks, setFlexibleTasks] = useState<FlexibleTask[]>([]);
  const [projects, setProjects] = useState<Project[]>([]);
- const [appSettings, setAppSettings] = useState({ day_start: "07:00", day_end: "23:00" });
+ const [appSettings, setAppSettings] = useState<import("./utils/storage").AppSettings>({
+    day_start: "07:00",
+    day_end: "23:00",
+    themeMode: "light"
+  });
+
+  // Routine Profiles
+  const [routineProfiles, setRoutineProfiles] = useState<import("./types").RoutineProfile[]>(() => {
+    try {
+      const stored = localStorage.getItem("dayflow_routine_profiles");
+      if (stored) return JSON.parse(stored);
+    } catch (_) {}
+    return [
+      { id: "regular", name: "Regular", isDefault: true },
+      { id: "vacation", name: "Vacation", isDefault: true }
+    ];
+  });
+
+  const [activeRoutineProfileId, setActiveRoutineProfileId] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem("dayflow_active_routine_profile_id");
+      if (stored) return stored;
+    } catch (_) {}
+    return "regular";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("dayflow_routine_profiles", JSON.stringify(routineProfiles));
+  }, [routineProfiles]);
+
+  useEffect(() => {
+    localStorage.setItem("dayflow_active_routine_profile_id", activeRoutineProfileId);
+  }, [activeRoutineProfileId]);
+
+  // Auto-rollover previous days' incomplete tasks to backlog
+  useEffect(() => {
+    if (flexibleTasks.length === 0) return;
+    
+    const pastStale = flexibleTasks.filter(t => 
+      t.scheduled_date !== null && 
+      t.scheduled_date < TODAY && 
+      t.status !== "done" && 
+      t.status !== "skipped" && 
+      t.status !== "expired"
+    );
+
+    if (pastStale.length > 0) {
+      const nowStr = new Date().toISOString();
+      const updated = flexibleTasks.map(t => {
+        const isStale = pastStale.some(st => st.id === t.id);
+        if (isStale) {
+          return {
+            ...t,
+            status: "backlog" as const,
+            scheduled_date: null,
+            pinned_start_time: undefined,
+            original_scheduled_date: t.scheduled_date || undefined,
+            backlog_shifted_at: nowStr
+          };
+        }
+        return t;
+      });
+      handleUpdateFlexible(updated);
+      showToast(`${pastStale.length} incomplete tasks shifted to backlog.`, "info");
+    }
+  }, [flexibleTasks, TODAY]);
 
   // Behavioral Intervention States
+  const [isAligning, setIsAligning] = useState(false);
   const [selectedFrictionReason, setSelectedFrictionReason] = useState<string | null>(null);
   const [selectedFrictionTags, setSelectedFrictionTags] = useState<string[]>([]);
   const [frictionNotes, setFrictionNotes] = useState<string>("");
@@ -813,21 +998,27 @@ export default function App() {
     if (!task) return;
     const dateKey = task.scheduled_date || TODAY;
     const tasksWithoutOriginal = flexibleTasks.filter(t => t.id !== taskId);
-    const newSubtasks: FlexibleTask[] = subtasks.map((st, sIdx) => ({
-      id: `sub_${taskId}_${sIdx}_${Math.random().toString(36).substr(2, 5)}`,
-      title: st.title,
-      duration_minutes: st.duration,
-      deadline: task.deadline,
-      energy_level: task.energy_level,
-      status: "scheduled" as const,
-      scheduled_date: dateKey,
-      task_nature: "one_time" as const,
-      carry_over_count: 0,
-      delay_count: 0,
-      focus_quality_effort: "good",
-      importance: task.importance || "important",
-      task_flexibility: task.task_flexibility || "movable"
-    }));
+    const newSubtasks: FlexibleTask[] = subtasks.map((st, sIdx) => {
+      const subtask: FlexibleTask = {
+        id: `sub_${taskId}_${sIdx}_${Math.random().toString(36).substr(2, 5)}`,
+        title: st.title,
+        duration_minutes: st.duration,
+        deadline: task.deadline,
+        energy_level: task.energy_level,
+        status: "scheduled" as const,
+        scheduled_date: dateKey,
+        task_nature: "one_time" as const,
+        carry_over_count: 0,
+        delay_count: 0,
+        focus_quality_effort: "good",
+        importance: task.importance || "important",
+        task_flexibility: task.task_flexibility || "movable",
+        schema_version: 1,
+        field_timestamps: {}
+      };
+      subtask.field_timestamps = createFieldTimestamps(subtask);
+      return subtask;
+    });
     const finalTasks = [...tasksWithoutOriginal, ...newSubtasks];
     handleUpdateFlexible(finalTasks);
     showToast("Task successfully split into actionable steps!", "success");
@@ -838,7 +1029,7 @@ export default function App() {
     
     const todayIncompleteTasks = flexibleTasks.filter(t => 
       t.scheduled_date === TODAY && 
-      t.status !== "completed" && 
+      t.status !== "done" && 
       t.status !== "skipped"
     );
 
@@ -847,16 +1038,60 @@ export default function App() {
       return;
     }
 
-    const sortedTasks = [...todayIncompleteTasks].sort((a, b) => {
-      const startA = timeToMinutes(a.scheduled_start_time || "00:00");
-      const startB = timeToMinutes(b.scheduled_start_time || "00:00");
-      return startA - startB;
-    });
+    setIsAligning(true);
+    triggerHaptic(45);
 
-    let availableMins = dayEndMins - nowMins;
-    if (availableMins <= 0) {
-      const updated = flexibleTasks.map(t => {
-        if (t.scheduled_date === TODAY && t.status !== "completed" && t.status !== "skipped") {
+    setTimeout(() => {
+      const sortedTasks = [...todayIncompleteTasks].sort((a, b) => {
+        const startA = timeToMinutes(a.scheduled_start_time || "00:00");
+        const startB = timeToMinutes(b.scheduled_start_time || "00:00");
+        return startA - startB;
+      });
+
+      let availableMins = dayEndMins - nowMins;
+      if (availableMins <= 0) {
+        const updated = flexibleTasks.map(t => {
+          if (t.scheduled_date === TODAY && t.status !== "done" && t.status !== "skipped") {
+            return {
+              ...t,
+              scheduled_date: null,
+              pinned_start_time: undefined,
+              status: "backlog" as const
+            };
+          }
+          return t;
+        });
+        handleUpdateFlexible(updated);
+        showToast("Day end reached. Remaining tasks moved to backlog.", "info");
+        setIsAligning(false);
+        return;
+      }
+
+      let totalDuration = sortedTasks.reduce((sum, t) => sum + t.duration_minutes, 0);
+
+      let shrinkRatio = 1.0;
+      if (totalDuration > availableMins) {
+        shrinkRatio = Math.max(0.7, availableMins / totalDuration);
+      }
+
+      let currentStartMins = nowMins;
+      const updatedTasks = flexibleTasks.map(t => {
+        const isTaskToReschedule = sortedTasks.some(st => st.id === t.id);
+        if (!isTaskToReschedule) return t;
+
+        const originalDuration = t.duration_minutes;
+        const newDuration = Math.round(originalDuration * shrinkRatio);
+
+        if (currentStartMins + newDuration <= dayEndMins) {
+          const startTimeStr = minutesToTime(currentStartMins);
+          currentStartMins += newDuration;
+          return {
+            ...t,
+            duration_minutes: newDuration,
+            pinned_start_time: startTimeStr,
+            focus_quality_effort: "okay" as const
+          };
+        } else {
           return {
             ...t,
             scheduled_date: null,
@@ -864,50 +1099,12 @@ export default function App() {
             status: "backlog" as const
           };
         }
-        return t;
       });
-      handleUpdateFlexible(updated);
-      showToast("Day end reached. Remaining tasks moved to backlog.", "info");
-      return;
-    }
 
-    let totalDuration = sortedTasks.reduce((sum, t) => sum + t.duration_minutes, 0);
-
-    let shrinkRatio = 1.0;
-    if (totalDuration > availableMins) {
-      shrinkRatio = Math.max(0.7, availableMins / totalDuration);
-    }
-
-    let currentStartMins = nowMins;
-    const updatedTasks = flexibleTasks.map(t => {
-      const isTaskToReschedule = sortedTasks.some(st => st.id === t.id);
-      if (!isTaskToReschedule) return t;
-
-      const originalDuration = t.duration_minutes;
-      const newDuration = Math.round(originalDuration * shrinkRatio);
-
-      if (currentStartMins + newDuration <= dayEndMins) {
-        const startTimeStr = minutesToTime(currentStartMins);
-        currentStartMins += newDuration;
-        return {
-          ...t,
-          duration_minutes: newDuration,
-          pinned_start_time: startTimeStr,
-          focus_quality_effort: "okay" as const
-        };
-      } else {
-        return {
-          ...t,
-          scheduled_date: null,
-          pinned_start_time: undefined,
-          status: "backlog" as const
-        };
-      }
-    });
-
-    handleUpdateFlexible(updatedTasks);
-    showToast(`Rescheduled as per remaining time today. Compacted by ${Math.round((1 - shrinkRatio) * 100)}%.`, "success");
-    triggerHaptic(40);
+      handleUpdateFlexible(updatedTasks);
+      showToast(`Rescheduled as per remaining time today. Compacted by ${Math.round((1 - shrinkRatio) * 100)}%.`, "success");
+      setIsAligning(false);
+    }, 600);
   };
 
  // Behavioral Memory States
@@ -945,8 +1142,18 @@ export default function App() {
  return loadEvalHistory();
  }, [flexibleTasks, taskExecutionLogs]);
 
- // Active Timer (Precise In-App Timer)
- const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(() => {
+  // Machine Learning behavior model weights in-memory state
+  const [mlModel, setMlModel] = useState<TrainedModelWeights>({
+    classifierWeights: [],
+    regressorWeights: [],
+    meanAbsoluteError: 0,
+    modelActive: false,
+    trainingSamples: 0
+  });
+  const lastTrainedCompletionsRef = useRef<number>(-1);
+
+  // Active Timer (Precise In-App Timer)
+  const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(() => {
  try {
  const stored = localStorage.getItem("dayflow_active_timer");
  return stored ? JSON.parse(stored) : null;
@@ -955,8 +1162,6 @@ export default function App() {
  }
  });
 
-
-
  useEffect(() => {
  if (activeTimer) {
  localStorage.setItem("dayflow_active_timer", JSON.stringify(activeTimer));
@@ -964,6 +1169,29 @@ export default function App() {
  localStorage.removeItem("dayflow_active_timer");
  }
  }, [activeTimer]);
+
+  // Train/retrain BehaviorModel in-memory
+  useEffect(() => {
+    const completedTasks = flexibleTasks.filter(t => t.status === "done");
+    const numCompleted = completedTasks.length;
+
+    const shouldRetrain = 
+      lastTrainedCompletionsRef.current === -1 || 
+      (numCompleted >= 50 && lastTrainedCompletionsRef.current < 50) || 
+      Math.abs(numCompleted - lastTrainedCompletionsRef.current) >= 10;
+
+    if (shouldRetrain) {
+      const trained = trainBehavioralModel(flexibleTasks, behaviorSignals);
+      setMlModel(trained);
+      lastTrainedCompletionsRef.current = numCompleted;
+
+      // Toast alert when first activated
+      if (trained.modelActive && !localStorage.getItem("dayflow_ml_notified_active")) {
+        localStorage.setItem("dayflow_ml_notified_active", "true");
+        showToast("🎉 Your personal duration model is ready! Predictions now adapt to your history.", "success");
+      }
+    }
+  }, [flexibleTasks, behaviorSignals]);
 
  const handleStartTimer = (taskId: string, title: string) => {
  if (activeTimer) {
@@ -1008,6 +1236,7 @@ export default function App() {
  actual_duration_minutes: durationMinutes,
  completed_at: new Date().toISOString(),
  actual_start_time: startVal,
+ scheduled_date: t.scheduled_date || selectedDate,
  category: t.category || getTaskCategory(t.title),
  duration_log_confidence: confidence,
  duration_log_source: source,
@@ -1240,18 +1469,6 @@ export default function App() {
 
  // Onboarding System 0 States
  const [showOnboarding, setShowOnboarding] = useState(false);
- const [onboardingStep, setOnboardingStep] = useState<"welcome" | "identity" | "sleep" | "fixed">("welcome");
- const [onboardingRole, setOnboardingRole] = useState<"student" | "working" | "freelancer" | "exam_prep">("working");
- const [onboardingSleep, setOnboardingSleep] = useState({ wake: "07:00", sleep: "23:00", energy: "morning" as "morning" | "afternoon" | "night" | "inconsistent" });
- const [onboardingBlocks, setOnboardingBlocks] = useState<FixedBlock[]>([]);
- const [onboardingForm, setOnboardingForm] = useState({
- title: "",
- start_time: "09:00",
- end_time: "10:00",
- repeats: "daily" as RepeatType,
- color: "#E24B4A",
- daysOfWeek: [1, 2, 3, 4, 5] as number[]
- });
 
  // Routine Engine & Deferral States
  const [routineBlocks, setRoutineBlocks] = useState<RoutineBlock[]>(() => {
@@ -1383,7 +1600,7 @@ export default function App() {
     if (currentPath === "/settings") return "routines";
     if (currentPath === "/backlog") return "backlog";
     if (currentPath === "/calendar") return "calendar";
-    if (currentPath === "/routines" || currentPath === "/routines/grid") return "routines";
+    if (currentPath.startsWith("/routines")) return "routines";
     if (currentPath === "/goals" || currentPath === "/routines/goals") return "routines";
     if (currentPath === "/projects" || currentPath === "/routines/projects") return "routines";
     return "today";
@@ -1398,9 +1615,8 @@ export default function App() {
  case "routines":
       if (currentPath === "/goals" || currentPath === "/routines/goals") return "Goals";
       if (currentPath === "/projects" || currentPath === "/routines/projects") return "Projects";
+      if (currentPath === "/settings") return "Settings";
       return "Profile";
- case "settings":
- return "Settings";
  case "today":
  default:
  return "Today";
@@ -1494,6 +1710,7 @@ export default function App() {
 
  const [flexibleForm, setFlexibleForm] = useState({
  title: "",
+ description: "",
  duration_minutes: 60,
  hasDeadline: false,
  deadline: "",
@@ -1719,16 +1936,19 @@ export default function App() {
  }
  msg = `Stopping timer...`;
  } else if (command.action === "add_task") {
- const newTask: FlexibleTask = {
- id: `flex-${Date.now()}`,
- title: command.newTaskTitle!,
- duration_minutes: command.newTaskDuration || 45,
- energy_level: "medium",
- status: "scheduled",
- scheduled_date: selectedDate,
- carry_over_count: 0,
- deadline: null
- };
+    const newTask: FlexibleTask = {
+      id: `flex-${Date.now()}`,
+      title: command.newTaskTitle!,
+      duration_minutes: command.newTaskDuration || 45,
+      energy_level: "medium",
+      status: "scheduled",
+      scheduled_date: selectedDate,
+      carry_over_count: 0,
+      deadline: null,
+      schema_version: 1,
+      field_timestamps: {}
+    };
+    newTask.field_timestamps = createFieldTimestamps(newTask);
  handleUpdateFlexible([newTask]);
  msg = `I've added "${command.newTaskTitle}" (${command.newTaskDuration || 45} min) to your schedule.`;
  } else if (command.action === "delete_task") {
@@ -1947,7 +2167,7 @@ export default function App() {
  }
 
  const addRegex = /^(?:add\s+task|add|create\s+task|create|new\s+task)\s+(.+?)(?:\s+(?:for|duration)\s+(\d+)\s*(?:min|minute|mins|hour|hours|h))?$/i;
- const addMatch = text.match(addRegex);
+  const addMatch = text.match(addRegex);
  if (addMatch && !text.includes("why") && !text.includes("consequence") && !text.includes("negotiate")) {
  const title = addMatch[1].trim();
  let duration = 45;
@@ -2445,7 +2665,7 @@ export default function App() {
  // System 5: Automatically check and update evaluation history snapshots
  useEffect(() => {
  if (flexibleTasks.length > 0 || taskExecutionLogs.length > 0) {
- checkAndGenerateWeeklySnapshot(flexibleTasks, taskExecutionLogs, selectedDate);
+ checkAndGenerateWeeklySnapshot(flexibleTasks, taskExecutionLogs);
  }
  }, [flexibleTasks, taskExecutionLogs, selectedDate]);
 
@@ -2543,6 +2763,122 @@ export default function App() {
  return () => clearInterval(interval);
  }, []);
 
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("Sign out error", err);
+      showToast("Failed to sign out.", "warning");
+    }
+  };
+
+  const syncCloudAndState = async (userId: string) => {
+    const cloudData = await pullCloudData(userId);
+    if (cloudData) {
+      if (cloudData.tasks && cloudData.tasks.length > 0) {
+        setFlexibleTasks(cloudData.tasks);
+        localStorage.setItem("schedule_planner_flexible_tasks", JSON.stringify(cloudData.tasks));
+      }
+      if (cloudData.projects && cloudData.projects.length > 0) {
+        setProjects(cloudData.projects);
+        localStorage.setItem("dayflow_projects", JSON.stringify(cloudData.projects));
+      }
+      if (cloudData.calendar_events && cloudData.calendar_events.length > 0) {
+        setCalendarEvents(cloudData.calendar_events);
+        localStorage.setItem("dayflow_calendar_events", JSON.stringify(cloudData.calendar_events));
+      }
+      if (cloudData.profile) {
+        const prof = cloudData.profile;
+        if (prof.fixed_blocks) {
+          setFixedBlocks(prof.fixed_blocks);
+          localStorage.setItem("schedule_planner_fixed_blocks", JSON.stringify(prof.fixed_blocks));
+        }
+        if (prof.goals) {
+          setGoals(prof.goals);
+          localStorage.setItem("dayflow_goals", JSON.stringify(prof.goals));
+        }
+        if (prof.achievements) {
+          setAchievements(prof.achievements);
+          localStorage.setItem("dayflow_achievements", JSON.stringify(prof.achievements));
+        }
+        if (prof.weight_log) {
+          setWeightLog(prof.weight_log);
+          localStorage.setItem("dayflow_weight_log", JSON.stringify(prof.weight_log));
+        }
+        if (prof.reflections) {
+          setReflectionEvents(prof.reflections);
+          localStorage.setItem("dayflow_reflection_events", JSON.stringify(prof.reflections));
+        }
+        if (prof.settings && Object.keys(prof.settings).length > 0) {
+          setAppSettings(prof.settings);
+          localStorage.setItem("schedule_planner_settings", JSON.stringify(prof.settings));
+        }
+        if (prof.routines?.profiles) {
+          setRoutineProfiles(prof.routines.profiles);
+          localStorage.setItem("dayflow_routine_profiles", JSON.stringify(prof.routines.profiles));
+        }
+        if (prof.routines?.blocks) {
+          setRoutineBlocks(prof.routines.blocks);
+          localStorage.setItem("dayflow_routine_blocks", JSON.stringify(prof.routines.blocks));
+        }
+        if (prof.routines?.active_profile_id) {
+          setActiveRoutineProfileId(prof.routines.active_profile_id);
+          localStorage.setItem("dayflow_active_routine_profile_id", prof.routines.active_profile_id);
+        }
+        if (prof.profile_name) {
+          localStorage.setItem("dayflow_profile_name", prof.profile_name);
+        }
+      }
+      triggerReplay();
+    }
+  };
+
+  // Supabase Auth and Data Sync Listener
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user: currentUser } }) => {
+      if (currentUser) {
+        setUser(currentUser);
+        syncCloudAndState(currentUser.id);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === "SIGNED_IN" && session) {
+        const u = session.user;
+        setUser(u);
+        
+        const migrated = localStorage.getItem("dayflow_migrated_to_cloud") === "true";
+        if (!migrated) {
+          showToast("Syncing your local data to the cloud...", "info");
+          await migrateGuestData(u.id);
+          localStorage.setItem("dayflow_migrated_to_cloud", "true");
+        }
+        await syncCloudAndState(u.id);
+      } else if (event === "SIGNED_OUT") {
+        setUser(null);
+        localStorage.removeItem("dayflow_migrated_to_cloud");
+        // Reload guest mode data from localStorage
+        setFixedBlocks(loadFixedBlocks());
+        setFlexibleTasks(loadFlexibleTasks());
+        setProjects(loadProjects());
+        setAppSettings(loadSettings());
+        setProfiles(loadProfiles());
+        setGoals(loadGoals());
+        setAchievements(loadAchievements());
+        setWeightLog(loadWeightLog());
+        setReflectionEvents(loadReflectionEvents());
+        setTaskExecutionLogs(loadTaskExecutionLogs());
+        setCalendarEvents(loadCalendarEvents());
+        showToast("Switched to local Guest Mode.", "info");
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+
  // Theme Mode Effect
  useEffect(() => {
  const applyTheme = () => {
@@ -2588,7 +2924,7 @@ export default function App() {
  const dateDayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0-6
  
  const suspendedTypes = getSuspendedRoutineTypesForDate(selectedDate);
- const activeRoutines = routineBlocks.filter(r => !suspendedTypes.has(r.type));
+ const activeRoutines = routineBlocks.filter(r => { const pId = r.profileId || 'regular'; return pId === activeRoutineProfileId && !suspendedTypes.has(r.type); });
 
  const hardRoutineFixed: FixedBlock[] = activeRoutines
  .filter(r => r.rigidity === "hard" && r.daysOfWeek.includes(dateDayOfWeek))
@@ -2866,25 +3202,31 @@ export default function App() {
  };
 
  const runAIResolution = async (triggerType: "reflection" | "drift", userNotesVal = "", causeVal = "planning") => {
- setIsProcessingAIReasoning(true);
- try {
- // V3.1: Build compact context — no raw arrays sent to AI
- const backlogTaskCount = flexibleTasks.filter(
- t => t.scheduled_date === null && t.status !== "done"
- ).length;
+  setIsProcessingAIReasoning(true);
+  try {
+    const backlogTaskCount = flexibleTasks.filter(
+      t => t.scheduled_date === null && t.status !== "done"
+    ).length;
 
- const compactContext = buildAICompactContext(
- triggerType,
- behaviorSignals,
- staleTasks,
- daySchedule.items,
- goals,
- triggerType === "drift" ? driftedTask : null,
- backlogTaskCount,
- userNotesVal
- );
+    let knowledgeLayer: KnowledgeInsight[] = [];
+    try {
+      const stored = localStorage.getItem("dayflow_knowledge_layer");
+      if (stored) knowledgeLayer = JSON.parse(stored);
+    } catch (_) {}
 
- const payload = {
+    const compactContext = buildAICompactContext(
+      triggerType,
+      behaviorSignals,
+      staleTasks,
+      daySchedule.items,
+      goals,
+      triggerType === "drift" ? driftedTask : null,
+      backlogTaskCount,
+      userNotesVal,
+      daySchedule.adaptationLogs,
+      knowledgeLayer
+    );
+const payload = {
  trigger: triggerType,
  context: compactContext
  };
@@ -2983,7 +3325,7 @@ export default function App() {
 
   const dailyCoachReflection = useMemo(() => {
     const avoidedTask = [...flexibleTasks]
-      .filter(t => t.scheduled_date === TODAY && t.status !== "completed")
+      .filter(t => t.scheduled_date === TODAY && t.status !== "done")
       .sort((a, b) => {
         const scoreA = (a.delay_count || 0) + (a.carry_over_count || 0);
         const scoreB = (b.delay_count || 0) + (b.carry_over_count || 0);
@@ -3056,11 +3398,12 @@ export default function App() {
 
 
  const calibrationProfile = useMemo(() => {
- const base = calculateCalibrationProfile(flexibleTasks);
- return {
- ...base,
- underestimateRatio: ubmInsights.timeBias
- };
+  const base = calculateAdvancedCalibration(flexibleTasks);
+  return {
+    ...base,
+    underestimateRatio: ubmInsights.timeBias
+  };
+
  }, [flexibleTasks, ubmInsights]);
 
  const calibrationPercentage = useMemo(() => {
@@ -3079,28 +3422,42 @@ export default function App() {
  const delayPatterns = useMemo(() => {
  return detectHighDelayPatterns(flexibleTasks);
  }, [flexibleTasks]);  const daySchedule = useMemo(() => {
-  const suspendedTypes = getSuspendedRoutineTypesForDate(selectedDate);
-  const activeRoutines = routineBlocks.filter(r => !suspendedTypes.has(r.type));
+    const suspendedTypes = getSuspendedRoutineTypesForDate(selectedDate);
+    const activeRoutines = routineBlocks.filter(r => { const pId = r.profileId || 'regular'; return pId === activeRoutineProfileId && !suspendedTypes.has(r.type); });
 
-  return generateSchedule(
-  selectedDate,
-  effectiveFixedBlocks,
-  flexibleTasks,
-  appSettings.day_start,
-  appSettings.day_end,
-  null,
-  60,
-  calibrationProfile,
-  delayPatterns,
-  activeRoutines
-  );
-  }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile, delayPatterns, routineBlocks, getSuspendedRoutineTypesForDate]);  const hasUnverifiedPastTasks = useMemo(() => {
+    return generateSchedule(
+    selectedDate,
+    effectiveFixedBlocks,
+    flexibleTasks,
+    appSettings.day_start,
+    appSettings.day_end,
+    null,
+    60,
+    calibrationProfile,
+    delayPatterns,
+    activeRoutines,
+    mlModel,
+    behaviorSignals,
+    goals,
+    calendarEvents
+    );
+    }, [selectedDate, effectiveFixedBlocks, flexibleTasks, appSettings, calibrationProfile, delayPatterns, routineBlocks, getSuspendedRoutineTypesForDate, mlModel, behaviorSignals, goals, calendarEvents]);  const hasUnverifiedPastTasks = useMemo(() => {
     if (selectedDate !== TODAY) return false;
     return daySchedule.items.some(item => {
       if (item.type === "fixed" || item.status === "done" || item.status === "skipped" || item.status === "expired") return false;
       const endMins = timeToMinutes(item.end_time);
       const nowMins = currentTimeMins;
       return endMins < nowMins;
+    });
+  }, [daySchedule.items, currentTimeMins, selectedDate]);
+
+  const needsReschedulePulse = useMemo(() => {
+    if (selectedDate !== TODAY) return false;
+    return daySchedule.items.some(item => {
+      if (item.type === "fixed" || item.status === "done" || item.status === "skipped" || item.status === "expired") return false;
+      const endMins = timeToMinutes(item.end_time);
+      const nowMins = currentTimeMins;
+      return nowMins - endMins >= 180; // 3 hours = 180 minutes
     });
   }, [daySchedule.items, currentTimeMins, selectedDate]);
 
@@ -3112,13 +3469,15 @@ export default function App() {
  }, [daySchedule?.items, staleTasks, evalHistory, reflectionEvents, weightLog]);
 
  const showReflectionCard = useMemo(() => {
+  // Never show if already reflected today
   if (lastReflectedDate === TODAY) return false;
+  // Never show if no historical context at all
   if (!hasMeaningfulContext) return false;
+  // Never show if no completion rate to reason about
   if (yesterdayCompletionRate === null) return false;
-  const hourNow = new Date().getHours();
+  // Only show if user actually has stale/incomplete tasks — not for successful days
   const hasAnyStaleTasks = staleTasks.length > 0;
-  const isEvening = hourNow >= 18;
-  return hasAnyStaleTasks || isEvening;
+  return hasAnyStaleTasks;
   }, [staleTasks, lastReflectedDate, TODAY, hasMeaningfulContext, yesterdayCompletionRate]);
 
  // These memos depend on daySchedule — must be declared AFTER daySchedule
@@ -3373,9 +3732,12 @@ const futurePredictions = useMemo(() => {
  appSettings.day_start,
  appSettings.day_end,
  selectedDate,
- calibrationProfile
+ calibrationProfile,
+ mlModel,
+ behaviorSignals,
+ calendarEvents
  );
- }, [flexibleTasks, effectiveFixedBlocks, appSettings, selectedDate, calibrationProfile]);
+ }, [flexibleTasks, effectiveFixedBlocks, appSettings, selectedDate, calibrationProfile, mlModel, behaviorSignals, calendarEvents]);
 
 
  // Periodic/On-mount check to remind user to summarize day (after 8 PM/20:00)
@@ -3605,13 +3967,18 @@ const futurePredictions = useMemo(() => {
  setEditingTask(null);
  setClassificationFeedback(null);
  setIsMetadataOpen(false);
+
+ // Prevent scheduling to a past date
+ const defaultDate = (defaultToToday && selectedDate >= TODAY) ? selectedDate : TODAY;
+
  setFlexibleForm({
  title: "",
+ description: "",
  duration_minutes: 45,
  hasDeadline: false,
  deadline: "",
  energy_level: "medium",
- scheduled_date: defaultToToday ? selectedDate : "",
+ scheduled_date: defaultDate,
  importance: "important",
  task_flexibility: "movable",
  category: "personal",
@@ -3635,6 +4002,7 @@ const futurePredictions = useMemo(() => {
 
  setFlexibleForm({
  title: task.title,
+ description: task.description || "",
  duration_minutes: task.duration_minutes,
  hasDeadline: !!task.deadline,
  deadline: task.deadline || "",
@@ -3663,6 +4031,16 @@ const futurePredictions = useMemo(() => {
  const deadlineVal = flexibleForm.hasDeadline ? flexibleForm.deadline : null;
  const energyVal = flexibleForm.energy_level;
  const scheduledDateVal = flexibleForm.scheduled_date || null;
+
+ // Strict validation against past dates
+ if (scheduledDateVal && scheduledDateVal < TODAY) {
+ showToast("Cannot schedule a task for a past date!", "warning");
+ return;
+ }
+ if (deadlineVal && deadlineVal < TODAY) {
+ showToast("Cannot set a deadline in the past!", "warning");
+ return;
+ }
 
  const localResult = classifyTaskLocally(titleVal, "", goals);
  const task_nature = localResult.meta.task_nature || "one_time";
@@ -3694,6 +4072,7 @@ const futurePredictions = useMemo(() => {
  ? { 
  ...t, 
  title: titleVal, 
+ description: flexibleForm.description.trim() || undefined,
  duration_minutes: durationVal, 
  deadline: deadlineVal, 
  energy_level: energyVal,
@@ -3710,24 +4089,28 @@ const futurePredictions = useMemo(() => {
  handleUpdateFlexible(updated);
  showToast("Flexible task updated!", "success");
  } else {
- const newTask: FlexibleTask = {
- id: `flex-${Date.now()}`,
- title: titleVal,
- duration_minutes: durationVal,
- deadline: deadlineVal,
- energy_level: energyVal,
- status: scheduledDateVal ? "scheduled" : "backlog",
- scheduled_date: scheduledDateVal,
- importance: flexibleForm.importance,
- task_flexibility: flexibleForm.task_flexibility,
- task_nature,
- meta,
- blocked_by: flexibleForm.blocked_by,
- blocks: flexibleForm.blocks
- };
- handleUpdateFlexible([...flexibleTasks, newTask]);
- showToast(scheduledDateVal ? `Task added to today's schedule!` : "Task added to backlog!", "success");
- }
+    const newTask: FlexibleTask = {
+      id: `flex-${Date.now()}`,
+      title: titleVal,
+      description: flexibleForm.description.trim() || undefined,
+      duration_minutes: durationVal,
+      deadline: deadlineVal,
+      energy_level: energyVal,
+      status: scheduledDateVal ? "scheduled" : "backlog",
+      scheduled_date: scheduledDateVal,
+      importance: flexibleForm.importance,
+      task_flexibility: flexibleForm.task_flexibility,
+      task_nature,
+      meta,
+      blocked_by: flexibleForm.blocked_by,
+      blocks: flexibleForm.blocks,
+      schema_version: 1,
+      field_timestamps: {}
+    };
+    newTask.field_timestamps = createFieldTimestamps(newTask);
+    handleUpdateFlexible([...flexibleTasks, newTask]);
+    showToast(scheduledDateVal ? `Task added to today's schedule!` : "Task added to backlog!", "success");
+  }
  triggerHaptic(35);
  setActiveBottomSheet(null);
  };
@@ -4770,7 +5153,9 @@ Please create the specified number of backlog tasks representing the project pha
  subtaskId: sub.id,
  task_flexibility: "movable" as const,
  createdDate: todayStr
- };
+ , schema_version: 1, field_timestamps: {} };
+      newFlexTask.field_timestamps = createFieldTimestamps(newFlexTask);
+      
  updatedTasks.push(newFlexTask);
  subtasksScheduledCount++;
  }
@@ -4895,7 +5280,8 @@ Please create the specified number of backlog tasks representing the project pha
  phases: phasesVal,
  totalHoursEstimate: totalHours,
  progress: 0
- };
+ , schema_version: 1, field_timestamps: {} };
+  newProject.field_timestamps = createFieldTimestamps(newProject);
 
  updatedProjects.push(newProject);
  projectsModified = true;
@@ -4915,7 +5301,8 @@ Please create the specified number of backlog tasks representing the project pha
  pinned_start_time: insertImmediately ? minutesToTime(currentTimeMins) : undefined,
  description: newTaskDescription || undefined,
  createdDate: new Date().toISOString().split("T")[0]
- };
+ , schema_version: 1, field_timestamps: {} };
+  newTask.field_timestamps = createFieldTimestamps(newTask);
  updatedFlexible.push(newTask);
  appliedCount++;
  continue;
@@ -4974,6 +5361,18 @@ Please create the specified number of backlog tasks representing the project pha
  appliedCount++;
  continue;
  }
+
+  if (action === "mark_important") {
+    const isFlexTask = taskId?.startsWith("flex-") || taskId?.startsWith("ai-flex-");
+    if (isFlexTask) {
+      updatedFlexible = updatedFlexible.map(t => t.id === taskId ? {
+        ...t,
+        importance: change.importance || "important"
+      } : t);
+      appliedCount++;
+    }
+    continue;
+  }
 
  const isFlex = taskId?.startsWith("flex-") || taskId?.startsWith("ai-flex-");
  const isFixed = taskId?.startsWith("fixed-") || taskId?.startsWith("ai-fixed-") || taskId?.startsWith("profile-");
@@ -5534,7 +5933,7 @@ Please create the specified number of backlog tasks representing the project pha
  setProfiles([]);
  setGoals([]);
  setAchievements([]);
- setAppSettings({ day_start: "07:00", day_end: "23:00" });
+ setAppSettings({ day_start: "07:00", day_end: "23:00", themeMode: "light" });
  setShowOnboarding(true);
  showToast("All data wiped.", "warning");
  triggerHaptic([50, 50, 50]);
@@ -5554,13 +5953,17 @@ Please create the specified number of backlog tasks representing the project pha
  total_routine_profiles: profiles.length,
  total_goals: goals.length,
  achieved_goals: goals.filter(g => g.status === "achieved").length,
- total_achievements: achievements.length
+ total_achievements: achievements.length,
+ total_projects: projects.length,
+ total_calendar_events: calendarEvents.length
  },
  flexible_tasks: flexibleTasks,
  fixed_blocks: fixedBlocks,
  routine_profiles: profiles,
  goals: goals,
- achievements: achievements
+ achievements: achievements,
+ projects: projects,
+ calendar_events: calendarEvents
  };
 
  const dataStr = JSON.stringify(dataToExport, null, 2);
@@ -6289,7 +6692,22 @@ Please create the specified number of backlog tasks representing the project pha
  }
  };
 
- const handleToggleTaskDone = (taskId: string) => {
+  const handleInterventionFeedback = (taskId: string, interventionType: string, wasHelpful: boolean) => {
+    try {
+      const stored = localStorage.getItem("dayflow_intervention_feedback") || "[]";
+      const list = JSON.parse(stored);
+      list.push({
+        taskId,
+        interventionType,
+        wasHelpful,
+        timestamp: Date.now()
+      });
+      localStorage.setItem("dayflow_intervention_feedback", JSON.stringify(list));
+      showToast("Feedback recorded. The model will adjust!", "success");
+    } catch (_) {}
+  };
+
+  const handleToggleTaskDone = (taskId: string) => {
  const matched = flexibleTasks.find(t => t.id === taskId);
  if (!matched) return;
 
@@ -6365,6 +6783,7 @@ Please create the specified number of backlog tasks representing the project pha
  actual_duration_minutes: inferredDuration,
  completed_at: now.toISOString(),
  actual_start_time: startVal,
+  scheduled_date: t.scheduled_date || selectedDate,
  category: t.category || getTaskCategory(t.title),
  } : t
  );
@@ -6813,7 +7232,8 @@ Please create the specified number of backlog tasks representing the project pha
  importance: task.importance,
  task_flexibility: task.task_flexibility,
  meta: task.meta
- };
+ , schema_version: 1, field_timestamps: {} };
+  newTask.field_timestamps = createFieldTimestamps(newTask);
  
  handleUpdateFlexible([...updatedTasks, newTask]);
  showToast(`Split into two ${chunk1}m & ${chunk2}m chunks. Part 2 sent to backlog!`, "success");
@@ -6877,27 +7297,157 @@ Please create the specified number of backlog tasks representing the project pha
  }
  }, [flexibleTasks, handleUpdateFlexible, findFirstSuitableGap, handleMarkPartial, handleSplitTask, daySchedule.items, handleOpenAICopilot]);
 
- // Onboarding handlers
- const handleAddOnboardingBlock = () => {
- if (!onboardingForm.title.trim()) return;
- const block: FixedBlock = {
- id: `onb-${Date.now()}`,
- title: onboardingForm.title.trim(),
- start_time: onboardingForm.start_time,
- end_time: onboardingForm.end_time,
- repeats: onboardingForm.repeats,
- locked: true,
- date: TODAY,
- color: onboardingForm.color,
- daysOfWeek: onboardingForm.daysOfWeek
- };
- setOnboardingBlocks(prev => [...prev, block]);
- setOnboardingForm({ title: "", start_time: "09:00", end_time: "10:00", repeats: "daily", color: "#E24B4A", daysOfWeek: [1, 2, 3, 4, 5] });
- };
+  const fetchDailyPlan = async (task: import("./types").FlexibleTask, forDate: string): Promise<string | null> => {
+    if (task.daily_plan && task.daily_plan_generated_date === forDate) {
+      return task.daily_plan;
+    }
+    try {
+      const startHour = task.scheduled_start_time
+        ? parseInt(task.scheduled_start_time.split(":")[0], 10)
+        : new Date().getHours();
+      const timeOfDay = startHour < 12 ? "morning" : startHour < 17 ? "afternoon" : "evening";
+      const prevPlans: string[] = [];
+      if (task.description) {
+        const prevLines = task.description.split("\n").filter((l: string) => l.startsWith("Previously ("));
+        prevPlans.push(...prevLines.map((l: string) => l.replace(/^Previously \([^)]+\): /, "")));
+      }
+      const res = await fetch("/api/daily-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskTitle: task.title,
+          taskDescription: task.description || "",
+          durationMinutes: task.duration_minutes,
+          timeOfDay,
+          previousPlans: prevPlans,
+        }),
+      });
+      if (!res.ok) throw new Error("daily-plan API failed");
+      const data = await res.json();
+      const planText = ((data.steps as string[]) || []).join("\n");
+      return planText;
+    } catch {
+      return task.description || null;
+    }
+  };
 
- const handleRemoveOnboardingBlock = (id: string) => {
- setOnboardingBlocks(prev => prev.filter(b => b.id !== id));
- };
+  const handleCompleteOnboarding = (
+    role: string,
+    sleep: { wake: string; sleep: string; energy: string },
+    blocks: FixedBlock[]
+  ) => {
+    const profile: OnboardingProfile = {
+      completed: true,
+      sleep_start: sleep.wake,
+      sleep_end: sleep.sleep,
+      energy_pattern: sleep.energy as any,
+      goals: [],
+      struggles: [],
+      planning_style: "underestimate",
+      role: role as any
+    };
+    localStorage.setItem("dayflow_onboarding_profile", JSON.stringify(profile));
+
+    // Save sleep settings
+    const newSettings = { day_start: sleep.wake, day_end: sleep.sleep, themeMode: appSettings.themeMode || ("light" as const) };
+    setAppSettings(newSettings);
+    saveSettings(newSettings);
+
+    // Save routines/fixed commitments
+    handleUpdateFixed(blocks);
+
+    // Setup pending questions queue
+    const initialPending: PendingQuestion[] = [
+      {
+        id: "goals",
+        question: "What is your primary goal for the next 30 days? (e.g. gym streak, study hours, project launch)",
+        priority: "high"
+      },
+      {
+        id: "struggles",
+        question: "What is your biggest daily struggle? (e.g. procrastination, low energy, distraction, overplanning)",
+        priority: "medium"
+      },
+      {
+        id: "habits",
+        question: "Are there any daily habits you want me to help you schedule and maintain? (e.g. reading, meditation)",
+        priority: "low"
+      }
+    ];
+
+    // Pop the first question to inject in the welcome greeting
+    const firstQ = initialPending[0];
+    const remainingPending = initialPending.slice(1);
+    setPendingQuestions(remainingPending);
+    localStorage.setItem("dayflow_pending_questions", JSON.stringify(remainingPending));
+    setInjectedQuestionThisSession(true);
+
+    // Create the welcome greeting
+    const greeting = `Welcome to DayFlow! 🚀 I'm your Day Coach.\n\nI've configured your base profile as a **${role}** with wake hours **${sleep.wake} - ${sleep.sleep}**.\n\nTo start off, let me ask: ${firstQ.question}`;
+    setChatHistory([{ sender: "ai", text: greeting }]);
+    
+    // Auto-open Day Coach
+    setCopilotInput("");
+    setCopilotError(null);
+    setProposedChanges(null);
+    setCopilotMinimized(false);
+    setActiveBottomSheet("assistant");
+
+    markOnboardingComplete();
+    setShowOnboarding(false);
+    showToast("Setup complete! Your execution coach is ready.", "success");
+    triggerHaptic([30, 20, 30]);
+  };
+
+  const handleSkipOnboarding = () => {
+    const profile: OnboardingProfile = {
+      completed: true,
+      sleep_start: "07:00",
+      sleep_end: "23:00",
+      energy_pattern: "morning",
+      goals: [],
+      struggles: [],
+      planning_style: "underestimate",
+      role: "working"
+    };
+    localStorage.setItem("dayflow_onboarding_profile", JSON.stringify(profile));
+    
+    const initialPending: PendingQuestion[] = [
+      {
+        id: "goals",
+        question: "What is your primary goal for the next 30 days? (e.g. gym streak, study hours, project launch)",
+        priority: "high"
+      },
+      {
+        id: "struggles",
+        question: "What is your biggest daily struggle? (e.g. procrastination, low energy, distraction, overplanning)",
+        priority: "medium"
+      },
+      {
+        id: "habits",
+        question: "Are there any daily habits you want me to help you schedule and maintain? (e.g. reading, meditation)",
+        priority: "low"
+      }
+    ];
+    
+    const firstQ = initialPending[0];
+    const remainingPending = initialPending.slice(1);
+    setPendingQuestions(remainingPending);
+    localStorage.setItem("dayflow_pending_questions", JSON.stringify(remainingPending));
+    setInjectedQuestionThisSession(true);
+
+    const greeting = `Welcome to DayFlow! 🚀 I'm your Day Coach.\n\nI've configured your base profile as a **working** professional with wake hours **07:00 - 23:00**.\n\nTo start off, let me ask: ${firstQ.question}`;
+    setChatHistory([{ sender: "ai", text: greeting }]);
+    
+    setCopilotInput("");
+    setCopilotError(null);
+    setProposedChanges(null);
+    setCopilotMinimized(false);
+    setActiveBottomSheet("assistant");
+
+    markOnboardingComplete();
+    setShowOnboarding(false);
+  };
 
  const handleSaveRoutineBlock = () => {
  if (!routineBlockForm.title.trim()) return;
@@ -6953,6 +7503,17 @@ Please create the specified number of backlog tasks representing the project pha
  showToast("Routine block deleted.", "info");
  };
 
+ if (showOnboarding) {
+    return (
+      <OnboardingWizard
+        isOpen={showOnboarding}
+        TODAY={TODAY}
+        onComplete={handleCompleteOnboarding}
+        onSkip={handleSkipOnboarding}
+      />
+    );
+  }
+
  const toggleDayInRoutineBlockForm = (dayNum: number) => {
  setRoutineBlockForm(prev => {
  const exists = prev.daysOfWeek.includes(dayNum);
@@ -6962,422 +7523,6 @@ Please create the specified number of backlog tasks representing the project pha
  return { ...prev, daysOfWeek: days };
  });
  };
-
- const handleCompleteOnboarding = () => {
- const profile: OnboardingProfile = {
- completed: true,
- sleep_start: onboardingSleep.wake,
- sleep_end: onboardingSleep.sleep,
- energy_pattern: onboardingSleep.energy,
- goals: [],
- struggles: [],
- planning_style: "underestimate",
- role: onboardingRole
- };
- localStorage.setItem("dayflow_onboarding_profile", JSON.stringify(profile));
-
- // Save sleep settings
- const newSettings = { day_start: onboardingSleep.wake, day_end: onboardingSleep.sleep };
- setAppSettings(newSettings);
- saveSettings(newSettings);
-
- // Save routines/fixed commitments
- handleUpdateFixed(onboardingBlocks);
-
- // Setup pending questions queue
- const initialPending: PendingQuestion[] = [
- {
- id: "goals",
- question: "What is your primary goal for the next 30 days? (e.g. gym streak, study hours, project launch)",
- priority: "high"
- },
- {
- id: "struggles",
- question: "What is your biggest daily struggle? (e.g. procrastination, low energy, distraction, overplanning)",
- priority: "medium"
- },
- {
- id: "habits",
- question: "Are there any daily habits you want me to help you schedule and maintain? (e.g. reading, meditation)",
- priority: "low"
- }
- ];
-
- // Pop the first question to inject in the welcome greeting
- const firstQ = initialPending[0];
- const remainingPending = initialPending.slice(1);
- setPendingQuestions(remainingPending);
- localStorage.setItem("dayflow_pending_questions", JSON.stringify(remainingPending));
- setInjectedQuestionThisSession(true);
-
- // Create the welcome greeting
- const greeting = `Welcome to DayFlow! 🚀 I'm your Day Coach.\n\nI've configured your base profile as a **${onboardingRole}** with wake hours **${onboardingSleep.wake} - ${onboardingSleep.sleep}**.\n\nTo start off, let me ask: ${firstQ.question}`;
- setChatHistory([{ sender: "ai", text: greeting }]);
- 
- // Auto-open Day Coach
- setCopilotInput("");
- setCopilotError(null);
- setProposedChanges(null);
- setCopilotMinimized(false);
- setActiveBottomSheet("assistant");
-
- markOnboardingComplete();
- setShowOnboarding(false);
- showToast("Setup complete! Your execution coach is ready.", "success");
- triggerHaptic([30, 20, 30]);
- };
-
- const handleSkipOnboarding = () => {
- const profile: OnboardingProfile = {
- completed: true,
- sleep_start: "07:00",
- sleep_end: "23:00",
- energy_pattern: "morning",
- goals: [],
- struggles: [],
- planning_style: "underestimate",
- role: "working"
- };
- localStorage.setItem("dayflow_onboarding_profile", JSON.stringify(profile));
- 
- const initialPending: PendingQuestion[] = [
- {
- id: "goals",
- question: "What is your primary goal for the next 30 days? (e.g. gym streak, study hours, project launch)",
- priority: "high"
- },
- {
- id: "struggles",
- question: "What is your biggest daily struggle? (e.g. procrastination, low energy, distraction, overplanning)",
- priority: "medium"
- },
- {
- id: "habits",
- question: "Are there any daily habits you want me to help you schedule and maintain? (e.g. reading, meditation)",
- priority: "low"
- }
- ];
- 
- const firstQ = initialPending[0];
- const remainingPending = initialPending.slice(1);
- setPendingQuestions(remainingPending);
- localStorage.setItem("dayflow_pending_questions", JSON.stringify(remainingPending));
- setInjectedQuestionThisSession(true);
-
- const greeting = `Welcome to DayFlow! 🚀 I'm your Day Coach.\n\nI've configured your base profile as a **working** professional with wake hours **07:00 - 23:00**.\n\nTo start off, let me ask: ${firstQ.question}`;
- setChatHistory([{ sender: "ai", text: greeting }]);
- 
- setCopilotInput("");
- setCopilotError(null);
- setProposedChanges(null);
- setCopilotMinimized(false);
- setActiveBottomSheet("assistant");
-
- markOnboardingComplete();
- setShowOnboarding(false);
- };
-
- if (showOnboarding) {
- const steps = ["welcome", "identity", "sleep", "fixed"] as const;
- const currentStepIdx = steps.indexOf(onboardingStep);
- 
- return (
- <div className="h-[100dvh] w-screen bg-gradient-to-br from-[#F0EFFE] via-[#F8F9FA] to-[#E8F5EF] dark:from-[#0d0c15] dark:via-[#09090b] dark:to-[#05110d] flex items-center justify-center p-4 overflow-hidden z-50 relative select-none">
- {/* Ambient blobs */}
- <div className="absolute inset-0 -z-10 overflow-hidden pointer-events-none">
- <div className="absolute top-[-10%] left-[-10%] w-[55%] h-[55%] rounded-full bg-violet-400/15 blur-[120px] animate-pulse" />
- <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] rounded-full bg-emerald-400/10 blur-[150px] animate-pulse" style={{ animationDelay: "2s" }} />
- </div>
-
- <div className="w-full max-w-lg bg-[var(--bg-card)] border border-transparent dark:border-[var(--border)]/40 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
- {/* Header Progress Indicators */}
- {onboardingStep !== "welcome" && (
- <div className="px-6 pt-5 pb-3 bg-[var(--bg-card)] border-b border-[var(--border)] dark:border-[var(--border)] dark:border-zinc-850 shrink-0">
- <div className="flex items-center justify-between text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest mb-2">
- <span>Setup Progress</span>
- <span>Step {currentStepIdx} of {steps.length - 1}</span>
- </div>
- <div className="h-1.5 bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] rounded-full flex overflow-hidden">
- {steps.slice(1).map((s, idx) => (
- <div 
- key={s} 
- className={`flex-1 h-full border-r border-white dark:border-zinc-900 last:border-0 transition-all duration-300 ${ idx < currentStepIdx ? "bg-primary" : "bg-neutral-200 " }`} 
- />
- ))}
- </div>
- </div>
- )}
-
- {/* Dynamic Step Content */}
- <div className="flex-1 overflow-y-auto p-6 space-y-6 text-left">
- {onboardingStep === "welcome" && (
- <div className="flex flex-col items-center text-center gap-5 py-4">
- <div className="w-16 h-16 rounded-2xl bg-primary flex items-center justify-center shadow-lg shadow-primary/25">
- <Sparkles className="w-8 h-8 text-white fill-white/10" />
- </div>
- <div className="space-y-2">
- <h1 className="font-display font-black text-2xl text-[var(--text-primary)] dark:text-[var(--text-primary)] dark:text-[var(--text-primary)] tracking-tight">Meet DayFlow</h1>
- <span className="inline-block text-[11px] font-bold bg-primary/10 text-primary px-2.5 py-0.5 rounded-full uppercase tracking-wider font-mono">Behavioral Execution Coach</span>
- <p className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] leading-relaxed max-w-sm mx-auto">
- Traditional planners ask you to schedule tasks. DayFlow learns how you *actually* execute them, intervening to reduce resistance and prevent slips.
- </p>
- </div>
- </div>
- )}
-
- {onboardingStep === "identity" && (
- <div className="space-y-5">
- <div className="space-y-1">
- <h2 className="font-display font-black text-lg text-[var(--text-primary)] dark:text-[var(--text-primary)] dark:text-[var(--text-primary)]">What is your primary role?</h2>
- <p className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">Select your current profile to help tailor advice.</p>
- </div>
-
- <div className="grid grid-cols-1 gap-2.5">
- {[
- { id: "student", label: "🎓 Student", desc: "Classes, exams, assignment prep, lectures" },
- { id: "working", label: "💼 Working Professional", desc: "Meetings, structured work, routine daily tasks" },
- { id: "freelancer", label: "💻 Freelancer / Builder", desc: "Self-directed work, coding projects, client milestones" },
- { id: "exam_prep", label: "📝 Exam Prep / General", desc: "Intense self-study, study streaks, structured timeline" }
- ].map(opt => {
- const isSelected = onboardingRole === opt.id;
- return (
- <button
- key={opt.id}
- type="button"
- onClick={() => setOnboardingRole(opt.id as any)}
- className={`p-4 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between gap-3 ${ isSelected ? "bg-primary/5 border-primary text-primary" : "bg-white dark:bg-[var(--bg-card)] dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 text-neutral-700 dark:text-[var(--text-primary)] border-neutral-200 dark:border-[var(--border)]/80 dark:border-[var(--border)]" }`}
- >
- <div className="space-y-0.5">
- <span className="text-xs font-bold block">{opt.label}</span>
- <span className={`text-[10px] leading-relaxed block ${isSelected ? "text-primary/70" : "text-neutral-455 dark:text-[var(--text-secondary)]"}`}>{opt.desc}</span>
- </div>
- <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${ isSelected ? "border-primary bg-primary" : "border-neutral-300 dark:border-[var(--border)] bg-white dark:bg-[var(--bg-card)]" }`}>
- {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-white dark:bg-[var(--bg-card)]" />}
- </div>
- </button>
- );
- })}
- </div>
- </div>
- )}
-
- {onboardingStep === "sleep" && (
- <div className="space-y-5">
- <div className="space-y-1">
- <h2 className="font-display font-black text-lg text-[var(--text-primary)] dark:text-[var(--text-primary)]">Sleep & Energy Profile</h2>
- <p className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">Establishing your baseline wake hours helps place slots.</p>
- </div>
- 
- <div className="grid grid-cols-2 gap-4">
- <div className="space-y-1.5">
- <label className="block text-xs font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider">Wake Up Time</label>
- <input 
- type="time" 
- value={onboardingSleep.wake} 
- onChange={e => setOnboardingSleep({ ...onboardingSleep, wake: e.target.value })} 
- className="w-full px-3 py-2.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-sm bg-white dark:bg-[var(--bg-card)] font-mono focus:outline-none focus:ring-1 focus:ring-primary" 
- />
- </div>
- <div className="space-y-1.5">
- <label className="block text-xs font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider">Sleep/Winddown</label>
- <input 
- type="time" 
- value={onboardingSleep.sleep} 
- onChange={e => setOnboardingSleep({ ...onboardingSleep, sleep: e.target.value })} 
- className="w-full px-3 py-2.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-sm bg-white dark:bg-[var(--bg-card)] font-mono focus:outline-none focus:ring-1 focus:ring-primary" 
- />
- </div>
- </div>
-
- <div className="space-y-2">
- <label className="block text-xs font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider">When do you feel best?</label>
- <p className="text-[10px] text-[var(--text-tertiary)]">Warm-starts the circadian rhythm focus peaks model.</p>
- <div className="grid grid-cols-2 gap-2">
- {[
- { key: "morning", label: "☀️ Morning Focus", desc: "Best work before lunch" },
- { key: "afternoon", label: "🌤 Afternoon Drive", desc: "Peak from 1 PM to 5 PM" },
- { key: "night", label: "🌙 Night Owl Focus", desc: "Productive after dinner" },
- { key: "inconsistent", label: "🌀 Inconsistent", desc: "Varies day-to-day" }
- ].map(opt => (
- <button
- key={opt.key}
- onClick={() => setOnboardingSleep({ ...onboardingSleep, energy: opt.key as any })}
- className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col gap-0.5 ${ onboardingSleep.energy === opt.key ? "bg-primary/5 border-primary text-primary" : "bg-white dark:bg-[var(--bg-card)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] text-neutral-700 dark:text-[var(--text-primary)] border-neutral-200 dark:border-[var(--border)]" }`}
- >
- <span className="text-xs font-bold">{opt.label}</span>
- <span className={`text-[10px] ${onboardingSleep.energy === opt.key ? "text-primary/70" : "text-neutral-450 dark:text-[var(--text-secondary)]"}`}>{opt.desc}</span>
- </button>
- ))}
- </div>
- </div>
- </div>
- )}
-
- {onboardingStep === "fixed" && (
- <div className="space-y-5">
- <div className="space-y-1">
- <h2 className="font-display font-black text-lg text-[var(--text-primary)] dark:text-[var(--text-primary)]">Fixed Commitments</h2>
- <p className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">Lock down hours you cannot schedule tasks in (classes, office, routines).</p>
- </div>
-
- <div className="bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-2xl p-4 space-y-3 font-sans">
- <h4 className="text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">Add Commitment Block</h4>
- <input
- type="text"
- placeholder="e.g. Math Class, Office Work, Gym"
- value={onboardingForm.title}
- onChange={e => setOnboardingForm({ ...onboardingForm, title: e.target.value })}
- onKeyDown={e => e.key === "Enter" && handleAddOnboardingBlock()}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- />
- <div className="grid grid-cols-2 gap-2">
- <div>
- <label className="block text-[9px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider mb-0.5">Start Time</label>
- <input type="time" value={onboardingForm.start_time} onChange={e => setOnboardingForm({ ...onboardingForm, start_time: e.target.value })} className="w-full px-2 py-1.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)]" />
- </div>
- <div>
- <label className="block text-[9px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider mb-0.5">End Time</label>
- <input type="time" value={onboardingForm.end_time} onChange={e => setOnboardingForm({ ...onboardingForm, end_time: e.target.value })} className="w-full px-2 py-1.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)]" />
- </div>
- </div>
- <div className="space-y-1.5">
- <div className="flex gap-1.5">
- {(["none", "daily", "weekdays"] as const).map(rep => (
- <button
- key={rep}
- type="button"
- onClick={() => setOnboardingForm({ 
- ...onboardingForm, 
- repeats: rep,
- daysOfWeek: rep === "weekdays" ? [1, 2, 3, 4, 5] : (rep === "daily" ? [0, 1, 2, 3, 4, 5, 6] : [])
- })}
- className={`flex-1 py-1 text-[10px] rounded-lg font-bold border capitalize cursor-pointer ${ onboardingForm.repeats === rep ? "bg-primary/10 text-primary border-primary" : "bg-white dark:bg-[var(--bg-card)] text-neutral-500 dark:text-[var(--text-secondary)] border-neutral-200 dark:border-[var(--border)]" }`}
- >
- {rep === "none" ? "Once" : rep}
- </button>
- ))}
- </div>
- <div className="flex flex-wrap gap-1 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] p-1.5 rounded-lg border border-[var(--border-strong)] dark:border-[var(--border)]/60 justify-center">
- {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((dayLabel, index) => {
- const active = onboardingForm.repeats === "custom" && onboardingForm.daysOfWeek?.includes(index);
- return (
- <button
- key={dayLabel}
- type="button"
- onClick={() => {
- let newDays = onboardingForm.daysOfWeek ? [...onboardingForm.daysOfWeek] : [];
- if (onboardingForm.repeats !== "custom") {
- newDays = [index];
- } else {
- if (newDays.includes(index)) {
- newDays = newDays.filter(d => d !== index);
- } else {
- newDays = [...newDays, index].sort();
- }
- }
- setOnboardingForm({
- ...onboardingForm,
- repeats: "custom",
- daysOfWeek: newDays
- });
- }}
- className={`px-1.5 py-0.5 rounded text-[9px] font-bold border transition-colors cursor-pointer ${ active ? "bg-primary text-white border-primary" : "bg-white dark:bg-[var(--bg-card)] text-neutral-500 dark:text-[var(--text-secondary)] border-neutral-200 dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)]" }`}
- >
- {dayLabel.slice(0, 1)}
- </button>
- );
- })}
- </div>
- </div>
- <button
- type="button"
- onClick={handleAddOnboardingBlock}
- disabled={!onboardingForm.title.trim()}
- className="w-full py-2 bg-primary text-white rounded-lg text-xs font-bold disabled:opacity-40 hover:bg-primary-dark transition-colors cursor-pointer flex items-center justify-center gap-1"
- >
- <Plus className="w-3.5 h-3.5" /> Add Block
- </button>
- </div>
-
- {onboardingBlocks.length > 0 && (
- <div className="space-y-2">
- <h4 className="text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">Commitments Added</h4>
- {onboardingBlocks.map(block => (
- <div key={block.id} className="flex items-center justify-between bg-white dark:bg-[var(--bg-card)] border border-[var(--border)] dark:border-[var(--border)] rounded-xl px-3 py-2">
- <div className="flex items-center gap-2">
- <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: block.color }} />
- <span className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{block.title}</span>
- <span className="text-[10px] text-neutral-450 dark:text-[var(--text-secondary)] font-mono">({block.start_time}–{block.end_time})</span>
- </div>
- <button onClick={() => handleRemoveOnboardingBlock(block.id)} className="text-[var(--text-tertiary)] hover:text-red-500 p-0.5 rounded cursor-pointer">
- <X className="w-3.5 h-3.5" />
- </button>
- </div>
- ))}
- </div>
- )}
- </div>
- )}
- </div>
-
- {/* Footer Actions */}
- <div className="p-6 bg-[var(--bg-page)] border-t border-[var(--border)] dark:border-[var(--border)] flex items-center justify-between shrink-0 font-sans">
- {onboardingStep === "welcome" ? (
- <>
- <button
- type="button"
- onClick={handleSkipOnboarding}
- className="px-4 py-3 text-xs font-bold border border-neutral-250 rounded-xl text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] cursor-pointer transition-colors"
- >
- Skip Onboarding
- </button>
- <button
- type="button"
- onClick={() => setOnboardingStep("sleep")}
- className="px-5 py-3 text-xs font-bold rounded-xl bg-primary text-white hover:bg-primary-dark shadow-sm transition-all flex items-center gap-1 cursor-pointer"
- >
- Set up Profile <ArrowRight className="w-3.5 h-3.5" />
- </button>
- </>
- ) : (
- <>
- <button
- type="button"
- onClick={() => {
- const idx = currentStepIdx;
- if (idx > 0) setOnboardingStep(steps[idx - 1]);
- }}
- className="px-4 py-2.5 text-xs font-bold text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] hover:text-[var(--text-primary)] dark:text-[var(--text-primary)] transition-colors cursor-pointer"
- >
- Back
- </button>
- 
- {currentStepIdx === steps.length - 1 ? (
- <button
- type="button"
- onClick={handleCompleteOnboarding}
- className="px-5 py-3 text-xs font-bold rounded-xl bg-primary text-white hover:bg-primary-dark shadow-md shadow-primary/10 transition-all flex items-center gap-1 cursor-pointer"
- >
- <Check className="w-3.5 h-3.5 stroke-[3px]" /> Finish Setup
- </button>
- ) : (
- <button
- type="button"
- onClick={() => {
- setOnboardingStep(steps[currentStepIdx + 1]);
- }}
- className="px-5 py-3 text-xs font-bold rounded-xl bg-primary text-white hover:bg-primary-dark shadow-sm transition-all flex items-center gap-1 cursor-pointer"
- >
- Next <ArrowRight className="w-3.5 h-3.5" />
- </button>
- )}
- </>
- )}
- </div>
- </div>
- </div>
- );
- }
 
  const renderCopilotContent = (isInline: boolean) => {
  const userPromptsCount = chatHistory.filter(m => m.sender === "user").length;
@@ -8584,17 +8729,9 @@ Please create the specified number of backlog tasks representing the project pha
 
  </div>
 
- <div className={`pt-3 border-t border-neutral-200 dark:border-[var(--border)]/30 text-xs text-neutral-400 leading-relaxed font-medium ${isSidebarCollapsed ? "text-center" : ""}`}>
- {isSidebarCollapsed ? (
- <span title="Fully sandboxed client data. Changes persist directly inside your private browser space.">🔒</span>
- ) : (
- <span>🔒 Fully sandboxed client data.</span>
- )}
- </div>
+ <AuthBanner user={user} onSignOut={handleSignOut} isCollapsed={isSidebarCollapsed} />
  </aside>
-
- {/* FLUID WORKSPACE PORTAL (Expands globally on desktop, centers elegantly on mobile) */}
- <div id="phone_mockup_container" className="flex-1 h-full bg-transparent flex flex-col overflow-hidden relative">
+<div id="phone_mockup_container" className="flex-1 h-full bg-transparent flex flex-col overflow-hidden relative">
  
  {/* TOP APP HEADER BAR (Fixed boundary, does not move) */}
  <header id="mobile_sticky_header" className="min-h-[64px] pt-[env(safe-area-inset-top,10px)] md:pt-0 border-b border-[var(--border-strong)] dark:border-[var(--border)]/50 px-4 flex items-center justify-between bg-[var(--bg-panel)] z-30 flex-shrink-0 relative text-slate-805 dark:text-[var(--text-primary)]">
@@ -8603,7 +8740,7 @@ Please create the specified number of backlog tasks representing the project pha
  className="flex items-center gap-1.5 cursor-pointer select-none"
  title="Tap 5 times for developer mode"
  >
- <span className="font-display font-black text-lg md:text-xl text-[#0F172A] tracking-tight">{pageTitle}</span>
+ <span className="font-display font-black text-lg md:text-xl text-slate-900 dark:text-white tracking-tight">{pageTitle}</span>
  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
  {activeTab === "today" && daySchedule.items.length > 0 && (
  <span className="text-[11px] font-bold font-mono px-2 py-0.5 bg-indigo-500/10 text-indigo-400 rounded-full ml-1">
@@ -8614,15 +8751,6 @@ Please create the specified number of backlog tasks representing the project pha
 
  {/* Header Right Area: Quick manual add + date navigation */}
  <div className="flex items-center gap-3">
- {(activeTab === "today" || activeTab === "backlog") && (
- <button
- onClick={() => handleOpenAddFlexible(activeTab === "today")}
- className="hidden md:flex px-3 py-1.5 rounded-xl bg-primary-gradient hover:opacity-90 text-white active:scale-95 transition-all duration-150 items-center justify-center gap-1.5 cursor-pointer font-display font-bold text-xs shadow-xs" title="Add Task Manually"
- >
- <Plus className="w-3.5 h-3.5" />
- <span className="hidden md:inline">Add Task</span>
- </button>
- )}
 
  {/* Selected Date Jump Widget and Arrow Controls shifted to the Right (Minimalistic style) */}
  <div className="flex items-center gap-1">
@@ -8635,12 +8763,27 @@ Please create the specified number of backlog tasks representing the project pha
  className="p-1.5 rounded-full hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[#475569] cursor-pointer active:scale-90 transition-all duration-150"
  title="Previous Day"
  >
- <ChevronLeft className="w-4.5 h-4.5" />
+ <ChevronLeft className="w-4.5 h-4.5 text-[#475569] dark:text-zinc-650" />
  </button>
  
- <span className="text-xs font-bold text-[#475569] font-mono select-none px-1">
- {new Date(selectedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
- </span>
+ <div className="flex flex-col items-center px-1 text-center select-none min-w-[70px]">
+    <span className="text-[10px] font-bold text-[#475569] dark:text-zinc-400 capitalize leading-tight">
+      {(() => {
+        const todayStr = getLocalTodayStr();
+        if (selectedDate === todayStr) return "Today";
+        const diff = Math.round(
+          (new Date(selectedDate + "T00:00:00").getTime() - new Date(todayStr + "T00:00:00").getTime()) /
+            86400000
+        );
+        if (diff === -1) return "Yesterday";
+        if (diff === 1) return "Tomorrow";
+        return new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" });
+      })()}
+    </span>
+    <span className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 font-mono mt-0.5 leading-none">
+      {new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+    </span>
+  </div>
 
  <button 
  onClick={() => {
@@ -8651,7 +8794,7 @@ Please create the specified number of backlog tasks representing the project pha
  className="p-1.5 rounded-full hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[#475569] cursor-pointer active:scale-90 transition-all duration-150"
  title="Next Day"
  >
- <ChevronRight className="w-4.5 h-4.5" />
+ <ChevronRight className="w-4.5 h-4.5 text-[#475569] dark:text-zinc-650" />
  </button>
  </div>
  </div>
@@ -8668,7 +8811,7 @@ Please create the specified number of backlog tasks representing the project pha
  </header>
 
  {/* MAIN DYNAMIC CONTENT RAIL (Independently scrolling tab viewports) */}
- <main id="mobile_viewport_content" className="flex-1 overflow-y-auto md:overflow-hidden overflow-x-hidden flex flex-col relative bg-[var(--bg-page)] pb-36 md:pb-0">
+ <main id="mobile_viewport_content" className="flex-1 overflow-hidden flex flex-col relative bg-[var(--bg-page)]">
  
  {/* Floating Notification Permission Request Modal */}
  {showNotificationPrompt && (
@@ -8708,3540 +8851,297 @@ Please create the specified number of backlog tasks representing the project pha
  )}
 
  {/* TAB VIEW 1: TODAY TIMEPORT */}
- {activeTab === "today" && (
- <div className="flex-1 flex flex-col h-full overflow-hidden">
- 
- {/* Active Timer Pulse Banner */}
- {activeTimer && (
- <ActiveTimerBanner 
- activeTimer={activeTimer}
- onStop={handleStopTimer}
- />
- )}
- 
- {/* EOD Pending Review Banner */}
- {selectedDate === TODAY && currentTimeMins >= 19 * 60 && todayIncompleteTasks.length > 0 && !eodDismissed && (
- <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex items-center justify-between text-xs text-amber-800 shrink-0 font-medium z-10">
- <div className="flex items-center gap-2">
- <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
- <span>You have {todayIncompleteTasks.length} uncompleted tasks remaining today.</span>
- </div>
- <div className="flex items-center gap-2 shrink-0">
- <button 
- onClick={handleStartEveningCheckin}
- className="bg-amber-600 hover:bg-amber-700 text-white font-extrabold px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-sm shadow-amber-250 active:scale-95 text-[10px] uppercase font-display"
- >
- Review with AI
- </button>
- <button 
- onClick={() => setEodDismissed(true)}
- className="text-amber-500 hover:text-amber-700 font-bold p-1 cursor-pointer"
- title="Dismiss"
- >
- <X className="w-3.5 h-3.5" />
- </button>
- </div>
- </div>
- )}
-
- {/* AI Adjustments Undo Banner */}
- {copilotUndoState && (
- <div className="mx-4 mb-3 p-3 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center justify-between text-xs text-indigo-850 animate-fade-in shadow-xs text-left">
- <div className="flex items-center gap-2">
- <Sparkles className="w-4 h-4 text-primary fill-primary/10 shrink-0" />
- <span>AI Copilot updated your schedule. Mismatched?</span>
- </div>
- <div className="flex items-center gap-2 shrink-0">
- <button 
- onClick={handleUndoAIChanges}
- className="bg-primary-gradient hover:opacity-90 text-white font-bold px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs active:scale-95 text-[11px] font-display"
- >
- Undo Changes
- </button>
- <button 
- onClick={() => setCopilotUndoState(null)}
- className="text-indigo-400 hover:text-indigo-650 font-bold p-1 cursor-pointer"
- title="Dismiss"
- >
- <X className="w-3.5 h-3.5" />
- </button>
- </div>
- </div>
- )}
- 
- {/* Drift Detection Soft Banner */}
- {showDriftBanner && driftedTask && (
- <div className="mx-4 mb-3 p-3 bg-amber-50/70 border border-amber-100 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs text-amber-800 animate-fade-in shadow-xs text-left">
- <div className="flex items-center gap-2">
- <Clock className="w-4 h-4 text-amber-600 shrink-0" />
- <div>
- <span className="font-semibold text-amber-900">Did the schedule drift?</span>
- <p className="text-[11px] text-amber-700 mt-0.5">
- "{driftedTask.title}" was scheduled to end at {driftedTask.end_time}.
- </p>
- </div>
- </div>
- <div className="flex items-center gap-2 shrink-0 self-end md:self-auto">
- <button 
- onClick={() => {
- handleToggleTaskDone(driftedTask.id);
- const nextCount = driftPromptCountToday + 1;
- setDriftPromptCountToday(nextCount);
- localStorage.setItem("dayflow_drift_prompt_count", String(nextCount));
- localStorage.setItem("dayflow_drift_prompt_date", TODAY);
- setLastDriftPromptAt(Date.now());
- localStorage.setItem("dayflow_last_drift_prompt_at", String(Date.now()));
- }}
- className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px]"
- >
- Complete
- </button>
- <button 
- onClick={() => {
- handleDelayTask15Minutes(driftedTask.id, driftedTask.start_time);
- const nextCount = driftPromptCountToday + 1;
- setDriftPromptCountToday(nextCount);
- localStorage.setItem("dayflow_drift_prompt_count", String(nextCount));
- localStorage.setItem("dayflow_drift_prompt_date", TODAY);
- setLastDriftPromptAt(Date.now());
- localStorage.setItem("dayflow_last_drift_prompt_at", String(Date.now()));
- }}
- className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px]"
- >
- Delay 15m
- </button>
- <button 
- onClick={() => runAIResolution("drift")}
- className="bg-primary-gradient hover:opacity-90 text-white font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] flex items-center gap-1"
- disabled={isProcessingAIReasoning}
- >
- {isProcessingAIReasoning && <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />}
- <Sparkles className="w-3 h-3" /> Adjust via AI
- </button>
- </div>
- </div>
- )}
- 
-
- {/* 3-Column Layout Container */}
- <div className="flex-1 flex flex-col md:flex-row overflow-hidden h-full">
- 
- {/* Column 1: Daily Timeline */}
- <div className="flex flex-col flex-1 h-full overflow-y-auto pb-24 md:pb-6 md:pr-3">
- 
- 
-
-            {/* Daily Reflection Card */}
-            {/* Dynamic Behavior-Aware Coach Reflection Card */}
-            <div className="mx-3.5 mb-5 p-5 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl shadow-sm text-left space-y-3.5 animate-slide-up">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-[#EEEDFE] dark:bg-zinc-800 rounded-xl text-primary shrink-0">
-                  <Sparkles className="w-4 h-4 fill-primary/10" />
-                </div>
-                <span className="text-xs font-bold text-primary uppercase tracking-wider font-display">Daily Coach Reflection</span>
-              </div>
-              <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-medium leading-relaxed font-sans">
-                {dailyCoachReflection}
-              </p>
-            </div>
-
-            {showReflectionCard && (
- <div className="mx-3.5 mb-5 p-5 bg-white dark:bg-[var(--bg-card)] border border-indigo-100 rounded-3xl shadow-md text-left space-y-4 animate-slide-up">
- <div className="flex items-center gap-2.5">
- <div className="p-2 bg-[#EEEDFE] rounded-xl text-primary shrink-0">
- <Sparkles className="w-5 h-5 fill-primary/10" />
- </div>
- <div>
- <h4 className="text-sm font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)]">
- {(yesterdayCompletionRate ?? 0) >= 0.7 ? "🎉 Celebrate Yesterday" : "💡 Adjust & Align"}
- </h4>
- <p className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">
- {(yesterdayCompletionRate ?? 0) >= 0.7 
- ? `Excellent work! You completed ${Math.round((yesterdayCompletionRate ?? 0) * 100)}% of yesterday's tasks. What helped you win?` 
- : `Yesterday you completed ${Math.round((yesterdayCompletionRate ?? 0) * 100)}% of tasks. What caused the slip?`}
- </p>
- </div>
- </div>
-
- {/* Cause selection grid */}
- <div className="grid grid-cols-2 gap-2">
- {(yesterdayCompletionRate ?? 0) >= 0.7 ? (
- <>
- {[
- { key: "success_planning", label: "📋 Good Planning" },
- { key: "success_sleep", label: "💤 Restful Sleep" },
- { key: "success_focus", label: "🎯 Deep Focus" },
- { key: "success_load", label: "⚖️ Calm Workload" }
- ].map(opt => (
- <button
- key={opt.key}
- onClick={() => setSelectedCause(opt.key)}
- className={`p-2.5 rounded-2xl border text-xs font-semibold text-center transition-all cursor-pointer ${ selectedCause === opt.key ? "bg-primary border-primary text-white shadow-sm shadow-primary/25" : "bg-neutral-50 dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-neutral-700 dark:text-[var(--text-primary)] border-neutral-200 dark:border-[var(--border)]" }`}
- >
- {opt.label}
- </button>
- ))}
- </>
- ) : (
- <>
- {[
- { key: "planning", label: "📋 Over-planning" },
- { key: "energy", label: "⚡ Low Energy" },
- { key: "discipline", label: "⏳ Procrastinating" },
- { key: "interruption", label: "🔊 Interruptions" }
- ].map(opt => (
- <button
- key={opt.key}
- onClick={() => setSelectedCause(opt.key)}
- className={`p-2.5 rounded-2xl border text-xs font-semibold text-center transition-all cursor-pointer ${ selectedCause === opt.key ? "bg-primary border-primary text-white shadow-sm shadow-primary/25" : "bg-neutral-50 dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-neutral-700 dark:text-[var(--text-primary)] border-neutral-200 dark:border-[var(--border)]" }`}
- >
- {opt.label}
- </button>
- ))}
- </>
- )}
- </div>
-
- {/* Quick Notes Text Area */}
- <div className="space-y-1">
- <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider">Quick Notes</label>
- <textarea
- value={reflectionNotes}
- onChange={(e) => setReflectionNotes(e.target.value)}
- placeholder="Optional. Write down what happened or how you feel..."
- className="w-full text-xs p-3 rounded-2xl border border-[var(--border-strong)] dark:border-[var(--border)] bg-[var(--bg-page)] focus:bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 transition-all resize-none h-16"
- />
- </div>
-
- {/* Submit Actions */}
- <div className="flex items-center justify-end gap-2.5">
- <button
- onClick={() => {
- runLocalResolution();
- }}
- className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-bold px-3 py-2 cursor-pointer transition-colors"
- >
- Skip
- </button>
- <button
- onClick={async () => {
- const finalCause = selectedCause || ((yesterdayCompletionRate ?? 0) >= 0.7 ? "success_planning" : "planning");
- 
- const newEvent: ReflectionEvent = {
- id: Math.random().toString(36).substring(2, 9),
- date: TODAY,
- completionRate: yesterdayCompletionRate || 0,
- type: (yesterdayCompletionRate ?? 0) >= 0.7 ? "success" : "failure",
- cause: finalCause as any,
- notes: reflectionNotes
- };
- const updatedEvents = [...reflectionEvents, newEvent];
- setReflectionEvents(updatedEvents);
- saveReflectionEvents(updatedEvents);
-
- const hasHighPressure = staleTasks.some(t => 
- t.meta?.deadline_pressure === "high" || 
- t.meta?.deadline_pressure === "critical"
- );
-
- if (staleTasks.length <= 2 && !hasHighPressure) {
- runLocalResolution();
- } else {
- await runAIResolution("reflection", reflectionNotes, finalCause);
- }
- }}
- className="text-xs bg-primary text-white font-bold px-4 py-2.5 rounded-xl hover:bg-primary-dark shadow-md cursor-pointer transition-all active:scale-95 flex items-center gap-1.5"
- disabled={isProcessingAIReasoning}
- >
- {isProcessingAIReasoning && <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />}
- Reflect & Resolve
- </button>
- </div>
- </div>
- )}
-
- {/* Passive Overload Annotation */}
- {totalPlannedDurationMins > 240 && (
- <div className="mx-3.5 mb-3 p-3 bg-indigo-50/40 border border-indigo-100/30 rounded-2xl text-[11px] text-indigo-700/80 font-medium text-left flex items-center gap-1.5 animate-fade-in animate-pulse">
- <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
- <span>Calm note: {(totalPlannedDurationMins / 60).toFixed(1)} hours planned today. High overload probability. Pace yourself.</span>
- </div>
- )}
- 
-
-
- {/* Cognitive Load Budget Indicator removed per user request */}
-
- {/* Overbooked conflicts warning banner */}
- {daySchedule.conflicts.length > 0 && (
- <div className="mx-3 mb-3 p-3 bg-amber-50 border border-amber-200/60 rounded-xl text-xs space-y-1">
- <div className="flex items-center gap-1 text-amber-700 font-bold">
- <AlertTriangle className="w-3.5 h-3.5" />
- <span>{daySchedule.conflicts.length} Overbooked Pipelines</span>
- </div>
- <p className="text-[var(--text-secondary)] text-xs leading-relaxed">
- Tasks don't fit active free gaps today. Automatically pushing remaining to tomorrow.
- </p>
- </div>
- )}
-
- {/* Timeline display cards section */}
- <div className="flex-1 px-3.5 pb-24">
- 
- {daySchedule.items.length === 0 ? (
- <div className="py-20 flex flex-col items-center justify-center text-center space-y-3.5">
- <div className="p-4 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-full text-[var(--text-tertiary)] shadow-sm">
- <CalendarIcon className="w-7 h-7 stroke-[1.5]" />
- </div>
- <div>
- <h4 className="font-semibold text-[var(--text-primary)] dark:text-[var(--text-primary)] text-sm">Your day is crystal clear</h4>
- <p className="text-xs text-[#9999B3] max-w-xs px-6 mt-1 leading-relaxed">
- No tasks slotted for today. Tap the morning sync banner or click backlog to schedule item queues immediately.
- </p>
- </div>
- <div className="flex items-center gap-2.5">
- <button
- onClick={handleOpenAICopilot}
- className="px-4 py-2 bg-primary-gradient hover:opacity-90 text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
- >
- <Sparkles className="w-3.5 h-3.5" /> Launch AI Copilot
- </button>
- <button
- onClick={() => handleOpenAddFlexible(true)}
- className="px-4 py-2 bg-[#FFFFFF] border border-neutral-250 hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] text-xs font-bold rounded-xl shadow-xs cursor-pointer transition-all flex items-center gap-1.5 font-display"
- >
- <Plus className="w-3.5 h-3.5 text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]" /> Create Manually
- </button>
- </div>
- </div>
- ) : (
- <div className="relative border-l border-[var(--border-strong)] dark:border-[var(--border)]/40 pl-4 py-1 ml-2.5">
- 
- {daySchedule.items.map((item, idx) => {
- const isFixedType = item.type === "fixed";
- const isEmergencyItem = item.id.includes("emergency_block") || item.title.includes("Emergency");
- const isCompleted = item.status === "done";
- const isSkipped = item.status === "skipped";
- const isExpired = item.status === "expired";
-  const isPinned = !!(item as any).pinned;
-  const isDragging = draggedTaskId === item.id;
-  const isDragOver = dragOverTaskId === item.id;
-  const task = !isFixedType ? flexibleTasks.find(t => t.id === item.id) : null;  const isPastUnverified = !isFixedType && !isCompleted && !isSkipped && !isExpired && (() => {
-    const endMins = timeToMinutes(item.end_time);
-    const nowMins = currentTimeMins;
-    return endMins < nowMins && selectedDate === TODAY;
-  })();
- 
- // Parse duration display
- const hrs = Math.floor(item.duration_minutes / 60);
- const mins = item.duration_minutes % 60;
- const durationText = hrs > 0 ? `${hrs}h ${mins > 0 ? `${mins}m` : ""}` : `${mins}m`;
-
- // Calculate gaps between this item and the next
- const nextItem = daySchedule.items[idx + 1];
- let gapMins = 0;
- if (nextItem) {
- const endMins = timeToMinutes(item.end_time);
- const nextStartMins = timeToMinutes(nextItem.start_time);
- gapMins = Math.max(0, nextStartMins - endMins);
- }
-
- // Execution Engine: active / upcoming states
- const isActiveNow = activeNowTask?.id === item.id;
- const isUpNext = !isActiveNow && upNextTask?.id === item.id && !isCompleted;
- const todayFlexCount = daySchedule.items.filter(i => i.type === "flexible").length;
-
- return (
- <div
- key={`${item.id}-${idx}`}
- className="relative mb-5 last:mb-3 group"
- draggable={!isFixedType && !isEmergencyItem && !isCompleted && !isSkipped && !isExpired}
- onDragStart={() => !isFixedType && handleDragStart(item.id)}
- onDragOver={(e) => !isFixedType && handleDragOver(e, item.id)}
- onDrop={(e) => !isFixedType && handleDrop(e, item.id)}
- onDragEnd={handleDragEnd}
- >
- {/* Drop indicator line */}
- {isDragOver && dragOverPosition === "before" && (
- <div className="absolute -top-2 left-0 right-0 h-0.5 bg-primary rounded-full z-10 shadow-sm shadow-primary/30" />
- )}
- 
- {/* Marker line point dot */}
- <span 
- className={`absolute -left-[22px] top-4.5 w-3 h-3 rounded-full border bg-white dark:bg-[var(--bg-card)] transition-transform duration-200 ${ isActiveNow ? "bg-primary border-primary/50 animate-pulse" : isEmergencyItem ? "bg-amber-500 border-amber-600" : isFixedType ? "bg-[#E24B4A] border-red-200" : isCompleted ? "bg-emerald-500 border-emerald-600" : isSkipped || isExpired ? "bg-neutral-400 border-neutral-500" : "bg-[#1D9E75] border-emerald-100" }`} 
- />
-
- {/* TIMELINE CARD */}
- <div 
- className={`rounded-2xl border p-4.5 relative transition-all text-left shadow-xs ${(() => {
-    const avoidance = task ? Math.max(task.delay_count || 0, task.carry_over_count || 0) : 0;
-    let avoidanceStyle = "";
-    if (avoidance === 1) avoidanceStyle = "border-neutral-300 dark:border-zinc-700 shadow-3xs";
-    else if (avoidance === 2) avoidanceStyle = "border-neutral-400 dark:border-zinc-600 shadow-2xs";
-    else if (avoidance >= 3) avoidanceStyle = "border-primary/40 dark:border-primary/30 ring-1 ring-primary/10 shadow-xs";
-    
-    if (isDragging) return "opacity-40 scale-95 ring-2 ring-primary/30";
-    if (isDragOver) return "ring-2 ring-primary/20";
-    if (isActiveNow) return "bg-white dark:bg-[var(--bg-card)] border-primary/30 ring-2 ring-primary/15 shadow-md shadow-primary/10";
-    if (isUpNext) return "bg-white dark:bg-[var(--bg-card)] border-neutral-200 dark:border-[var(--border)] border-dashed";
-    if (isCompleted) return "opacity-60 bg-emerald-50 dark:bg-emerald-950/20 border-[var(--border)]";
-    if (isSkipped || isExpired) return "opacity-50 bg-[var(--bg-card-hover)] border-[var(--border)]";
-    if (isPastUnverified) return "border-dashed border-neutral-300 dark:border-zinc-750 bg-neutral-50/40 dark:bg-zinc-900/30 opacity-75 hover:opacity-100 hover:scale-[1.005] hover:shadow-3xs transition-all";
-    return `bg-white dark:bg-[var(--bg-card)] ${avoidanceStyle || "border-neutral-150 dark:border-[var(--border)]"} hover:scale-[1.005] hover:shadow-sm hover:border-neutral-200/80`;
-  })()}`}
- style={{
- borderLeft: `3px solid ${
- isCompleted
- ? "#16A34A"
- : isSkipped || isExpired
- ? "#9CA3AF"
- : isEmergencyItem
- ? "var(--color-emergency-color)"
- : isFixedType
- ? (item.color || "#8B7EFF")
- : (() => {
- const cat = getTaskCategory(item.title);
- if (cat === "work") return "#8B7EFF";
- if (cat === "exercise") return "#14B8A6";
- if (cat === "relax") return "#22C55E";
- return "#F59E0B";
- })()
- }`
- }}
- >
- <div className="flex items-start gap-2">
- {/* Drag handle — only for flex tasks */}
- {!isFixedType && !isEmergencyItem && !isCompleted && (
- <div
- className="shrink-0 mt-3 cursor-grab active:cursor-grabbing text-neutral-300 hover:text-[var(--text-tertiary)] transition-colors opacity-0 group-hover:opacity-100"
- title="Drag to reorder"
- >
- <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
- <circle cx="2" cy="2" r="1.5"/><circle cx="8" cy="2" r="1.5"/>
- <circle cx="2" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/>
- <circle cx="2" cy="14" r="1.5"/><circle cx="8" cy="14" r="1.5"/>
- </svg>
- </div>
- )}
-
- <div className="flex items-start justify-between gap-1 flex-1 min-w-0">
- <div className="space-y-1 flex-1 min-w-0 pr-1">
- {/* Top meta tags */}
-  <div className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] leading-none shrink-0 font-semibold uppercase tracking-wider flex-wrap">
-  {isPastUnverified && (
-    <span className="text-neutral-550 dark:text-neutral-400 bg-neutral-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0 flex items-center gap-0.5 border border-neutral-200 dark:border-zinc-700">
-      ⏱ Unverified
-    </span>
+  {activeTab === "today" && (
+    <TodayTab
+      fetchDailyPlan={fetchDailyPlan}
+      handleInterventionFeedback={handleInterventionFeedback}
+      activeTimer={activeTimer}
+      handleStopTimer={handleStopTimer}
+      selectedDate={selectedDate}
+      TODAY={TODAY}
+      currentTimeMins={currentTimeMins}
+      todayIncompleteTasks={todayIncompleteTasks}
+      eodDismissed={eodDismissed}
+      handleStartEveningCheckin={handleStartEveningCheckin}
+      setEodDismissed={setEodDismissed}
+      copilotUndoState={copilotUndoState}
+      handleUndoAIChanges={handleUndoAIChanges}
+      setCopilotUndoState={setCopilotUndoState}
+      showDriftBanner={showDriftBanner}
+      driftedTask={driftedTask}
+      handleToggleTaskDone={handleToggleTaskDone}
+      driftPromptCountToday={driftPromptCountToday}
+      setDriftPromptCountToday={setDriftPromptCountToday}
+      setLastDriftPromptAt={setLastDriftPromptAt}
+      handleDelayTask15Minutes={handleDelayTask15Minutes}
+      runAIResolution={runAIResolution}
+      isProcessingAIReasoning={isProcessingAIReasoning}
+      setSelectedDate={setSelectedDate}
+      getLocalTodayStr={getLocalTodayStr}
+      daySchedule={daySchedule}
+      formatMinutes={formatMinutes}
+      handleDeleteFlexible={handleDeleteFlexible}
+      handleOpenEditFlexible={handleOpenEditFlexible}
+      handleOpenAddFlexible={handleOpenAddFlexible}
+      showToast={showToast}
+      flexibleTasks={flexibleTasks}
+      appSettings={appSettings}
+      calibrationProfile={calibrationProfile}
+      delayPatterns={delayPatterns}
+      routineBlocks={routineBlocks}
+      setRoutineBlocks={setRoutineBlocks}
+      getSuspendedRoutineTypesForDate={getSuspendedRoutineTypesForDate}
+      handleDeleteFixed={handleDeleteFixed}
+      handleOpenAddFixed={handleOpenAddFixed}
+      handleOpenEditFixed={handleOpenEditFixed}
+      handleStartTimer={handleStartTimer}
+      hasUnverifiedPastTasks={hasUnverifiedPastTasks}
+      handleAlignTimeline={handleAlignTimeline}
+      projects={projects}
+      consequenceCache={consequenceCache}
+      fetchConsequenceInsight={fetchConsequenceInsight}
+      executeNegotiationCommand={executeNegotiationCommand}
+      handleOpenAICopilot={handleOpenAICopilot}
+      setCopilotInput={setCopilotInput}
+      completedStreak={completedStreak}
+      profileName={profileName}
+      handleUpdateFlexible={handleUpdateFlexible}
+      recordTaskExecutionLog={recordTaskExecutionLog}
+      checkDayComplete={checkDayComplete}
+      triggerHaptic={triggerHaptic}
+      dragOverPosition={dragOverPosition}
+      setDragOverPosition={setDragOverPosition}
+      executePostponeDirectly={executePostponeDirectly}
+      draggedTaskId={draggedTaskId}
+      setDraggedTaskId={setDraggedTaskId}
+      dragOverTaskId={dragOverTaskId}
+      setDragOverTaskId={setDragOverTaskId}
+      activeNowTask={activeNowTask}
+      upNextTask={upNextTask}
+      handleDragStart={handleDragStart}
+      handleDragOver={handleDragOver}
+      handleDrop={handleDrop}
+      handleDragEnd={handleDragEnd}
+      handleOpenPinTime={handleOpenPinTime}
+      handleUnpinTime={handleUnpinTime}
+      pinTimeTaskId={pinTimeTaskId}
+      setPinTimeTaskId={setPinTimeTaskId}
+      pinTimeValue={pinTimeValue}
+      setPinTimeValue={setPinTimeValue}
+      handleConfirmPinTime={handleConfirmPinTime}
+      fixedBlocks={fixedBlocks}
+      executePostponeWithFrictionDetails={executePostponeWithFrictionDetails}
+      executePostponeWithFriction={executePostponeWithFriction}
+      executeInlineDecomposition={executeInlineDecomposition}
+      deletingTaskId={deletingTaskId}
+      loadingInsightTaskId={loadingInsightTaskId}
+      setFlexibleTasks={setFlexibleTasks}
+      handleScheduleTaskToday={handleScheduleTaskToday}
+      setDeletingTaskId={setDeletingTaskId}
+      dailyCoachReflection={dailyCoachReflection}
+      showReflectionCard={showReflectionCard}
+      yesterdayCompletionRate={yesterdayCompletionRate}
+      selectedCause={selectedCause}
+      setSelectedCause={setSelectedCause}
+      reflectionNotes={reflectionNotes}
+      setReflectionNotes={setReflectionNotes}
+      runLocalResolution={runLocalResolution}
+      reflectionEvents={reflectionEvents}
+      setReflectionEvents={setReflectionEvents}
+      saveReflectionEvents={saveReflectionEvents}
+      staleTasks={staleTasks}
+      totalPlannedDurationMins={totalPlannedDurationMins}
+      setActiveTimer={setActiveTimer}
+      
+    />
   )}
-  {isActiveNow && (
- <span className="text-primary bg-primary/10 px-1.5 py-0.5 rounded-md text-[9px] font-bold animate-pulse normal-case shrink-0">
- ⚡ Active
- </span>
- )}
- {isUpNext && (
- <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0">
- Next →
- </span>
- )}
- {isSkipped && (
- <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] bg-neutral-200 px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0">
- 🚫 Skipped
- </span>
- )}
- {isExpired && (
- <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] bg-neutral-200 px-1.5 py-0.5 rounded-md text-[9px] font-bold normal-case shrink-0">
- ⏳ Expired
- </span>
- )}
- {isEmergencyItem ? (
- <span className="text-amber-600">🚨 Interruption</span>
- ) : isFixedType ? (
- <span className="text-[#E24B4A] flex items-center gap-0.5">
- <Lock className="w-2.5 h-2.5 shrink-0" /> Locked Block
- </span>
- ) : (
- <span className="text-[#1D9E75]">Flexible Slotted</span>
- )}
-
- {item.energy_level && (
- <><span>•</span><span className="capitalize">{item.energy_level} energy</span></>
- )}
- {isPinned && (
- <span className="flex items-center gap-0.5 text-primary bg-primary/10 px-1 rounded">
- 📌 Pinned
- </span>
- )}
- {task?.importance && (
- <>
- <span>•</span>
- <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold normal-case ${ task.importance === "critical" ? "bg-red-50 text-red-600 border border-red-100" : task.importance === "important" ? "bg-primary/5 text-primary border border-primary/10" : "bg-[#ECFDF5] text-emerald-700 border border-emerald-200" }`}>
- {task.importance === "critical" ? "🚨 Critical" : task.importance === "important" ? "⚡ Important" : "🌱 Optional"}
- </span>
- </>
- )}
- {task?.task_flexibility && (
- <>
- <span>•</span>
- <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold normal-case ${ task.task_flexibility === "fixed" ? "bg-purple-50 text-purple-650 border border-purple-200/50" : task.task_flexibility === "optional" ? "bg-[#ECFDF5] text-emerald-700 border border-emerald-200" : "bg-blue-50 text-blue-650 border border-blue-200/50" }`}>
- {task.task_flexibility === "fixed" ? "🔒 Rigid" : task.task_flexibility === "optional" ? "🌱 Optional" : "↔ Movable"}
- </span>
- </>
- )}
- </div>
-
- <h4 className={`text-sm font-semibold tracking-tight leading-snug font-display mt-1 ${isCompleted || isSkipped || isExpired ? "line-through text-neutral-400/70 opacity-50" : "text-neutral-800 dark:text-[var(--text-primary)]"}`}>
- {item.title}
- </h4>
-
- {/* Time row — click to pin time for flex tasks */}
- <div className={`flex items-center gap-1.5 text-xs mt-1.5 font-mono flex-wrap ${isCompleted ? "text-neutral-400/60 opacity-50" : "text-neutral-500 dark:text-[var(--text-secondary)]"}`}>
- <Clock className="w-3.5 h-3.5 text-[var(--text-tertiary)] font-sans" />
- {!isFixedType && !isCompleted ? (
- <button
- onClick={() => handleOpenPinTime(item.id, item.start_time)}
- className="hover:text-primary hover:underline cursor-pointer transition-colors font-mono text-xs"
- title="Click to pin this task to a specific time"
- >
- {item.start_time} – {item.end_time}
- </button>
- ) : (
- <span>{item.start_time} – {item.end_time}</span>
- )}
- <span className="px-1.5 py-0.5 text-xs bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] rounded text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-semibold">{durationText}</span>
- {isPinned && task && (
- <button
- onClick={() => handleUnpinTime(item.id)}
- className="text-primary/60 hover:text-red-500 text-[10px] font-bold ml-1 cursor-pointer transition-colors"
- title="Remove time pin — let app auto-schedule"
- >
- ✕ unpin
- </button>
- )}
- </div>
-
- {/* Task Graph links on timeline card */}
- {((task?.blocked_by && task.blocked_by.length > 0) || (task?.blocks && task.blocks.length > 0)) && (
- <div className="mt-1.5 flex flex-wrap gap-1.5">
- {task.blocked_by && task.blocked_by.map(blockedId => {
- const blockedTask = flexibleTasks.find(t => t.id === blockedId);
- if (!blockedTask) return null;
- return (
- <span key={blockedId} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-orange-50 dark:bg-orange-950/25 border border-orange-200/50 dark:border-orange-900/30 text-orange-700 dark:text-orange-400 text-[9px] font-semibold">
- ↳ blocked by: {blockedTask.title}
- </span>
- );
- })}
- {task.blocks && task.blocks.map(blocksId => {
- const blocksTask = flexibleTasks.find(t => t.id === blocksId);
- if (!blocksTask) return null;
- return (
- <span key={blocksId} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-violet-50 dark:bg-violet-950/25 border border-violet-200/50 dark:border-violet-900/30 text-violet-700 dark:text-violet-400 text-[9px] font-semibold">
- ↳ blocks: {blocksTask.title}
- </span>
- );
- })}
- </div>
- )}
-
- {/* Subtle one-line consequence teaser */}
- {!isFixedType && !isCompleted && task?.consequence_teaser && (
- <div 
- onClick={(e) => {
- e.stopPropagation();
- if (openInsightTaskId === item.id) {
- setOpenInsightTaskId(null);
- } else {
- fetchConsequenceInsight(task);
- }
- }}
- className="text-[10px] text-amber-700/90 font-bold hover:bg-amber-100/30 border border-amber-200/50 bg-amber-50/20 px-2 py-0.5 rounded-lg w-max flex items-center gap-1 mt-1.5 transition-all select-none cursor-pointer"
- title="Tap to view full coach narrative"
- >
- <Zap className="w-2.5 h-2.5 text-amber-500 fill-amber-500/10 shrink-0" />
- <span>{task.consequence_teaser}</span>
- <span className="text-[8px] text-amber-400 font-bold ml-1 font-mono">{(openInsightTaskId === item.id) ? "▴ HIDE" : "▸ READ"}</span>
- </div>
- )}
-
- {/* Pin time editor inline */}
- {pinTimeTaskId === item.id && (
- <div className="mt-2 flex items-center gap-2 bg-primary/5 border border-primary/20 rounded-xl px-3 py-2">
- <Clock className="w-3.5 h-3.5 text-primary shrink-0" />
- <span className="text-xs font-bold text-primary">Pin to:</span>
- <input
- type="time"
- value={pinTimeValue}
- onChange={e => setPinTimeValue(e.target.value)}
- className="flex-1 text-xs bg-white dark:bg-[var(--bg-card)] border border-primary/30 rounded-lg px-2 py-1 font-mono focus:outline-none focus:ring-1 focus:ring-primary"
- autoFocus
- />
- <button
- onClick={handleConfirmPinTime}
- className="text-xs font-bold text-white bg-primary rounded-lg px-2 py-1 cursor-pointer hover:bg-primary-dark transition-colors"
- >
- Set
- </button>
- <button
- onClick={() => setPinTimeTaskId(null)}
- className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] cursor-pointer"
- >
- <X className="w-3.5 h-3.5" />
- </button>
- </div>
- )}
- </div>
-
- {/* Controls: only for fixed/emergency items, or minimal undo for completed tasks */}
- <div className="flex items-center gap-1 shrink-0 self-start mt-1">
- {isFixedType && !isEmergencyItem && (
- <>
- <button 
- onClick={() => handleOpenEditFixed(fixedBlocks.find(b => b.id === item.id)!)}
- className="p-1 text-[#9999B3] hover:text-primary hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] rounded transition-colors cursor-pointer"
- title="Edit Block"
- >
- <Edit2 className="w-3.5 h-3.5" />
- </button>
- <button 
- onClick={() => handleDeleteFixed(item.id)}
- className="p-1 text-[#9999B3] hover:text-red-500 hover:bg-red-50 rounded transition-colors cursor-pointer"
- title="Delete Block"
- >
- <Trash2 className="w-3.5 h-3.5" />
- </button>
- </>
- )}
-
- {isCompleted && !isFixedType && (
- <button
- onClick={() => handleToggleTaskDone(item.id)}
- className="px-2 py-1 text-[10px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] hover:bg-neutral-150 border border-[var(--border-strong)] dark:border-[var(--border)]/50 rounded-lg cursor-pointer transition-all"
- title="Undo Completion"
- >
- Undo
- </button>
- )}
- 
- {!isCompleted && !isSkipped && !isExpired && !isFixedType && (
- <button
- onClick={() => handleToggleTaskDone(item.id)}
- className="p-1.5 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg cursor-pointer transition-all"
- title="Mark Task as Done"
- >
- <Check className="w-3.5 h-3.5" />
- </button>
- )}
- </div>
- {/* Expand/Collapse details button */}
- {!isFixedType && (
- <button 
- onClick={(e) => { e.stopPropagation(); setExpandedTaskId(expandedTaskId === item.id ? null : item.id); }}
- className="mt-2 text-[10px] uppercase font-bold text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] dark:text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] flex items-center gap-1 cursor-pointer transition-colors"
- >
- {expandedTaskId === item.id ? "▴ Hide Details" : "▾ View Details & Actions"}
- </button>
- )}
-
- {/* --- EXPANDED DETAILS VIEW --- */}
- {expandedTaskId === item.id && !isFixedType && (
- <div className="mt-3 text-sm text-[var(--text-secondary)] dark:text-[var(--text-primary)] dark:text-[#E2E8F0] space-y-3 p-3 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] dark:bg-[#1E2028] border border-neutral-150 dark:border-[var(--border)] dark:border-[#3E404D] rounded-xl animate-fade-in cursor-default" onClick={(e) => e.stopPropagation()}>
- 
- {(() => {
-    const avoidance = task ? Math.max(task.delay_count || 0, task.carry_over_count || 0) : 0;
-    return (
-      <>
-        {avoidance === 1 && (
-          <div className="p-3 mb-3 bg-amber-50/50 dark:bg-amber-950/20 border border-amber-250/30 rounded-xl text-xs text-amber-800 dark:text-amber-300 font-medium animate-fade-in text-left">
-            ⚠️ You've postponed this task once. Starting is often the hardest part—commit to working on it for just 5 minutes!
-          </div>
-        )}
-
-        {avoidance === 2 && (
-          <div className="p-4 mb-3 bg-gradient-to-br from-[#FFFDF9] to-white dark:from-zinc-900 dark:to-zinc-850 border border-amber-250 dark:border-zinc-750 rounded-2xl space-y-3.5 shadow-xs animate-fade-in text-left">
-            <div className="flex items-center gap-1 text-[10px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider font-mono">
-              <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10" /> Logging Avoidance Friction
-            </div>
-            
-            <div className="grid grid-cols-2 gap-1.5">
-              {[
-                { key: "low_energy", label: "⚡ Low Energy", desc: "Mentally drained" },
-                { key: "distraction", label: "🔊 Distraction", desc: "Doomscrolling/phone" },
-                { key: "resistance", label: "🐢 Resistance", desc: "Starting is hard" },
-                { key: "emotional_resistance", label: "😨 Emotional Resistance", desc: "Fear or anxiety" },
-                { key: "unclear_task", label: "❓ Unclear Task", desc: "Too vague" },
-                { key: "external_interrupt", label: "🚨 Interruption", desc: "External meeting" },
-                { key: "unknown", label: "🤷 Other", desc: "Unknown blocker" }
-              ].map((opt) => (
-                <button
-                  key={opt.key}
-                  onClick={() => setSelectedFrictionReason(opt.key)}
-                  className={`p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-0.5 ${ selectedFrictionReason === opt.key ? "bg-amber-50 dark:bg-amber-950/40 border-amber-450 text-amber-850 dark:text-amber-300 ring-1 ring-amber-450/20" : "bg-white dark:bg-zinc-800 hover:bg-neutral-50 dark:hover:bg-zinc-750 text-neutral-700 dark:text-[var(--text-primary)] border-neutral-200 dark:border-zinc-750" }`}
-                >
-                  <span className="text-xs font-bold leading-none">{opt.label}</span>
-                  <span className="text-[9px] text-neutral-450 dark:text-[var(--text-secondary)] leading-none">{opt.desc}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="space-y-1">
-              <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">Friction Tags:</span>
-              <div className="flex flex-wrap gap-1.5">
-                {["#intimidating", "#boring", "#tired", "#distracted", "#perfectionist", "#confused"].map(tag => (
-                  <button
-                    key={tag}
-                    onClick={() => {
-                      setSelectedFrictionTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
-                    }}
-                    className={`px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all cursor-pointer ${ selectedFrictionTags.includes(tag) ? "bg-primary border-primary text-white" : "bg-neutral-50 dark:bg-zinc-850 border-neutral-200 dark:border-zinc-750 text-neutral-600 dark:text-[var(--text-primary)] hover:bg-neutral-100" }`}
-                  >
-                    {tag}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">Friction Notes (optional):</span>
-              <input
-                type="text"
-                placeholder="e.g. Too lazy to open the IDE..."
-                value={frictionNotes}
-                onChange={(e) => setFrictionNotes(e.target.value)}
-                className="w-full px-3 py-2 border border-neutral-250 dark:border-zinc-750 rounded-xl text-xs bg-white dark:bg-zinc-800 focus:outline-none focus:border-amber-450 focus:ring-1 focus:ring-amber-450/20 text-neutral-800 dark:text-[var(--text-primary)]"
-              />
-            </div>
-
-            <div className="flex gap-2">
-              {[
-                { type: "delay_15", label: "⏱ Delay 15m" },
-                { type: "delay_30", label: "☕ Delay 30m" },
-                { type: "tomorrow", label: "📅 Tomorrow" }
-              ].map(act => (
-                <button
-                  key={act.type}
-                  disabled={!selectedFrictionReason}
-                  onClick={() => {
-                    const tagString = selectedFrictionTags.join(" ");
-                    const notes = frictionNotes ? `${tagString}: ${frictionNotes}` : tagString;
-                    executePostponeWithFrictionDetails(item.id, act.type as any, selectedFrictionReason as any, notes, item.start_time);
-                    setSelectedFrictionReason(null);
-                    setSelectedFrictionTags([]);
-                    setFrictionNotes("");
-                  }}
-                  className={`flex-1 py-2 text-xs font-bold rounded-xl text-white cursor-pointer transition-colors text-center ${ selectedFrictionReason ? "bg-amber-550 hover:bg-amber-600 active:bg-amber-700 shadow-sm" : "bg-neutral-205 dark:bg-zinc-750 text-neutral-400 cursor-not-allowed border border-neutral-200 dark:border-zinc-800" }`}
-                >
-                  {act.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {avoidance >= 3 && (
-          <div className="p-4 mb-3 bg-gradient-to-br from-rose-50/20 to-white dark:from-zinc-900 dark:to-zinc-850 border border-rose-200 dark:border-rose-950 rounded-2xl space-y-4 shadow-sm text-left animate-fade-in">
-            <div className="flex items-center gap-1.5 text-[10px] font-bold text-rose-600 dark:text-rose-455 uppercase tracking-wider font-mono">
-              <AlertCircle className="w-4 h-4" /> 🛑 Avoidance Block: Decomposition Required
-            </div>
-            <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] leading-relaxed">
-              You've postponed <strong>"${item.title}"</strong> multiple times. Let's break it down into exactly 3 smaller, actionable subtasks to get you started.
-            </p>
-
-            <div className="flex gap-2 border-b border-neutral-200 dark:border-zinc-750 pb-2">
-              <button
-                onClick={() => setDecompositionMethod("ai")}
-                className={`text-xs font-bold pb-1 transition-all cursor-pointer ${ decompositionMethod === "ai" ? "border-b-2 border-primary text-primary" : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)]" }`}
-              >
-                ✨ AI Auto-Split
-              </button>
-              <button
-                onClick={() => setDecompositionMethod("manual")}
-                className={`text-xs font-bold pb-1 transition-all cursor-pointer ${ decompositionMethod === "manual" ? "border-b-2 border-primary text-primary" : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)]" }`}
-              >
-                ✍️ Split Manually
-              </button>
-            </div>
-
-            {decompositionMethod === "manual" ? (
-              <div className="space-y-3">
-                {[0, 1, 2].map(idx => (
-                  <div key={idx} className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder={`Action Step ${idx + 1}`}
-                      value={manualSubtasks[idx] || ""}
-                      onChange={(e) => {
-                        const updated = [...manualSubtasks];
-                        updated[idx] = e.target.value;
-                        setManualSubtasks(updated);
-                      }}
-                      className="flex-1 px-3 py-2 border border-neutral-250 dark:border-zinc-750 rounded-xl text-xs bg-white dark:bg-zinc-800 focus:outline-none focus:border-primary text-neutral-805 dark:text-[var(--text-primary)]"
-                    />
-                    <input
-                      type="number"
-                      placeholder="Mins"
-                      value={manualSubtaskDurations[idx] || ""}
-                      onChange={(e) => {
-                        const updated = [...manualSubtaskDurations];
-                        updated[idx] = Number(e.target.value);
-                        setManualSubtaskDurations(updated);
-                      }}
-                      className="w-16 px-2 py-2 border border-neutral-250 dark:border-zinc-750 rounded-xl text-xs text-center bg-white dark:bg-zinc-800 focus:outline-none focus:border-primary text-neutral-805 dark:text-[var(--text-primary)]"
-                    />
-                  </div>
-                ))}
-                <button
-                  onClick={() => {
-                    const validSubtasks = manualSubtasks.filter(title => title && title.trim() !== "");
-                    if (validSubtasks.length < 2) {
-                      showToast("Please enter at least 2 subtasks to split the workload.", "warning");
-                      return;
-                    }
-                    executeInlineDecomposition(item.id, validSubtasks.map((title, i) => ({
-                      title,
-                      duration: manualSubtaskDurations[i] || Math.round(item.duration_minutes / validSubtasks.length)
-                    })));
-                    setManualSubtasks([]);
-                    setManualSubtaskDurations([]);
-                  }}
-                  className="w-full py-2.5 bg-primary hover:bg-primary-dark text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-primary/10 active:scale-97 cursor-pointer"
-                >
-                  Confirm Manual Split
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {aiDecomposePreview.length > 0 ? (
-                  <div className="space-y-2.5 bg-[var(--bg-page)] dark:bg-zinc-800 p-3 rounded-2xl border border-neutral-200 dark:border-zinc-750 animate-fade-in">
-                    <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">AI Generated Steps:</span>
-                    {aiDecomposePreview.map((sub, idx) => (
-                      <div key={idx} className="flex justify-between items-center text-xs font-semibold">
-                        <span className="text-[var(--text-primary)] dark:text-[var(--text-primary)]">• {sub.title}</span>
-                        <span className="text-primary font-mono">{sub.duration} mins</span>
-                      </div>
-                    ))}
-                    <div className="flex gap-2 pt-2">
-                      <button
-                        onClick={() => setAiDecomposePreview([])}
-                        className="flex-1 py-2 text-xs font-bold border border-neutral-200 dark:border-zinc-750 rounded-xl hover:bg-neutral-50 dark:hover:bg-zinc-750 transition-all cursor-pointer text-center text-[var(--text-secondary)] dark:text-[var(--text-primary)]"
-                      >
-                        Regenerate
-                      </button>
-                      <button
-                        onClick={() => {
-                          executeInlineDecomposition(item.id, aiDecomposePreview);
-                          setAiDecomposePreview([]);
-                        }}
-                        className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-500/10 active:scale-97 cursor-pointer text-center"
-                      >
-                        Replace & Sched
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    onClick={async () => {
-                      setIsDecomposingLoading(item.id);
-                      try {
-                        const response = await fetch("/api/decompose-task", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ taskTitle: item.title, duration: item.duration_minutes })
-                        });
-                        if (!response.ok) throw new Error("AI decomposition failed");
-                        const data = await response.json();
-                        setAiDecomposePreview(data.subtasks || []);
-                      } catch (e) {
-                        showToast("AI Decomposition hit a snag. Try manual split!", "warning");
-                      } finally {
-                        setIsDecomposingLoading(null);
-                      }
-                    }}
-                    disabled={isDecomposingLoading === item.id}
-                    className="w-full py-2.5 bg-gradient-to-r from-primary to-indigo-650 hover:from-primary-dark hover:to-indigo-750 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-primary/10 active:scale-97 cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    {isDecomposingLoading === item.id ? (
-                      <>
-                        <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />
-                        <span>Decomposing...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4 fill-white/10" />
-                        <span>✨ Auto-Decompose with AI Coach</span>
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </>
-    );
-  })()}
-
-  {/* Description block */}
-  <div>
-  <h5 className="text-[10px] uppercase font-bold text-[var(--text-tertiary)] mb-1">Description</h5>
- {task?.description ? (
- <p className="whitespace-pre-wrap leading-relaxed text-xs">{task.description}</p>
- ) : (
- <p className="italic text-[var(--text-tertiary)] text-xs">No description provided.</p>
- )}
- </div>
-
- {/* Edit/Delete row */}
- <div className="flex gap-2 pt-2 border-t border-[var(--border-strong)] dark:border-[var(--border)]/50 dark:border-[#3E404D]">
- <button
- onClick={(e) => { e.stopPropagation(); handleOpenEditFlexible(task!); }}
- className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-[var(--bg-card)] dark:bg-[#2A2B36] border border-[var(--border-strong)] dark:border-[var(--border)] dark:border-[#3E404D] hover:border-primary text-[var(--text-secondary)] dark:text-[var(--text-primary)] hover:text-primary rounded-lg text-xs font-semibold shadow-3xs cursor-pointer transition-all"
- >
- <Edit2 className="w-3.5 h-3.5" /> Edit
- </button>
- <button
- onClick={(e) => { e.stopPropagation(); handleDeleteFlexible(item.id); }}
- className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-[var(--bg-card)] dark:bg-[#2A2B36] border border-[var(--border-strong)] dark:border-[var(--border)] dark:border-[#3E404D] hover:border-red-400 text-[var(--text-secondary)] dark:text-[var(--text-primary)] hover:text-red-500 rounded-lg text-xs font-semibold shadow-3xs cursor-pointer transition-all"
- >
- <Trash2 className="w-3.5 h-3.5" /> Delete
- </button>
- </div>
-
- {/* AI Consequence Box */}
- <div className="mt-3 p-3 bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200/60 dark:border-amber-700/30 rounded-lg">
- <h5 className="text-[10px] uppercase font-bold text-amber-600 flex items-center gap-1 mb-1.5">
- <Zap className="w-3 h-3 fill-amber-500/20" /> Consequence Insight
- </h5>
- {task?.consequence_insight ? (
- <p className="text-xs text-amber-900/80 dark:text-amber-200/70 leading-relaxed whitespace-pre-wrap">{task.consequence_insight}</p>
- ) : (
- <button
- onClick={(e) => { e.stopPropagation(); fetchConsequenceInsight(task!); }}
- disabled={isProcessingAIReasoning}
- className="w-full py-2 bg-white dark:bg-[var(--bg-card)] dark:bg-[#2A2B36] border border-amber-200 dark:border-amber-700/50 hover:bg-amber-100/50 text-amber-700 dark:text-amber-400 rounded text-xs font-semibold shadow-3xs cursor-pointer transition-colors"
- >
- {isProcessingAIReasoning && openInsightTaskId === item.id ? "Analyzing..." : "Generate Consequence Insight"}
- </button>
- )}
- </div>
- </div>
- )}
- 
- </div>
-
- {/* Prominent Action Button Bar (System 1) */}
-  {!isFixedType && !isCompleted && !isSkipped && !isExpired && (
-  <div className="mt-3.5 grid grid-cols-4 gap-1.5 pt-3 border-t border-[var(--border)] dark:border-[var(--border)]/70 font-sans w-full">
-  {/* ✓ Done */}
-  <button
-  onClick={() => setEffortDialogTaskId(item.id)}
-  className="flex items-center justify-center gap-1 py-2 px-1 bg-emerald-50 dark:bg-emerald-950/20 hover:bg-emerald-100 border border-emerald-250 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-400 text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs w-full"
-  >
-  <Check className="w-3.5 h-3.5" />
-  <span>Done</span>
-  </button>
-
-  {/* Timer button */}
-  {activeTimer && activeTimer.taskId === item.id ? (
-  <button
-  onClick={handleStopTimer}
-  className="flex items-center justify-center gap-1 py-2 px-1 bg-rose-50 dark:bg-rose-950/20 hover:bg-rose-100 border border-rose-250 dark:border-rose-900/50 text-rose-700 dark:text-rose-455 text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs w-full animate-pulse"
-  >
-  <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-ping shrink-0" />
-  <span>Stop</span>
-  </button>
-  ) : (
-  <button
-  onClick={() => handleStartTimer(item.id, item.title)}
-  className="flex items-center justify-center gap-1 py-2 px-1 bg-blue-50 dark:bg-blue-950/20 hover:bg-blue-100 border border-blue-250 dark:border-blue-900/50 text-blue-700 dark:text-blue-400 text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs w-full"
-  >
-  <Play className="w-3 h-3 fill-blue-550/20" />
-  <span>Start</span>
-  </button>
-  )}
-
-  {/* ↗ Delay */}
-  <button
-  onClick={() => {
-    const task = flexibleTasks.find(t => t.id === item.id);
-    const delayCount = task?.delay_count || 0;
-    const carryOverCount = task?.carry_over_count || 0;
-    const avoidance = Math.max(delayCount, carryOverCount);
-    
-    if (avoidance >= 3) {
-      setExpandedTaskId(item.id);
-      setDecompositionMethod("ai");
-      showToast("Postponement blocked: Split this task to continue", "warning");
-      triggerHaptic(30);
-    } else if (avoidance === 2) {
-      setExpandedTaskId(item.id);
-      showToast("Please log friction before delaying this task", "info");
-      triggerHaptic(20);
-    } else {
-      setDelayDurationPromptTaskId(item.id);
-    }
-  }}
-  className="flex items-center justify-center gap-1 py-2 px-1 bg-amber-50 dark:bg-amber-950/20 hover:bg-amber-100 border border-amber-250 dark:border-amber-900/50 text-amber-700 dark:text-amber-400 text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs w-full"
-  >
-  <ArrowUpRight className="w-3.5 h-3.5" />
-  <span>Delay</span>
-  </button>
-
-  {/* ⋮ More options */}
-  <button
-  onClick={() => setActionTrayTaskId(prev => prev === item.id ? null : item.id)}
-  className={`flex items-center justify-center gap-1 py-2 px-1 border text-[10px] sm:text-xs font-bold rounded-xl transition-all cursor-pointer w-full ${ actionTrayTaskId === item.id ? "bg-neutral-100 dark:bg-zinc-800 border-neutral-300 dark:border-zinc-700 text-neutral-800 dark:text-[var(--text-primary)]" : "bg-neutral-50 dark:bg-zinc-900 border-neutral-200 dark:border-zinc-800 hover:bg-neutral-100 dark:hover:bg-zinc-800 text-neutral-600 dark:text-[var(--text-primary)]" }`}
-  >
-  <span>More</span>
-  </button>
- </div>
- )}
-
- {/* Friction prompt overlay (System 3.5 Friction Logging) */}
- {frictionPrompt?.taskId === item.id && (
- <div className="mt-3 p-4 bg-gradient-to-br from-[#FFFDF9] to-white border border-amber-200 rounded-2xl space-y-3.5 animate-fade-in shadow-xs text-left">
- <div className="flex items-center justify-between">
- <span className="text-[11px] font-bold text-amber-800 uppercase tracking-wider flex items-center gap-1 font-mono">
- <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10" /> Postponing: What is the friction?
- </span>
- <button 
- onClick={() => setFrictionPrompt(null)} 
- className="text-neutral-350 hover:text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] cursor-pointer"
- >
- <X className="w-3.5 h-3.5" />
- </button>
- </div>
-
- <div className="grid grid-cols-2 gap-1.5">
- {[
- { key: "low_energy", label: "⚡ Low Energy", desc: "Mentally drained" },
- { key: "distraction", label: "🔊 Distraction", desc: "Doomscrolling/phone" },
- { key: "resistance", label: "🐢 Resistance", desc: "Starting is hard" },
- { key: "emotional_resistance", label: "😨 Emotional Resistance", desc: "Fear, anxiety, perfectionism" },
- { key: "unclear_task", label: "❓ Unclear Task", desc: "Too large or vague" },
- { key: "external_interrupt", label: "🚨 Interruption", desc: "External meeting/event" },
- { key: "unknown", label: "🤷 Other", desc: "Unknown/misc" }
- ].map((opt) => (
- <button
- key={opt.key}
- onClick={() => {
- setFrictionPrompt(prev => prev ? { ...prev, reason: opt.key as FrictionReason } : null);
- }}
- className={`p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-0.5 ${ frictionPrompt.reason === opt.key ? "bg-amber-50 border-amber-450 text-amber-850 ring-1 ring-amber-450/20" : "bg-white dark:bg-[var(--bg-card)] hover:bg-neutral-55 text-neutral-700 dark:text-[var(--text-primary)] border-neutral-200 dark:border-[var(--border)]" }`}
- >
- <span className="text-xs font-bold leading-none">{opt.label}</span>
- <span className="text-[9px] text-neutral-450 dark:text-[var(--text-secondary)] leading-none">{opt.desc}</span>
- </button>
- ))}
- </div>
-
- {frictionPrompt.reason && (
- <div className="space-y-2 pt-2 border-t border-[var(--border)] dark:border-[var(--border)]">
- <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">
- {frictionPrompt.isSkip || frictionPrompt.actionType === "tomorrow" ? "Confirm action" : "Select postponement type"}
- </span>
- <div className="flex gap-1.5">
- {frictionPrompt.isSkip || frictionPrompt.actionType === "tomorrow" ? (
- <button
- onClick={() => {
- const oldPrompt = frictionPrompt;
- if (oldPrompt && oldPrompt.reason) {
- executePostponeWithFriction(oldPrompt.taskId, "tomorrow", oldPrompt.reason, oldPrompt.start_time);
- }
- }}
- className="flex-1 py-2 text-xs font-bold rounded-xl text-white bg-red-550 hover:bg-red-655 active:bg-red-700 cursor-pointer shadow-sm transition-colors text-center font-display"
- >
- Confirm Move to Tomorrow
- </button>
- ) : (
- [
- { type: "delay_15", label: "⏱ Delay 15m" },
- { type: "delay_30", label: "☕ Delay 30m" },
- { type: "tomorrow", label: "📅 Tomorrow" }
- ].map(act => (
- <button
- key={act.type}
- onClick={() => {
- const oldPrompt = frictionPrompt;
- if (oldPrompt && oldPrompt.reason) {
- executePostponeWithFriction(oldPrompt.taskId, act.type as any, oldPrompt.reason, oldPrompt.start_time);
- }
- }}
- className="flex-1 py-2 text-xs font-bold rounded-xl text-white bg-amber-550 hover:bg-amber-600 active:bg-amber-700 cursor-pointer shadow-sm transition-colors text-center"
- >
- {act.label}
- </button>
- ))
- )}
- </div>
- </div>
- )}
- </div>
- )}
-
- {/* Direct Delay Duration Picker Overlay */}
- {delayDurationPromptTaskId === item.id && (
- <div className="mt-3 p-4 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-2xl space-y-3.5 animate-fade-in shadow-xs text-left">
- <div className="flex items-center justify-between">
- <span className="text-[11px] font-bold text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] uppercase tracking-wider flex items-center gap-1 font-mono">
- ⏱ Choose Delay Duration
- </span>
- <button 
- onClick={() => setDelayDurationPromptTaskId(null)} 
- className="text-neutral-350 hover:text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] cursor-pointer"
- >
- <X className="w-3.5 h-3.5" />
- </button>
- </div>
- <div className="flex gap-2">
- <button
- onClick={() => executePostponeDirectly(item.id, "delay_15", item.start_time)}
- className="flex-1 py-2 text-xs font-bold rounded-xl bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] cursor-pointer transition-colors text-center font-display"
- >
- ⏱ 15m
- </button>
- <button
- onClick={() => executePostponeDirectly(item.id, "delay_30", item.start_time)}
- className="flex-1 py-2 text-xs font-bold rounded-xl bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] cursor-pointer transition-colors text-center font-display"
- >
- ☕ 30m
- </button>
- <button
- onClick={() => {
- setDelayDurationPromptTaskId(null);
- setFrictionPrompt({
- taskId: item.id,
- start_time: item.start_time,
- actionType: "tomorrow"
- });
- }}
- className="flex-1 py-2 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-600 text-white cursor-pointer shadow-sm transition-colors text-center font-display"
- >
- 📅 Tomorrow
- </button>
- </div>
- </div>
- )}
- </div>
-
- {/* Inline Effort Dialog (frictionless completion) */}
- {effortDialogTaskId === item.id && (
- <div className="mt-3 p-3.5 bg-gradient-to-br from-[#F6F5FF] to-white border border-[#E0D9FF] rounded-2xl space-y-3 animate-fade-in shadow-sm">
- <div className="flex items-center justify-between">
- <span className="text-[11px] font-bold text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] uppercase tracking-wider">How did it go?</span>
- <button onClick={() => setEffortDialogTaskId(null)} className="text-neutral-300 hover:text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] cursor-pointer"><X className="w-3.5 h-3.5" /></button>
- </div>
- <div className="grid grid-cols-3 gap-2">
- {(["good", "okay", "struggled"] as const).map((effort) => (
- <button
- key={effort}
- onClick={() => {
- const now = new Date();
- let estimatedDuration = item.duration_minutes;
- let source: "timer" | "message" | "timestamp" | "default" = "default";
- let confidence = 0.1;
-
- if (activeTimer && activeTimer.taskId === item.id) {
- estimatedDuration = Math.max(1, Math.round((Date.now() - activeTimer.startedAt) / 60000));
- source = "timer";
- confidence = 1.0;
- setActiveTimer(null);
- } else {
- const scheduledItem = daySchedule.items.find(i => i.id === item.id);
- if (scheduledItem?.start_time) {
- const scheduledStartMins = timeToMinutes(scheduledItem.start_time);
- const currentMins = now.getHours() * 60 + now.getMinutes();
- if (currentMins > scheduledStartMins) {
- estimatedDuration = Math.max(10, Math.min(300, currentMins - scheduledStartMins));
- source = "timestamp";
- confidence = 0.3;
- }
- }
- }
-
- const updated = flexibleTasks.map(t =>
- t.id === item.id ? {
- ...t,
- status: "done" as const,
- focus_quality_effort: effort,
- completed_at: now.toISOString(),
- actual_duration_minutes: estimatedDuration,
- category: t.category || getTaskCategory(t.title),
- duration_log_confidence: confidence,
- duration_log_source: source,
- } : t
- );
- handleUpdateFlexible(updated);
- recordTaskExecutionLog(item.id, true, false, estimatedDuration, undefined, source, confidence);
- checkDayComplete(updated);
- setEffortDialogTaskId(null);
- showToast(effort === "good" ? "Great work! 💪" : effort === "okay" ? "Done! Keep going." : "Noted. We'll adjust tomorrow.", "success");
- triggerHaptic(40);
- }}
- className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer capitalize ${ effort === "good" ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100" : effort === "okay" ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100" : "bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100" }`}
- >
- {effort === "good" ? "✅ Good" : effort === "okay" ? "👌 Okay" : "😤 Struggled"}
- </button>
- ))}
- </div>
- <p className="text-[10px] text-[var(--text-tertiary)] leading-relaxed font-sans">Your effort rating helps DayFlow learn your real capacity over time — no timers needed.</p>
- </div>
- )}
-
- {/* Inline Task Expansion (workout exercises / class details / project engine details) */}
- {((task && (task.description || task.projectId)) || (item as any).description) && (() => {
- const linkedProj = task?.projectId ? projects.find(p => p.id === task.projectId) : null;
- return (
- <div className="mt-2">
- <button
- onClick={() => setExpandedTaskIds(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
- className="flex items-center gap-1 text-[10px] font-bold text-primary/70 hover:text-primary cursor-pointer transition-colors"
- >
- <ChevronDown className={`w-3 h-3 transition-transform ${expandedTaskIds[item.id] ? "rotate-180" : ""}`} />
- {expandedTaskIds[item.id] ? "Hide details" : (linkedProj ? "See project progress" : "See details & consequences")}
- </button>
- {expandedTaskIds[item.id] && (
- <div className="mt-2 space-y-3">
- 
- {/* Standard Description Box */}
- {task?.description && !linkedProj && (
- <div className="p-3 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)]/60 rounded-xl">
- <span className="text-[9px] font-black text-[var(--text-tertiary)] uppercase tracking-widest block mb-1">Description / Subtasks</span>
- <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] whitespace-pre-wrap">{task.description}</p>
- </div>
- )}
-
- {/* AI Consequence Box */}
- {!isFixedType && !isCompleted && task && (
- <div className="p-3 bg-amber-50/50 border border-amber-200/60 rounded-xl space-y-2">
- <div className="flex items-center justify-between">
- <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest flex items-center gap-1">
- <Zap className="w-3 h-3" /> AI Consequence Analysis
- </span>
- <button 
- onClick={(e) => {
- e.stopPropagation();
- fetchConsequenceInsight(task);
- }}
- className="text-[9px] font-bold text-amber-600 hover:underline cursor-pointer"
- >
- Regenerate
- </button>
- </div>
- {task.consequence_insight ? (
- <p className="text-xs text-amber-800 leading-relaxed">
- {task.consequence_insight}
- </p>
- ) : (
- <p className="text-xs text-amber-800/60 italic">
- Click "Regenerate" to analyze the systemic impact of skipping this task.
- </p>
- )}
- </div>
- )}
-
- {linkedProj ? (() => {
- const daysLeft = Math.max(1, Math.ceil((new Date(linkedProj.deadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)));
- const totalSubtasks = linkedProj.phases.flatMap(p => p.subtasks);
- const pendingSubtasks = totalSubtasks.filter(s => s.status === "pending");
- const remainingHours = Math.round(pendingSubtasks.reduce((acc, s) => acc + s.duration_minutes, 0) / 60 * 10) / 10;
- const urgency = Math.round((remainingHours / daysLeft) * 10) / 10;
- 
- return (
- <div className="p-4.5 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)]/60 rounded-2xl space-y-3.5 animate-fade-in shadow-xs">
- <div className="flex justify-between items-start gap-4">
- <div className="space-y-0.5">
- <span className="text-[9px] font-black text-[var(--text-tertiary)] uppercase tracking-widest leading-none">Project Container</span>
- <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] leading-snug">{linkedProj.title}</h4>
- {linkedProj.goal && <p className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] leading-normal">{linkedProj.goal}</p>}
- </div>
- <div className="text-right shrink-0">
- <span className="text-[9px] font-black text-[var(--text-tertiary)] uppercase tracking-widest leading-none">Deadline</span>
- <p className="text-xs font-black text-primary leading-snug">{linkedProj.deadline}</p>
- </div>
- </div>
- 
- {/* Progress bar */}
- <div className="space-y-1">
- <div className="flex justify-between text-[10px] font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">
- <span>Overall Progress</span>
- <span>{linkedProj.progress}%</span>
- </div>
- <div className="w-full bg-neutral-200 rounded-full h-1.5 overflow-hidden">
- <div className="bg-primary h-full rounded-full transition-all duration-300" style={{ width: `${linkedProj.progress}%` }} />
- </div>
- </div>
-
- {/* Urgency & Load Engine info */}
- <div className="grid grid-cols-2 gap-2.5 bg-white dark:bg-[var(--bg-card)] border border-[var(--border)] dark:border-[var(--border)] p-2.5 rounded-xl text-center shadow-xs">
- <div>
- <span className="text-[9px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">Urgency Score</span>
- <span className={`text-xs font-black ${urgency > 2 ? 'text-amber-500' : 'text-neutral-700 dark:text-[var(--text-primary)]'}`}>
- {urgency}h/day
- </span>
- </div>
- <div>
- <span className="text-[9px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block">Est. Left</span>
- <span className="text-xs font-black text-[var(--text-secondary)] dark:text-[var(--text-primary)]">
- {remainingHours} hours
- </span>
- </div>
- </div>
-
- {/* Hierarchical subtasks view */}
- <div className="space-y-2">
- <span className="text-[9px] font-extrabold text-[var(--text-tertiary)] uppercase tracking-wider block">Timeline Steps</span>
- <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
- {linkedProj.phases.map(phase => (
- <div key={phase.id} className="space-y-1">
- <span className="text-[9px] font-black text-primary/80 uppercase block">{phase.title}</span>
- <div className="space-y-1.5 pl-1.5 border-l border-[var(--border-strong)] dark:border-[var(--border)]/50">
- {phase.subtasks.map(sub => {
- const isCurrent = sub.id === task?.subtaskId;
- const isDone = sub.status === "done";
- const isSkipped = sub.status === "skipped";
- return (
- <div key={sub.id} className="flex items-center justify-between text-[11px] gap-4">
- <div className="flex items-center gap-2 min-w-0">
- {isDone ? (
- <CheckCircle className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
- ) : isSkipped ? (
- <X className="w-3.5 h-3.5 text-[var(--text-tertiary)] shrink-0" />
- ) : isCurrent ? (
- <ArrowRight className="w-3.5 h-3.5 text-primary animate-pulse shrink-0 font-black" />
- ) : (
- <Circle className="w-2.5 h-2.5 text-neutral-300 shrink-0" />
- )}
- <span className={`truncate font-medium ${isDone ? 'line-through text-neutral-450 dark:text-[var(--text-secondary)]' : isCurrent ? 'text-primary font-bold' : 'text-neutral-600 dark:text-[var(--text-primary)]'}`}>
- {sub.title}
- </span>
- </div>
- <span className="text-[9px] text-[var(--text-tertiary)] font-mono shrink-0">{sub.duration_minutes}m</span>
- </div>
- );
- })}
- </div>
- </div>
- ))}
- </div>
- </div>
- </div>
- );
- })() : (
- <div className="p-3 bg-[#FAFAFA] border border-[var(--border)] dark:border-[var(--border)] rounded-xl space-y-1.5 animate-fade-in">
- {((task?.description || (item as any).description) || "").split("\n").filter(Boolean).map((line: string, i: number) => (
- <div key={i} className="flex items-start gap-2 text-xs">
- <span className="w-4 h-4 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0 text-[9px] font-bold mt-0.5">{i + 1}</span>
- <span className="text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-medium leading-relaxed">{line.replace(/^[-•*]\s*/, "")}</span>
- </div>
- ))}
- </div>
- )}
- </div>
- )}
- </div>
- );
- })()}
-
- {/* Deadline badge */}
- {item.deadline && (
- <div className="mt-2 text-xs bg-amber-50 text-amber-700/80 border border-amber-100 rounded-lg px-2 py-0.5 w-max font-semibold ml-6">
- Due {new Date(item.deadline).toLocaleDateString("en", { weekday: "short", day: "numeric" })}
- </div>
- )}
-
- {/* ⚡ AI Consequence Insight & Action Tray */}
- {!isFixedType && !isCompleted && (
- <div className="mt-3 border-t border-[var(--border)] dark:border-[var(--border)] pt-2.5">
- <div className="flex items-center gap-2">
- {!task?.consequence_teaser && (
- <button
- onClick={() => {
- if (openInsightTaskId === item.id) {
- setOpenInsightTaskId(null);
- } else if (task) {
- fetchConsequenceInsight(task);
- }
- }}
- className={`flex items-center gap-1.5 text-xs font-bold cursor-pointer transition-all ${openInsightTaskId === item.id ? "text-amber-600" : "text-amber-500 hover:text-amber-600"}`}
- >
- <Zap className={`w-3.5 h-3.5 ${loadingInsightTaskId === item.id ? "animate-pulse text-amber-500" : "text-amber-500"}`} />
- {openInsightTaskId === item.id ? "Hide consequence description" : "If skipped →"}
- </button>
- )}
-
- {!isEmergencyItem && (
- <>
- {!task?.consequence_teaser && <span className="text-neutral-300 text-xs">•</span>}
- <button
- onClick={() => setActionTrayTaskId(prev => prev === item.id ? null : item.id)}
- className="text-xs font-bold text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] transition-colors cursor-pointer flex items-center gap-1"
- >
- <span className={`transition-transform inline-block text-[8px] ${actionTrayTaskId === item.id ? "rotate-180" : ""}`}>▾</span>
- {actionTrayTaskId === item.id ? "Close options" : "Can't do this now?"}
- </button>
- </>
- )}
- </div>
-
- {openInsightTaskId === item.id && (
- <div className="mt-2.5 space-y-3 animate-fade-in text-left">
- {loadingInsightTaskId === item.id ? (
- <div className="p-3.5 bg-amber-50/70 border border-amber-200/50 rounded-2xl flex items-center gap-2 text-xs text-amber-600">
- <div className="w-3.5 h-3.5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0" />
- <span className="font-semibold">Analyzing real-world impact…</span>
- </div>
- ) : (() => {
- const consequenceKey = task ? getConsequenceCacheKey(task, "skip", 0, daySchedule.items, completedStreak, selectedDate) : "";
- const cached = consequenceCache[consequenceKey];
- if (!cached) {
- return (
- <div className="p-3.5 bg-amber-50/70 border border-amber-200/50 rounded-2xl">
- <p className="text-xs text-amber-800 leading-relaxed font-semibold">{task?.consequence_insight || "Tap again to analyze."}</p>
- </div>
- );
- }
-
- // Map emotional weight to premium styles
- const weightStyles = {
- critical: "border-red-200 bg-red-50 text-red-800",
- high: "border-orange-200 bg-orange-50 text-orange-800",
- medium: "border-amber-200 bg-amber-50/70 text-amber-800",
- low: "border-blue-100 bg-blue-50/50 text-blue-800",
- none: "border-neutral-200 dark:border-[var(--border)] bg-neutral-50 dark:bg-[var(--bg-card-hover)] text-neutral-800 dark:text-[var(--text-primary)]"
- };
- const style = weightStyles[cached.emotional_weight] || weightStyles.none;
-
- // Get headline based on primary_message_slot
- const headline = cached.primary_message_slot === "immediate" 
- ? cached.immediate_effect 
- : cached.primary_message_slot === "cascade"
- ? cached.cascade_effect
- : cached.goal_effect;
-
- return (
- <div className={`p-4 border rounded-2xl space-y-3 ${style}`}>
- {/* Severity Warn Banner */}
- {cached.emotional_weight === "critical" && (
- <div className="p-2.5 bg-red-650 text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 animate-pulse">
- <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
- <span>CRITICAL CASCADE: Skipping breaks your project dependencies!</span>
- </div>
- )}
- {cached.emotional_weight === "high" && (
- <div className="p-2.5 bg-orange-500 text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5">
- <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
- <span>HIGH IMPACT TRADE-OFF: Consider taking a partial compromise.</span>
- </div>
- )}
-
- {/* Headline */}
- <div className="space-y-0.5">
- <span className="text-[9px] font-bold tracking-wider uppercase opacity-60">Primary Impact</span>
- <h5 className="text-xs font-bold leading-snug">{headline}</h5>
- </div>
-
- {/* Expanded details */}
- <div className="pt-2 border-t border-current/10 space-y-1.5 text-xs opacity-90 leading-relaxed font-sans">
- <p><strong>Immediate:</strong> {cached.immediate_effect}</p>
- <p><strong>Downstream:</strong> {cached.cascade_effect}</p>
- <p><strong>Goal Momentum:</strong> {cached.goal_effect}</p>
- </div>
-
- {/* Recommendations */}
- <div className="p-3 bg-[var(--bg-card)] rounded-xl space-y-2 border border-current/5">
- <div className="text-[11px] text-[var(--text-primary)] dark:text-[var(--text-primary)]">
- <span className="font-bold block text-primary text-[9px] uppercase tracking-wider mb-0.5">💡 Best Action Path</span>
- <p className="leading-relaxed font-medium">{cached.recommendation.best_action}</p>
- </div>
- <div className="text-[11px] text-[var(--text-primary)] dark:text-[var(--text-primary)] pt-1.5 border-t border-[var(--border)] dark:border-[var(--border)]">
- <span className="font-bold block text-emerald-700 text-[9px] uppercase tracking-wider mb-0.5">🌱 Minimum Viable Progress (MVP)</span>
- <p className="leading-relaxed font-semibold">{cached.recommendation.minimum_viable_progress}</p>
- </div>
- </div>
-
- {/* Negotiation Options */}
- {cached.negotiation_options && cached.negotiation_options.length > 0 && (
- <div className="space-y-2 pt-1">
- <span className="text-[9px] font-bold tracking-wider uppercase opacity-60 block">Empathy-driven Negotiations</span>
- <div className="flex flex-col gap-1.5">
- {cached.negotiation_options.map((opt, oIdx) => (
- <button
- key={oIdx}
- type="button"
- onClick={() => task && executeNegotiationCommand(task, opt.command)}
- className="flex items-center justify-between p-2.5 bg-white dark:bg-[var(--bg-card)] hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] border border-neutral-150 dark:border-[var(--border)] rounded-xl text-left transition-all cursor-pointer shadow-sm group w-full"
- >
- <div className="space-y-0.5 pr-2">
- <span className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] group-hover:text-primary transition-colors">{opt.label}</span>
- <span className="text-[10px] text-[var(--text-tertiary)] block leading-tight">{opt.consequence_delta}</span>
- </div>
- <span className="text-[10px] font-bold uppercase shrink-0 px-2 py-0.5 rounded bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] border group-hover:bg-primary/10 group-hover:text-primary group-hover:border-primary/20 transition-all font-mono">
- {opt.strategy.replace("_", " ")}
- </span>
- </button>
- ))}
- </div>
- </div>
- )}
- </div>
- );
- })()}
- </div>
- )}
-
- {actionTrayTaskId === item.id && (
- <div className="mt-2.5 flex flex-wrap gap-1.5 animate-fade-in">
- <button onClick={() => { handleOpenEditFlexible(flexibleTasks.find(t => t.id === item.id)!); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors cursor-pointer flex items-center gap-1.5"><Edit2 className="w-3.5 h-3.5" /> Edit</button>
- <button onClick={() => { showToast("10 min break added.", "info"); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors cursor-pointer">☕ 10 min break</button>
- <button onClick={() => { const result = simulateDelayCost(daySchedule.items, item.id, 30, appSettings.day_end, todayFlexCount, flexibleTasks, completedStreak); setConsequenceState({ taskId: item.id, mode: "break", breakMins: 30, result }); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 transition-colors cursor-pointer">☕ 30 min break</button>
- <button onClick={() => { setMoveSheetTaskId(item.id); setActionTrayTaskId(null); handleOpenAICopilot(); setCopilotInput(`I want to move "${item.title}" to later today. What slots are available?`); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-600 border border-indigo-100 hover:bg-indigo-100 transition-colors cursor-pointer">↔ Move later</button>
- <button onClick={() => { const result = simulateDelayCost(daySchedule.items, item.id, 0, appSettings.day_end, todayFlexCount, flexibleTasks, completedStreak); setConsequenceState({ taskId: item.id, mode: "skip", result }); setActionTrayTaskId(null); }} className="px-3 py-2 rounded-xl text-xs font-bold bg-red-50 text-red-500 border border-red-100 hover:bg-red-100 transition-colors cursor-pointer">✕ Skip today</button>
- </div>
- )}
-
- {consequenceState?.taskId === item.id && (
- <div className="mt-3 p-4 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-2xl shadow-sm space-y-3 animate-fade-in text-left">
- <p className="text-xs font-bold text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] uppercase tracking-wider">
- {consequenceState.mode === "skip" ? `Skipping "${item.title}" today` : `Taking a ${consequenceState.breakMins} min break`}
- </p>
- <div className="space-y-1">
- {consequenceState.result.shiftedTasks.slice(0, 3).map(st => (
- <div key={st.id} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)]">
- <span className="text-neutral-300">·</span>
- <span className="font-medium truncate max-w-[120px]">{st.title}</span>
- <span className="text-[var(--text-tertiary)] shrink-0 font-mono text-[10px]">→ {st.newStart} (was {st.oldStart})</span>
- </div>
- ))}
- {consequenceState.result.sleepShiftMins > 0 && (
- <div className="flex items-center gap-1.5 text-xs text-red-600 font-semibold">
- <Moon className="w-3.5 h-3.5" /><span>Sleep shifts +{consequenceState.result.sleepShiftMins} min later</span>
- </div>
- )}
- {consequenceState.result.streakBreaks && completedStreak > 0 && (
- <div className="flex items-center gap-1.5 text-xs text-orange-600 font-semibold">
- <Flame className="w-3.5 h-3.5" /><span>{completedStreak}-day streak breaks</span>
- </div>
- )}
- {consequenceState.mode === "skip" && consequenceState.result.freeTimeLostMins > 0 && (
- <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium pt-1 mt-1 border-t border-[var(--border)] dark:border-[var(--border)]">
- <span className="text-neutral-300">·</span><span>Tonight: +{consequenceState.result.freeTimeLostMins} min free time</span>
- </div>
- )}
- </div>
- {consequenceState.mode === "skip" && (
- <div className="p-2.5 bg-primary/5 border border-primary/15 rounded-xl">
- <p className="text-xs text-primary font-semibold">💡 Do {Math.max(20, Math.round(item.duration_minutes * 0.4))} min now → preserves momentum & streak</p>
- </div>
- )}
- <div className="flex flex-wrap gap-2 pt-1">
- {consequenceState.mode === "skip" && (
- <button onClick={() => { const r = Math.max(20, Math.round(item.duration_minutes * 0.4)); handleUpdateFlexible(flexibleTasks.map(t => t.id === item.id ? { ...t, duration_minutes: r, partial_completion: true, partial_duration_minutes: r } : t)); setConsequenceState(null); showToast(`Reduced to ${r} min. Momentum preserved. ✓`, "success"); triggerHaptic(30); }} className="px-3.5 py-2 text-xs font-bold bg-primary text-white rounded-xl hover:bg-primary-dark transition-colors cursor-pointer shadow-sm">Do {Math.max(20, Math.round(item.duration_minutes * 0.4))} min</button>
- )}
- {consequenceState.mode === "break" && (
- <button onClick={() => { showToast(`${consequenceState.breakMins} min break added.`, "info"); setConsequenceState(null); triggerHaptic(20); }} className="px-3.5 py-2 text-xs font-bold bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors cursor-pointer">Take {consequenceState.breakMins} min</button>
- )}
- <button onClick={() => setConsequenceState(null)} className="px-3.5 py-2 text-xs font-bold bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors cursor-pointer">Do full task</button>
- {consequenceState.mode === "skip" && (
- <button onClick={() => { setFrictionPrompt({ taskId: item.id, start_time: item.start_time, isSkip: true }); setConsequenceState(null); triggerHaptic(50); }} className="px-3.5 py-2 text-xs font-bold bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] rounded-xl hover:bg-neutral-200 dark:bg-[var(--bg-card-hover)] transition-colors cursor-pointer">Skip anyway</button>
- )}
- </div>
- </div>
- )}
- </div>
- )}
- </div>
-
- {/* Drop indicator after */}
- {isDragOver && dragOverPosition === "after" && (
- <div className="absolute -bottom-2 left-0 right-0 h-0.5 bg-primary rounded-full z-10 shadow-sm shadow-primary/30" />
- )}
-
- {/* Gap buffer display */}
- {gapMins > 0 && (
- <div className="relative my-4 ml-1.5 pl-6 py-2.5 border-l-2 border-dashed border-[var(--border-strong)] dark:border-[var(--border)]/90 flex items-center gap-2 select-none">
- <span className="absolute -left-[7.5px] top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full border border-[var(--border-strong)] dark:border-[var(--border)] bg-white dark:bg-[var(--bg-card)] flex items-center justify-center text-xs font-bold text-[var(--text-tertiary)]">
- +
- </span>
- <Coffee className="w-3.5 h-3.5 text-[#A06C10] shrink-0" />
- <div className="space-y-0.5 text-left">
- <span className="text-xs font-medium text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-sans block leading-none">
- {gapMins}m transition buffer
- </span>
- <span className="text-[11px] text-[#A06C10] font-mono block leading-none font-semibold">
- Adaptive break · Smart Circadian default
- </span>
- </div>
- </div>
- )}
- </div>
- );
- })}
-
- </div>
- )}
-
- </div>
- </div>  {/* Column 2: Day Coach Chat removed from background Today page to keep timeline visible */}
-
-
-
- </div>
- </div>
- )}
 
  {/* TAB VIEW 2: MASTER BACKLOG */}
- {activeTab === "backlog" && (
- <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto">
- 
- {/* Search / Filter Pills header with Center Toggle */}
-  <div className="flex flex-col mb-4 gap-4">
-    <div className="flex items-center justify-between w-full relative">
-      {/* Spacer to align center toggle on desktop */}
-      <div className="w-8 h-8 hidden md:block" />
-
-      {/* CENTER TOGGLE */}
-      <div className="flex bg-[var(--bg-card-hover)] p-1 rounded-full items-center shadow-inner mx-auto">
-        <button
-          onClick={() => setBacklogTab("carried")}
-          className={`px-4 py-1.5 text-xs font-bold rounded-full transition-all cursor-pointer ${ backlogTab === "carried" ? "bg-white dark:bg-[var(--bg-card)] text-primary shadow-sm" : "text-neutral-550 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
-        >
-          Carried Forward
-        </button>
-        <button
-          onClick={() => setBacklogTab("dropped")}
-          className={`px-4 py-1.5 text-xs font-bold rounded-full transition-all cursor-pointer ${ backlogTab === "dropped" ? "bg-white dark:bg-[var(--bg-card)] text-rose-600 shadow-sm" : "text-neutral-550 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
-        >
-          Dropped
-        </button>
-      </div>
-
-      {/* RIGHT SIDE: FILTER DROPDOWN */}
-      {backlogTab === "carried" ? (
-        <div className="relative">
-          <button
-            onClick={() => setShowBacklogFilterDropdown(!showBacklogFilterDropdown)}
-            className={`p-2 rounded-full hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 border border-[var(--border-strong)] dark:border-[var(--border)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] cursor-pointer transition-all ${showBacklogFilterDropdown ? 'bg-[var(--bg-card-hover)] text-primary border-primary' : ''}`}
-            title="Filter Backlog"
-          >
-            <Filter className="w-4 h-4" />
-          </button>
-          
-          {showBacklogFilterDropdown && (
-            <div className="absolute right-0 mt-2 w-40 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-2xl shadow-xl z-30 py-1.5 animate-scale-up">
-              {(["all", "deadline", "anytime", "done"] as const).map((filter) => (
-                <button
-                  key={filter}
-                  onClick={() => {
-                    setBacklogFilter(filter);
-                    setShowBacklogFilterDropdown(false);
-                  }}
-                  className={`w-full text-left px-4 py-2 text-xs font-bold transition-colors cursor-pointer flex items-center justify-between ${ backlogFilter === filter ? "text-primary bg-primary/5" : "text-neutral-605 dark:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)]" }`}
-                >
-                  <span className="capitalize">{filter === "all" ? "Active" : filter === "deadline" ? "Has Deadline" : filter}</span>
-                  {backlogFilter === filter && <Check className="w-3.5 h-3.5 text-primary" />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="w-8 h-8" />
-      )}
-    </div>
-  </div>
-  {/* Backlog Grid list container */}
- <div className="flex-1 space-y-3 pb-24">
- {filteredBacklogTasks.length === 0 ? (
- <div className="py-20 text-center flex flex-col items-center justify-center space-y-3.5">
- <div className="p-4 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-full text-[var(--text-tertiary)] shadow-sm">
- <Zap className="w-7 h-7 stroke-[1.5]" />
- </div>
- <div>
- <p className="text-sm font-semibold text-[var(--text-primary)] dark:text-[var(--text-primary)]">Backlog queue is empty</p>
- <p className="text-xs text-[#9999B3] max-w-sm px-10 mt-1 leading-relaxed">
- No deadlines required; predictions map them automatically. Add tasks to fill up the backlog.
- </p>
- </div>
- <button
- onClick={() => handleOpenAddFlexible(false)}
- className="px-4 py-2 bg-primary-gradient hover:opacity-90 text-white text-xs font-bold rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5 font-display"
- >
- <Plus className="w-3.5 h-3.5" /> Add Backlog Task
- </button>
- </div>
- ) : (
- <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
- {filteredBacklogTasks.map((task) => {
- const estimateStr = futurePredictions[task.id]?.reason || "Checking gaps...";
- const isHighEnergy = task.energy_level === "high";
- const isLowEnergy = task.energy_level === "low";
-
- return (
- <div 
- key={task.id} 
- className="glass-card rounded-2xl p-5 flex flex-col justify-between relative transition-all duration-200 hover:border-primary/30"
- style={{
- borderLeft: `4px solid ${
- isHighEnergy
- ? "var(--color-emergency-color)"
- : isLowEnergy
- ? "var(--color-flex-color)"
- : "var(--color-primary)"
- }`
- }}
- >
- {/* Inline confirmation delete trigger */}
- {deletingTaskId === task.id ? (
- <div className="absolute inset-0 bg-[var(--bg-card)] rounded-xl flex items-center justify-between p-4 z-10">
- <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">Remove this task permanently?</span>
- <div className="flex gap-2">
- <button 
- onClick={() => setDeletingTaskId(null)}
- className="px-2.5 py-1 text-xs font-bold border rounded bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] hover:bg-neutral-200 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] transition-colors cursor-pointer"
- >
- Cancel
- </button>
- <button 
- onClick={() => handleDeleteFlexible(task.id)}
- className="px-2.5 py-1 text-xs font-bold text-white rounded bg-red-600 hover:bg-red-700 transition-colors cursor-pointer"
- >
- Delete
- </button>
- </div>
- </div>
- ) : null}
-
- <div className="flex items-start justify-between mb-2">
- <div className="flex items-center gap-1.5 flex-wrap">
- <span className="w-1.5 h-1.5 rounded-full"
- style={{
- backgroundColor: isHighEnergy
- ? "var(--color-emergency-color)"
- : isLowEnergy
- ? "var(--color-flex-color)"
- : "var(--color-primary)"
- }}
- />
- <span className="text-xs font-bold uppercase tracking-wider text-[#9999B3] font-mono leading-none">
- {task.energy_level} energy
- </span>
- {isTaskStale(task) && (
- <span className="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded flex items-center gap-0.5" title="Task is pending for 3+ days">
- <AlertTriangle className="w-2.5 h-2.5 shrink-0" /> Stale
- </span>
- )}
- </div>
-
- {/* Small details control */}
- <div className="flex gap-1 items-center">
- {task.status !== "done" && (
- <button
- onClick={() => handleToggleTaskDone(task.id)}
- className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition-colors"
- title="Mark Task as Done"
- >
- <Check className="w-3.5 h-3.5" />
- </button>
- )}
- <button 
- onClick={() => handleOpenEditFlexible(task)}
- className="p-1 hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[#9999B3] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] rounded transition-colors"
- title="Edit detailed attributes"
- >
- <Edit2 className="w-3 h-3" />
- </button>
- <button 
- onClick={() => setDeletingTaskId(task.id)}
- className="p-1 hover:bg-red-50 text-[#9999B3] hover:text-red-500 rounded transition-colors"
- title="Delete item"
- >
- <Trash2 className="w-3 h-3" />
- </button>
- </div>
- </div>
-
- <h5 className="font-semibold text-[var(--text-primary)] dark:text-[var(--text-primary)] text-xs tracking-tight leading-snug line-clamp-2 select-all mb-2 font-display">
- {task.title}
- </h5>
-
- <div className="flex items-center justify-between text-xs mt-2 pt-2 border-t border-[var(--border)] dark:border-[var(--border)] gap-1 font-mono">
- <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-sans">
- Duration: <strong className="text-[var(--text-secondary)] dark:text-[var(--text-primary)]">{task.duration_minutes} min</strong>
- </span>
- 
- {task.deadline && (
- <span className="text-red-600 font-sans text-xs font-semibold bg-red-50 px-1.5 py-0.5 rounded border border-red-100 flex items-center gap-0.5">
- Due {new Date(task.deadline).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
- </span>
- )}
- </div>
-
- <div className="flex items-center justify-between mt-3 pt-2">
- {/* Prediction stamps */}
- <span className="text-xs font-medium text-[var(--text-tertiary)] italic font-mono truncate">
- {estimateStr}
- </span>
-
- {backlogTab === "dropped" ? (
- <button 
- onClick={() => {
- setFlexibleTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: "backlog", scheduled_date: null } : t));
- setBacklogTab("carried");
- showToast("Task restored to active backlog", "success");
- }}
- className="px-2.5 py-1 text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold border border-indigo-200 rounded-lg transition-colors cursor-pointer flex items-center gap-1 shrink-0"
- >
- <RotateCcw className="w-3.5 h-3.5" /> Recover to Backlog
- </button>
- ) : task.status !== "done" && (
- <button 
- onClick={() => handleScheduleTaskToday(task)}
- className="px-2.5 py-1 text-xs bg-primary-gradient hover:opacity-90 font-bold text-white rounded-lg transition-colors cursor-pointer flex items-center gap-0.5 text-right shrink-0"
- >
- Schedule today →
- </button>
- )}
- </div>
-
- {/* Expansion Details & Consequences for Flexible Tasks */}
- <div className="mt-2">
- <button
- onClick={() => setExpandedTaskIds(prev => ({ ...prev, [task.id]: !prev[task.id] }))}
- className="flex items-center gap-1 text-[10px] font-bold text-primary/70 hover:text-primary cursor-pointer transition-colors"
- >
- <ChevronDown className={`w-3 h-3 transition-transform ${expandedTaskIds[task.id] ? "rotate-180" : ""}`} />
- {expandedTaskIds[task.id] ? "Hide details" : "See details & consequences"}
- </button>
- {expandedTaskIds[task.id] && (
- <div className="mt-2 space-y-3">
- {/* Standard Description Box */}
- {task.description && (
- <div className="p-3 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)]/60 rounded-xl">
- <span className="text-[9px] font-black text-[var(--text-tertiary)] uppercase tracking-widest block mb-1">Description / Subtasks</span>
- <p className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] whitespace-pre-wrap">{task.description}</p>
- </div>
- )}
-
- {/* AI Consequence Box */}
- {task.status !== "done" && (
- <div className="p-3 bg-amber-50/50 border border-amber-200/60 rounded-xl space-y-2">
- <div className="flex items-center justify-between">
- <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest flex items-center gap-1">
- <Zap className="w-3 h-3" /> AI Consequence Analysis
- </span>
- <button 
- onClick={(e) => {
- e.stopPropagation();
- fetchConsequenceInsight(task);
- }}
- className="text-[9px] font-bold text-amber-600 hover:underline cursor-pointer"
- >
- Regenerate
- </button>
- </div>
- {task.consequence_insight ? (
- <p className="text-xs text-amber-800 leading-relaxed">
- {task.consequence_insight}
- </p>
- ) : (
- <p className="text-xs text-amber-800/60 italic">
- Click "Regenerate" to analyze the systemic impact of skipping this task.
- </p>
- )}
- </div>
- )}
- </div>
- )}
- </div>
- </div>
- );
- })}
- </div>
- )}
- </div>
- </div>
- )}
+  {activeTab === "backlog" && (
+    <BacklogTab
+      backlogTab={backlogTab}
+      setBacklogTab={setBacklogTab}
+      flexibleTasks={flexibleTasks}
+      setFlexibleTasks={setFlexibleTasks}
+      expandedTaskIds={expandedTaskIds}
+      setExpandedTaskIds={setExpandedTaskIds}
+      handleOpenEditFlexible={handleOpenEditFlexible}
+      handleScheduleTaskToday={handleScheduleTaskToday}
+      setDeletingTaskId={setDeletingTaskId}
+      showToast={showToast}
+      TODAY={TODAY}
+      fetchConsequenceInsight={fetchConsequenceInsight}
+      consequenceCache={consequenceCache}
+      deletingTaskId={deletingTaskId}
+      handleDeleteFlexible={handleDeleteFlexible}
+      handleToggleTaskDone={handleToggleTaskDone}
+      handleOpenAddFlexible={handleOpenAddFlexible}
+      futurePredictions={futurePredictions}
+      handleInterventionFeedback={handleInterventionFeedback}
+    />
+  )}
 
  {/* TAB VIEW 3: FUTURE CALENDAR + PREDICTIONS */}
- {activeTab === "calendar" && (
- <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 h-full overflow-y-auto lg:overflow-hidden">
- 
- {/* Widescreen Responsive Columns */}
- <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 lg:gap-6 items-start h-full lg:overflow-hidden">
- 
- {/* Left Column (Stats + Month grid) */}
- <div className="lg:col-span-8 space-y-2.5 lg:space-y-4 lg:overflow-y-auto h-full pb-2 lg:pb-6 lg:pr-3">
- 
- {/* SECTION A: Monthly Calendar Grid (top block) */}
- <div className="glass-card rounded-2xl p-5">
- <div className="flex items-center justify-between mb-3 border-b border-[var(--border)] dark:border-[var(--border)] pb-2">
- <h4 className="text-sm font-bold font-display tracking-tight text-[var(--text-primary)] dark:text-[var(--text-primary)]">
- {new Date(selectedDate).toLocaleDateString("en-US", { month: "long", year: "numeric" })}
- </h4>
- <div className="flex gap-1.5 font-sans">
- <button 
- onClick={() => handleMonthChange("prev")}
- className="p-1 rounded bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] hover:bg-neutral-200 dark:bg-[var(--bg-card-hover)] transition-colors cursor-pointer text-[var(--text-secondary)] dark:text-[var(--text-primary)]"
- >
- <ChevronLeft className="w-4 h-4" />
- </button>
- <button 
- onClick={() => handleMonthChange("next")}
- className="p-1 rounded bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] hover:bg-neutral-200 dark:bg-[var(--bg-card-hover)] transition-colors cursor-pointer text-[var(--text-secondary)] dark:text-[var(--text-primary)]"
- >
- <ChevronRight className="w-4 h-4" />
- </button>
- </div>
- </div>
-
- {/* Calendar 7 col headers */}
- <div className="grid grid-cols-7 gap-1 text-center text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-2 font-display">
- <span>Su</span>
- <span>Mo</span>
- <span>Tu</span>
- <span>We</span>
- <span>Th</span>
- <span>Fr</span>
- <span>Sa</span>
- </div>
-
- {/* Month grid days representation */}
- <div className="grid grid-cols-7 gap-1">
- {currentMonthGrid.map((cell, idx) => (
- <button
- key={idx}
- onClick={() => setSelectedDate(cell.dateStr)}
- className={`h-9 flex flex-col items-center justify-center p-1 rounded-lg transition-all relative cursor-pointer ${ cell.isSelected ? "bg-primary text-white font-bold" : cell.isToday ? "bg-primary-light text-primary font-bold border border-primary/20" : cell.isCurrentMonth ? "text-neutral-800 dark:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)]" : "text-neutral-300" }`}
- >
- <span className="text-sm">{cell.num}</span>
- {/* Dot marks */}
- <div className="flex gap-0.5 mt-0.5">
- {cell.hasFixed && (
- <span className={`w-1 h-1 rounded-full ${cell.isSelected ? "bg-white dark:bg-[var(--bg-card)]" : "bg-[#E24B4A]"}`} />
- )}
- {cell.hasFlex && (
- <span className={`w-1 h-1 rounded-full ${cell.isSelected ? "bg-white dark:bg-[var(--bg-card)]" : "bg-[#1D9E75]"}`} />
- )}
- </div>
- </button>
- ))}
- </div>
-
- 
-  </div>
-  </div>
-  {/* Right Column (SECTION B: Day Detail Panel - Only visible beside calendar on desktop) */}
- <div className="lg:col-span-4 glass-card rounded-2xl p-5 space-y-3 shrink-0 w-full lg:overflow-y-auto lg:h-full pb-12 lg:pb-6">
- <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-wider font-display border-b border-[var(--border)] dark:border-[var(--border)] pb-2 flex items-center justify-between">
- <span>Day Frame: {new Date(selectedDate).toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short" })}</span>
- <span className="text-xs font-mono text-[var(--text-tertiary)] font-normal">{daySchedule.items.length} slotted</span>
- </h4>
-
- <div className="space-y-2 lg:overflow-visible">
- {daySchedule.items.length === 0 ? (
- <p className="text-xs text-[#9999B3] italic py-3 select-none text-center">Nothing scheduled · Backlog tasks will be predicted here</p>
- ) : (
- daySchedule.items.map((item) => {
- const isFixedType = item.type === "fixed";
- return (
- <div 
- key={item.id} 
- className="bg-white border border-transparent px-3 py-3 rounded-xl flex items-center justify-between text-xs animate-fade-in hover:bg-white transition-colors"
- >
- <div className="truncate pr-2 select-text text-left">
- <span className="font-semibold text-[var(--text-primary)] dark:text-[var(--text-primary)] truncate block text-left">{item.title}</span>
- <span className="text-xs text-[var(--text-secondary)] font-mono">{item.start_time} – {item.end_time}</span>
- </div>
- <span className={`text-[11px] font-bold px-1.5 py-0.2 rounded shrink-0 uppercase tracking-wider font-mono ${ isFixedType ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700" }`}>
- {isFixedType ? "Fixed" : "Flexible"}
- </span>
- </div>
- );
- })
- )}
- </div>
-
- {/* Coming from backlog prediction display */}
- <div className="mt-4 pt-4 border-t border-[var(--border)] dark:border-[var(--border)] space-y-2">
- <h5 className="text-xs font-bold text-[#9999B3] uppercase tracking-wider text-left">
- Coming from backlog
- </h5>
- <div className="space-y-2">
- {(() => {
- const predicted = flexibleTasks.filter(
- (t) => t.scheduled_date === null && t.status !== "done" && futurePredictions[t.id]?.estDate === selectedDate
- );
- if (predicted.length === 0) {
- return (
- <p className="text-xs text-[#9999B3] italic py-2 text-center select-none">
- No predicted tasks for this date
- </p>
- );
- }
- return predicted.map((task) => {
- const hrs = Math.floor(task.duration_minutes / 60);
- const mins = task.duration_minutes % 60;
- const durStr = hrs > 0 ? `${hrs}h ${mins > 0 ? `${mins}m` : ""}` : `${mins}m`;
- return (
- <div
- key={task.id}
- onClick={() => handleOpenEditFlexible(task)}
- className="bg-white dark:bg-[var(--bg-card)] px-3 py-3 rounded-xl border border-dashed border-neutral-300 dark:border-[var(--border)] hover:border-[#8B7EFF]/45 hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] flex items-center justify-between text-xs cursor-pointer transition-all text-left text-[var(--text-primary)] dark:text-[var(--text-primary)] shadow-xs animate-fade-in"
- >
- <div className="truncate pr-2 select-text">
- <span className="font-semibold text-[var(--text-primary)] dark:text-[var(--text-primary)] truncate block">{task.title}</span>
- <span className="text-[11px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-mono">Estimated prediction slot</span>
- </div>
- <span className="text-[11px] font-bold px-1.5 py-0.5 rounded shrink-0 uppercase tracking-wider font-mono bg-primary-light text-primary">
- Est. {durStr} · Predicted
- </span>
- </div>
- );
- });
- })()}
- </div>
- </div>
- </div>
- </div>
- </div>
- )}
+  {activeTab === "calendar" && (
+    <CalendarTab
+      selectedDate={selectedDate}
+      TODAY={TODAY}
+      flexibleTasks={flexibleTasks}
+      fixedBlocks={fixedBlocks}
+      daySchedule={daySchedule}
+      futurePredictions={futurePredictions}
+      handleMonthChange={handleMonthChange}
+      setSelectedDate={setSelectedDate}
+      getLocalTodayStr={getLocalTodayStr}
+      completedStreak={completedStreak}
+      handleOpenEditFlexible={handleOpenEditFlexible}
+      setFlexibleTasks={setFlexibleTasks}
+      expandedTaskIds={expandedTaskIds}
+      setExpandedTaskIds={setExpandedTaskIds}
+      deletingTaskId={deletingTaskId}
+      setDeletingTaskId={setDeletingTaskId}
+      handleDeleteFlexible={handleDeleteFlexible}
+      handleToggleTaskDone={handleToggleTaskDone}
+      handleOpenAddFlexible={handleOpenAddFlexible}
+      fetchConsequenceInsight={fetchConsequenceInsight}
+      showToast={showToast}
+      handleScheduleTaskToday={handleScheduleTaskToday}
+      loadingInsightTaskId={loadingInsightTaskId}
+      handleInterventionFeedback={handleInterventionFeedback}
+    />
+  )}
 
    {/* TAB VIEW 4: ROUTINES & SCHEDULE PROFILES */}
   {activeTab === "routines" && (
-    <div className="flex-1 flex flex-col p-4 pb-24 md:p-6 lg:p-8 h-full overflow-y-auto bg-[var(--bg-page)] text-slate-800 dark:text-[var(--text-primary)] relative">
-      <div className="flex flex-col gap-6 md:gap-8 max-w-4xl mx-auto w-full">
-      
-        {/* Instagram-style Profile Header (Compact on mobile, horizontal row) */}
-        <div className="flex flex-col md:flex-row gap-4 md:gap-6 pb-6 border-b border-[var(--border-strong)] dark:border-[var(--border)] text-left relative">
-          
-          <div className="flex flex-row items-center gap-4 md:gap-6 w-full">
-            {/* Left: Avatar Circle */}
-            <div className="relative group shrink-0">
-              <div className="w-16 h-16 sm:w-20 sm:h-20 md:w-28 md:h-28 rounded-full bg-gradient-to-tr from-[#7F77DD] via-[#A894FF] to-[#14B8A6] p-[2.5px] md:p-[3px] flex items-center justify-center shadow-md transition-transform duration-300 hover:rotate-6">
-                <div className="w-full h-full rounded-full bg-white dark:bg-[var(--bg-card)] flex items-center justify-center text-2xl sm:text-3xl md:text-4xl select-none">
-                  {profileEmoji || "👨‍💻"}
-                </div>
-              </div>
-            </div>
+    <RoutinesTab
+      appSettings={appSettings}
+      profileName={profileName}
+      profileEmoji={profileEmoji}
+      profileAge={profileAge}
+      profileBio={profileBio}
+      routineProfiles={routineProfiles}
+      setRoutineProfiles={setRoutineProfiles}
+      activeRoutineProfileId={activeRoutineProfileId}
+      setActiveRoutineProfileId={setActiveRoutineProfileId}
+      totalCompletedTasks={totalCompletedTasks}
+      flexibleTasks={flexibleTasks}
+      fixedBlocks={fixedBlocks}
+      routineBlocks={routineBlocks}
+      setRoutineBlocks={setRoutineBlocks}
+      goals={goals}
+      achievements={achievements}
+      taskExecutionLogs={taskExecutionLogs}
+      reflectionEvents={reflectionEvents}
+      weightLog={weightLog}
+      selectedDate={selectedDate}
+      TODAY={TODAY}
+      completedStreak={completedStreak}
+      calibrationProfile={calibrationProfile}
+      ubmInsights={ubmInsights}
+      behaviorSignals={behaviorSignals}
+      evalHistory={evalHistory}
+      futurePredictions={futurePredictions}
+      profileViewTab={profileViewTab}
+      currentPath={currentPath}
+      projects={projects}
+      daySchedule={daySchedule}
+      handleOpenAICopilot={handleOpenAICopilot}
+      setCopilotInput={setCopilotInput}
+      showToast={showToast}
+      triggerHaptic={triggerHaptic}
+      navigate={navigate}
+      setShowSettingsModal={setShowSettingsModal}
+      handleOpenAddFlexible={handleOpenAddFlexible}
+      handleUpdateProjects={handleUpdateProjects}
+      handleAutoScheduleProject={handleAutoScheduleProject}
+      handleOpenCreateGoal={handleOpenCreateGoal}
+      handleToggleGoalPause={handleToggleGoalPause}
+      handleOpenEditGoal={handleOpenEditGoal}
+      handleDeleteGoal={handleDeleteGoal}
+      setReflectionEvents={setReflectionEvents}
+      saveReflectionEvents={saveReflectionEvents}
+    />
+  )}
 
-            {/* Stats row next to Avatar (only on mobile) */}
-            <div className="flex-1 flex justify-around md:hidden">
-              <div className="flex flex-col items-center">
-                <span className="font-extrabold text-sm text-[var(--text-primary)] dark:text-[var(--text-primary)]">{totalCompletedTasks}</span>
-                <span className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">done</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span className="font-extrabold text-sm text-[var(--text-primary)] dark:text-[var(--text-primary)]">{profiles.length}</span>
-                <span className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">routines</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span className="font-extrabold text-sm text-[var(--text-primary)] dark:text-[var(--text-primary)]">{completedStreak}d</span>
-                <span className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">streak</span>
-              </div>
-            </div>
-          </div>
-          
-          {/* Right: Bio & Details */}
-          <div className="flex-1 min-w-0 space-y-2">
-            <div className="flex items-center gap-2">
-              <h2 className="text-base sm:text-lg md:text-xl font-bold tracking-tight text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display truncate">{profileName}</h2>
-              <span className="px-2.5 py-0.5 text-[10px] sm:text-xs bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] text-neutral-550 dark:text-[var(--text-secondary)] rounded-full font-semibold shrink-0">
-                {profileAge} yrs old
-              </span>
-            </div>
-            
-            {/* Desktop Stats row (hidden on mobile) */}
-            <div className="hidden md:flex items-center gap-6 text-[11px] sm:text-xs md:text-sm font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] py-0.5">
-              <div>
-                <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{totalCompletedTasks}</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">done</span>
-              </div>
-              <div>
-                <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{profiles.length}</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">routines</span>
-              </div>
-              <div>
-                <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{completedStreak}d</span> <span className="text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-normal">streak</span>
-              </div>
-            </div>
-           
-            {/* Bio text */}
-            <div className="text-[11px] sm:text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] leading-relaxed font-sans max-w-md">
-              <p className="font-medium text-[var(--text-primary)] dark:text-[var(--text-primary)]">{profileBio || "Productivity enthusiast."}</p>
-            </div>
-          </div>
+  </main>
 
-                    {/* Settings Icon Button in the top right corner */}
-          <button 
-            onClick={() => {
-              setShowSettingsModal(true);
-              triggerHaptic(15);
-            }}
-            className="absolute top-0 right-0 p-2 rounded-xl bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 text-[var(--text-secondary)] dark:text-[var(--text-primary)] transition-all cursor-pointer shadow-3xs"
-            title="Settings"
+  {/* UNIFIED FLOATING ACTION AREA */}
+  {(() => {
+    const isChatVisible = activeTab !== "routines";
+    const isRescheduleVisible = activeTab === "today" && selectedDate === TODAY;
+    const isAddTaskVisible = activeTab === "today" || activeTab === "backlog";
+    const transitionStyle = {
+      transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
+    };
+
+    return (
+      <div className="absolute md:bottom-6 bottom-[100px] right-4 z-[80] flex flex-col gap-2 items-end justify-end pointer-events-none">
+        {/* Row 1: Action buttons */}
+        <div className="flex gap-2 items-center pointer-events-none">
+          {/* Reschedule Button */}
+          <div
+            style={transitionStyle}
+            className={`w-12 h-12 overflow-hidden ${
+              isRescheduleVisible 
+                ? "opacity-100 translate-y-0 scale-100 pointer-events-auto" 
+                : "opacity-0 translate-y-10 scale-75 pointer-events-none"
+            }`}
           >
-            <SettingsIcon className="w-5.5 h-5.5" />
-          </button>
-        </div>  {/* Tab switcher: Analytics vs Routines vs Projects vs Goals */}
-  <div className="flex justify-center border-b border-neutral-200 dark:border-zinc-700/60 pb-px">
-    <div className="flex gap-6 sm:gap-8 overflow-x-auto max-w-full no-scrollbar">
-      <button 
-        onClick={() => {
-          navigate("/routines");
-          triggerHaptic(12);
-        }}
-        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 shrink-0 ${ profileViewTab === "insights" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
-      >
-        <TrendingUp className="w-3.5 h-3.5" />
-        <span>Analytics</span>
-      </button>
-      <button 
-        onClick={() => {
-          navigate("/routines/editor");
-          triggerHaptic(12);
-        }}
-        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 shrink-0 ${ profileViewTab === "routines" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
-      >
-        <Grid className="w-3.5 h-3.5" />
-        <span>Routines</span>
-      </button>
-      <button 
-        onClick={() => {
-          navigate("/projects");
-          triggerHaptic(12);
-        }}
-        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 shrink-0 ${ profileViewTab === "projects" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
-      >
-        <FolderKanban className="w-3.5 h-3.5" />
-        <span>Projects</span>
-      </button>
-      <button 
-        onClick={() => {
-          navigate("/goals");
-          triggerHaptic(12);
-        }}
-        className={`pb-3 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 shrink-0 ${ profileViewTab === "goals" ? "border-primary text-primary" : "border-transparent text-neutral-400 hover:text-neutral-650 dark:text-[var(--text-primary)]" }`}
-      >
-        <Target className="w-3.5 h-3.5" />
-        <span>Goals</span>
-      </button>
-    </div>
-  </div>
-
- {/* Tab Content */}
- 
-        {profileViewTab === "insights" && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
-            {/* Section B: Daily Execution Summary */}
-            {executionScore !== null && (
-              <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-3.5 font-sans">
-                <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
-                  <Flame className="w-3.5 h-3.5 text-orange-500 fill-orange-500/10" /> Daily Execution & Momentum
-                </h4>
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <span className="text-2xl font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)]">{executionScore.score}%</span>
-                    <span className="block text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">Tasks: {executionScore.done} / {executionScore.total} completed</span>
-                  </div>
-                  <div className="text-right">
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${ momentumState === "high" ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : momentumState === "stable" ? "bg-amber-50 text-amber-700 border border-amber-100" : "bg-red-50 text-red-700 border border-red-100" }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${ momentumState === "high" ? "bg-emerald-500" : momentumState === "stable" ? "bg-amber-500" : "bg-red-500" }`} />
-                      {momentumState === "high" ? "High Momentum" : momentumState === "stable" ? "Steady" : "Behind"}
-                    </span>
-                  </div>
-                </div>
-                <div className="w-full h-1.5 bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full rounded-full transition-all duration-500 ${ momentumState === "high" ? "bg-emerald-500" : momentumState === "stable" ? "bg-amber-500" : "bg-red-500" }`}
-                    style={{ width: `${executionScore.score}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Section C: AI Calibration */}
-            <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-3 font-sans">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10 animate-pulse" /> Circadian Calibration Matrix
-                </h4>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded font-mono ${ calibrationProfile.phase === 2 ? "bg-emerald-50 text-emerald-700 border border-emerald-200/50 animate-pulse" : "bg-amber-50 text-amber-700 border border-amber-200/50" }`}>
-                  {calibrationProfile.phase === 2 ? "Phase 2: Calibrated" : "Phase 1: Defaults"}
-                </span>
-              </div>
-              <div className="space-y-2">
-                <div className="flex justify-between items-center text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]">
-                  <span>Calibration Status ({calibrationProfile.totalCompletions} / 15 tasks):</span>
-                  <span className="font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">{calibrationPercentage}%</span>
-                </div>
-                <div className="w-full h-2 bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
-                  <div className="h-full bg-primary rounded-full transition-all duration-700 ease-out" style={{ width: `${calibrationPercentage}%` }} />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 pt-1">
-                <div className="bg-neutral-50 dark:bg-zinc-850/50 border border-transparent p-2.5 rounded-xl">
-                  <span className="block text-[9px] uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Peak Focus Time</span>
-                  <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] capitalize flex items-center gap-1 mt-0.5">
-                    {calibrationProfile.peakFocusTime === "morning" && <Clock className="w-3.5 h-3.5 text-primary" />}
-                    {calibrationProfile.peakFocusTime === "afternoon" && <Sparkles className="w-3.5 h-3.5 text-amber-500" />}
-                    {calibrationProfile.peakFocusTime === "evening" && <Moon className="w-3.5 h-3.5 text-indigo-750" />}
-                    {calibrationProfile.peakFocusTime} focus
-                  </span>
-                </div>
-                <div className="bg-neutral-50 dark:bg-zinc-850/50 border border-transparent p-2.5 rounded-xl">
-                  <span className="block text-[9px] uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Underestimate Multiplier</span>
-                  <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
-                    {calibrationProfile.underestimateRatio.toFixed(2)}x duration
-                  </span>
-                </div>
-                <div className="bg-neutral-50 dark:bg-zinc-850/50 border border-transparent p-2.5 rounded-xl">
-                  <span className="block text-[9px] uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Adaptive Work Gap</span>
-                  <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
-                    {calibrationProfile.optimalWorkGap} minutes
-                  </span>
-                </div>
-                <div className="bg-neutral-50 dark:bg-zinc-850/50 border border-transparent p-2.5 rounded-xl">
-                  <span className="block text-[9px] uppercase tracking-wider text-[var(--text-tertiary)] font-bold">Post-Exercise Gap</span>
-                  <span className="text-xs font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)] font-mono mt-0.5 block">
-                    {calibrationProfile.exerciseRecoveryGap} minutes
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Section D: Weekly Performance History */}
-            <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-4 md:col-span-2">
-              <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
-                <TrendingUp className="w-4 h-4 text-primary" /> Weekly Snapshots
-              </h3>
-              {evalHistory.length === 0 ? (
-                <div className="text-center py-6 border border-dashed border-slate-250/70 rounded-2xl bg-[var(--bg-page)] ">
-                  <Award className="w-8 h-8 text-neutral-350 mx-auto mb-2" />
-                  <span className="text-xs text-[var(--text-secondary)] dark:text-[var(--text-primary)] block font-semibold">No performance snapshots available yet</span>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {evalHistory.map((snap) => {
-                    const formattedDate = new Date(snap.weekStart).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-                    const adherence = snap.aiSuggestionAcceptanceRate;
-                    const accuracyDiffPct = Math.round((1 - snap.planningAccuracy) * 100);
-                    const accuracyLabel = accuracyDiffPct > 0 
-                      ? `Underestimate by ${accuracyDiffPct}%` 
-                      : accuracyDiffPct < 0 
-                        ? `Overestimate by ${Math.abs(accuracyDiffPct)}%` 
-                        : "On target";
-                    
-                    const pushPct = Math.round(snap.carryOverRate * 100);
-                    const pushLabel = `${pushPct}% tasks pushed`;
-
-                    return (
-                      <div key={snap.weekStart} className="border border-[var(--border)] dark:border-[var(--border)] bg-neutral-50 dark:bg-zinc-800/30 rounded-2xl p-4 space-y-3 hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 transition-colors">
-                        <div className="flex items-center justify-between border-b border-[var(--border)] dark:border-[var(--border)] pb-2">
-                          <span className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display">Week of ${formattedDate}</span>
-                          <span className="text-[10px] font-mono font-bold bg-primary-light text-primary px-2 py-0.5 rounded-full">
-                            🔥 ${snap.streakDays}d Streak
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                          <div>
-                            <span className="block text-[9px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Completion</span>
-                            <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">${Math.round(snap.completionRate * 100)}%</span>
-                          </div>
-                          <div>
-                            <span className="block text-[9px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Tasks Pushed</span>
-                            <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">${pushLabel}</span>
-                          </div>
-                          <div>
-                            <span className="block text-[9px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">Time Accuracy</span>
-                            <span className="font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">${accuracyLabel}</span>
-                          </div>
-                          <div>
-                            <span className="block text-[9px] text-[var(--text-tertiary)] font-bold uppercase tracking-wider mb-0.5">AI Adherence</span>
-                            <span className="font-bold text-indigo-600 font-mono">
-                              {adherence === 1.0 && !localStorage.getItem("dayflow_ai_suggestion_events") ? "N/A" : `${Math.round(adherence * 100)}%`}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* Section E: Weekly Friction Report */}
-            {frictionReport && (
-              <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-4 text-left">
-                <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
-                  <Zap className="w-4 h-4 text-amber-500 fill-amber-500/10" /> Weekly Friction Report
-                </h3>
-                <div className="space-y-3">
-                  {frictionReport.report.map((item) => (
-                    <div key={item.key} className="space-y-1">
-                      <div className="flex justify-between text-xs font-semibold">
-                        <span className="text-[var(--text-primary)]">${item.label}</span>
-                        <span className="text-amber-600 font-mono">${item.percentage}%</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-neutral-100 dark:bg-zinc-800 rounded-full overflow-hidden">
-                        <div className="h-full bg-amber-500 rounded-full" style={{ width: `${item.percentage}%` }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="text-xs bg-amber-50/50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/30 p-3 rounded-2xl leading-relaxed text-amber-800 dark:text-amber-300 font-medium">
-                  💡 <strong>Coach Insight:</strong> ${frictionReport.insight}
-                </div>
-              </div>
-            )}
-
-            {/* Section F: Reflection History */}
-            <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-4 text-left">
-              <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
-                <BookMarked className="w-4 h-4 text-primary" /> Recent Reflections
-              </h3>
-              {recentReflections.length === 0 ? (
-                <div className="text-center py-4 text-xs text-[var(--text-tertiary)] italic">
-                  No reflections recorded yet. Reflect daily in the Today view!
-                </div>
-              ) : (
-                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
-                  {recentReflections.map((refl) => (
-                    <div key={refl.id} className="p-3 bg-neutral-50 dark:bg-zinc-800/30 rounded-2xl border border-[var(--border)] space-y-1">
-                      <div className="flex justify-between items-center text-[10px] font-bold text-[var(--text-tertiary)] font-mono">
-                        <span>${new Date(refl.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
-                        <span className={`px-2 py-0.5 rounded-full uppercase ${ refl.type === "success" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700" }`}>
-                          ${refl.type}
-                        </span>
-                      </div>
-                      <p className="text-xs font-semibold text-[var(--text-primary)]">
-                        ${refl.notes || formatCause(refl.cause)}
-                      </p>
-                      {refl.notes && refl.cause && (
-                        <span className="text-[10px] italic text-[var(--text-tertiary)] block">
-                          Blocker: ${formatCause(refl.cause)}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                  <button
-                    onClick={() => {
-                      if (confirm("Clear your reflection history?")) {
-                        setReflectionEvents([]);
-                        saveReflectionEvents([]);
-                      }
-                    }}
-                    className="text-[10px] text-rose-500 font-bold hover:underline cursor-pointer block text-right mt-1 w-full"
-                  >
-                    Clear reflection history
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Section G: Fitness Tracking */}
-            {sortedWeightLog.length > 0 ? (
-              <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 space-y-4 text-left">
-                <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
-                  <Heart className="w-4 h-4 text-rose-500 fill-rose-500/10" /> Fitness & Weight Trend
-                </h3>
-                {(() => {
-                  const earliest = sortedWeightLog[0];
-                  const latest = sortedWeightLog[sortedWeightLog.length - 1];
-                  const diff = latest.weight - earliest.weight;
-                  const diffStr = diff > 0 ? '+' + diff.toFixed(1) + 'kg' : diff.toFixed(1) + 'kg';
-                  const timeWeeks = Math.max(1, Math.round((new Date(latest.date).getTime() - new Date(earliest.date).getTime()) / (1000 * 60 * 60 * 24 * 7)));
-                  const points = sparklinePoints;
-
-                  return (
-                    <div className="space-y-4">
-                      <div className="flex items-baseline gap-2.5">
-                        <span className="text-2xl font-bold text-[var(--text-primary)]">${latest.weight} kg</span>
-                        <span className={`text-xs font-bold ${ diff > 0 ? "text-rose-500" : "text-emerald-600" }`}>
-                          ${diffStr} in ${timeWeeks} ${timeWeeks === 1 ? "week" : "weeks"}
-                        </span>
-                      </div>
-                      
-                      {points && (
-                        <div className="flex items-center justify-between border-t border-[var(--border)] pt-3">
-                          <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase font-mono">Weight Sparkline (last 8 logs)</span>
-                          <svg className="w-28 h-8 text-primary overflow-visible animate-pulse" viewBox="0 0 100 30">
-                            <polyline
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2.5"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              points={points}
-                            />
-                          </svg>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-            ) : (
-              <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-5 text-center space-y-2 text-left">
-                <h3 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
-                  <Heart className="w-4 h-4 text-rose-500" /> Fitness Tracking
-                </h3>
-                <p className="text-xs text-[var(--text-tertiary)] italic leading-relaxed font-sans">
-                  No weight telemetry recorded. Tell Day Coach to "log my weight as 70kg" to track body weight trends automatically!
-                </p>
-              </div>
-            )}
+            <button
+              onClick={handleAlignTimeline}
+              className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-xl active:scale-95 transition-all cursor-pointer border shrink-0 ${
+                needsReschedulePulse 
+                  ? "bg-zinc-900 dark:bg-zinc-100 border-zinc-750 dark:border-zinc-300 shadow-zinc-300/20 animate-pulse ring-2 ring-zinc-500/20 text-white dark:text-zinc-900" 
+                  : "bg-zinc-800 dark:bg-zinc-800 border-zinc-700/20 text-white dark:text-zinc-200"
+              }`}
+              title="Reschedule Day / Align Timeline"
+            >
+              <RefreshCw className={`w-5 h-5 stroke-[2.5px] ${isAligning ? "animate-spin" : ""}`} />
+            </button>
           </div>
-        )}
 
-        {profileViewTab === "routines" && (
- <div className="space-y-6 text-left">
- {/* Routine Blocks Manager */}
- <div className={
- editingRoutineBlockId
- ? "fixed inset-0 bg-neutral-900/40 backdrop-blur-[2px] z-[100] flex items-center justify-center p-4 animate-fade-in"
- : "flex flex-col md:flex-row gap-6 bg-white dark:bg-[var(--bg-card)] border border-neutral-200 dark:border-[var(--border)]/60 rounded-3xl p-6 shadow-sm"
- }>
- {editingRoutineBlockId && <div className="absolute inset-0" onClick={() => setEditingRoutineBlockId(null)} />}
- 
- {/* Form Column */}
- <div className={
- editingRoutineBlockId
- ? "bg-white dark:bg-[var(--bg-card)] rounded-3xl shadow-2xl max-w-lg w-full p-6 space-y-4 relative z-10 max-h-[90vh] overflow-y-auto"
- : "flex-1 space-y-4"
- }>
- <h3 className="text-sm font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5">
- <BookMarked className="w-4 h-4 text-primary" /> 
- <span>{editingRoutineBlockId ? "Edit Routine Block" : "Add Routine Block"}</span>
- </h3>
- 
- <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider">Routine Title</label>
- <input 
- type="text"
- placeholder="e.g. Lunch Break, Gym Prep"
- value={routineBlockForm.title}
- onChange={e => setRoutineBlockForm({ ...routineBlockForm, title: e.target.value })}
- className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary font-sans"
- />
- </div>
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider font-sans">Routine Type</label>
- <select
- value={routineBlockForm.type}
- onChange={e => setRoutineBlockForm({ ...routineBlockForm, type: e.target.value as any })}
- className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary"
- >
- <option value="sleep">💤 Sleep</option>
- <option value="class">🎓 Class / Work</option>
- <option value="meal">🍽️ Meal</option>
- <option value="commute">🚗 Commute</option>
- <option value="custom">⚙️ Custom</option>
- </select>
- </div>
- </div>
-
- <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider font-sans">Start Time</label>
- <input 
- type="time"
- value={routineBlockForm.startTime}
- onChange={e => setRoutineBlockForm({ ...routineBlockForm, startTime: e.target.value })}
- className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] font-mono focus:outline-none focus:ring-1 focus:ring-primary"
- />
- </div>
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider font-sans">End Time</label>
- <input 
- type="time"
- value={routineBlockForm.endTime}
- onChange={e => setRoutineBlockForm({ ...routineBlockForm, endTime: e.target.value })}
- className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] font-mono focus:outline-none focus:ring-1 focus:ring-primary"
- />
- </div>
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider font-sans">Rigidity (Hard/Soft)</label>
- <select
- value={routineBlockForm.rigidity}
- onChange={e => setRoutineBlockForm({ ...routineBlockForm, rigidity: e.target.value as any })}
- className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary font-sans"
- >
- <option value="soft">Soft (Flexible, shifts if blocked)</option>
- <option value="hard">Hard (Strict, locks time slot)</option>
- </select>
- </div>
- </div>
-
- {/* Days of week pills select */}
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider mb-1">Days Active</label>
- <div className="flex flex-wrap gap-1.5">
- {["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((dayName, index) => {
- const active = routineBlockForm.daysOfWeek.includes(index);
- return (
- <button
- key={dayName}
- type="button"
- onClick={() => toggleDayInRoutineBlockForm(index)}
- className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${ active ? "bg-primary text-white border-primary" : "bg-white dark:bg-[var(--bg-card)] text-neutral-500 dark:text-[var(--text-secondary)] border-neutral-200 dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)]" }`}
- >
- {dayName.slice(0, 3)}
- </button>
- );
- })}
- </div>
- </div>
-
- <div className="flex gap-2 pt-2 shrink-0">
- <button
- onClick={handleSaveRoutineBlock}
- disabled={!routineBlockForm.title.trim()}
- className="px-4 py-2 bg-primary-gradient hover:opacity-90 text-white rounded-xl text-xs font-bold transition-all shadow-md disabled:opacity-40 flex items-center gap-1 cursor-pointer font-display"
- >
- <Check className="w-3.5 h-3.5" />
- <span>{editingRoutineBlockId ? "Update Block" : "Create Block"}</span>
- </button>
- {editingRoutineBlockId && (
- <button
- onClick={() => {
- setEditingRoutineBlockId(null);
- setRoutineBlockForm({
- title: "",
- startTime: "09:00",
- endTime: "10:00",
- daysOfWeek: [1, 2, 3, 4, 5],
- type: "custom",
- rigidity: "soft"
- });
- }}
- className="px-4 py-2 bg-white dark:bg-[var(--bg-card)] border border-neutral-250 hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] rounded-xl text-xs font-semibold cursor-pointer"
- >
- Cancel
- </button>
- )}
- </div>
- </div>
-
- {/* Guide card right */}
- {!editingRoutineBlockId && (
- <div className="hidden md:block w-72 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border)] dark:border-[var(--border)] rounded-2xl p-5 space-y-3 font-sans">
- <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] flex items-center gap-1">
- <HelpCircle className="w-3.5 h-3.5 text-neutral-505 shrink-0" /> Routine Rules
- </h4>
- <div className="text-[11px] text-neutral-550 dark:text-[var(--text-secondary)] space-y-2 leading-relaxed">
- <p>
- <strong>🔒 Hard rigidity:</strong> Acts as an absolute commitment block (like a lecture or job hours). Flexible tasks are scheduled around it.
- </p>
- <p>
- <strong>📋 Soft rigidity:</strong> preferred window (e.g. Lunch or Gym). Flexible tasks can take precedence, shifting this routine dynamically.
- </p>
- </div>
- </div>
- )}
- </div>
-
- {/* List Grid */}
- <div className="space-y-4">
- <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest">Active Routine Blocks</h4>
- 
- {routineBlocks.length === 0 ? (
- <div className="py-16 text-center flex flex-col items-center justify-center bg-white dark:bg-[var(--bg-card)] border border-dashed border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl">
- <BookMarked className="w-8 h-8 text-[var(--text-tertiary)] stroke-[1.5] mb-2" />
- <p className="text-sm font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">No routines defined yet</p>
- <p className="text-xs text-[var(--text-tertiary)] max-w-xs px-6 mt-1 leading-relaxed text-center font-sans">
- Add wake hours, class timings, commute routes, or recurring break templates to automate daily schedule generation.
- </p>
- </div>
- ) : (
- <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
- {routineBlocks.map(block => {
- const daysStr = block.daysOfWeek.map(d => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d]).join(", ");
- return (
- <div 
- key={block.id}
- className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)]/60 rounded-3xl p-5 flex flex-col justify-between transition-all duration-200 hover:-translate-y-0.5 shadow-sm hover:shadow-md relative text-left"
- >
- <div className="space-y-3.5">
- <div className="flex items-center justify-between gap-2">
- <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-wide border ${ block.rigidity === "hard" ? "bg-red-50 text-red-600 border-red-100" : "bg-indigo-50 text-indigo-600 border-indigo-100" }`}>
- {block.rigidity === "hard" ? "Hard Fixed" : "Soft Dynamic"}
- </span>
- 
- <span className="text-[10px] font-bold text-[var(--text-tertiary)] font-mono">
- {block.type.toUpperCase()}
- </span>
- </div>
-
- <div>
- <h4 className="font-bold text-neutral-850 dark:text-[var(--text-primary)] text-sm font-display tracking-tight mb-0.5">{block.title}</h4>
- <div className="flex items-center gap-1 text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-mono mt-1">
- <Clock className="w-3.5 h-3.5 font-sans text-[var(--text-tertiary)]" />
- <span>{block.startTime} – {block.endTime}</span>
- </div>
- <p className="text-[10px] text-[var(--text-tertiary)] mt-1.5 leading-snug font-sans">
- <strong>Days:</strong> {daysStr}
- </p>
- </div>
-
- <div className="flex items-center gap-3 pt-2.5 border-t border-[var(--border)] dark:border-[var(--border)] shrink-0 font-sans">
- <button
- onClick={() => handleStartEditRoutineBlock(block)}
- className="text-xs font-bold text-primary hover:text-primary-dark cursor-pointer transition-colors flex items-center gap-1 font-display"
- >
- <Edit2 className="w-3.5 h-3.5" />
- <span>Edit</span>
- </button>
- <button
- onClick={() => handleDeleteRoutineBlock(block.id)}
- className="text-xs font-bold text-red-500 hover:text-red-600 cursor-pointer transition-colors flex items-center gap-1"
- >
- <Trash2 className="w-3.5 h-3.5" />
- <span>Delete</span>
- </button>
- </div>
- </div>
- </div>
- );
- })}
- </div>
- )}
- </div>
- </div>
- )}
-
- {profileViewTab === "projects" && (
- <div className="space-y-6 text-left animate-fade-in">
- {/* Create Manual Project card */}
- <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)]/60 rounded-3xl p-6 shadow-sm space-y-4">
- <h3 className="text-sm font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
- <FolderKanban className="w-4 h-4 text-primary" />
- <span>Create Project Container</span>
- </h3>
- <form onSubmit={(e) => {
- e.preventDefault();
- const title = (e.currentTarget.elements.namedItem("projectTitle") as HTMLInputElement).value.trim();
- const goal = (e.currentTarget.elements.namedItem("projectGoal") as HTMLInputElement).value.trim();
- const deadline = (e.currentTarget.elements.namedItem("projectDeadline") as HTMLInputElement).value;
- if (!title || !deadline) {
- showToast("Please enter title and deadline!", "warning");
- return;
- }
- const newProj: Project = {
- id: `project-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
- title,
- goal: goal || "Study / build goals",
- deadline,
- phases: [{
- id: `phase-${Date.now()}-0`,
- title: "Phase 1 / Preparation",
- order: 1,
- subtasks: []
- }],
- totalHoursEstimate: 0,
- progress: 0
- };
- handleUpdateProjects([...projects, newProj]);
- e.currentTarget.reset();
- showToast(`Project "${title}" created!`, "success");
- }} className="grid grid-cols-1 md:grid-cols-3 gap-4">
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider">Project Title</label>
- <input name="projectTitle" type="text" placeholder="e.g. Portfolio Website, Midterm Prep" className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary font-sans" required />
- </div>
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider">High-Level Goal</label>
- <input name="projectGoal" type="text" placeholder="e.g. Complete Units 1-5 & mock exams" className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary font-sans" />
- </div>
- <div className="space-y-1">
- <label className="block text-[10px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider">Deadline Date</label>
- <input name="projectDeadline" type="date" className="w-full px-3 py-2 border border-neutral-250 rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary font-sans" required />
- </div>
- <div className="md:col-span-3 flex justify-end">
- <button type="submit" className="bg-primary-gradient hover:opacity-90 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer font-display">
- Create Project
- </button>
- </div>
- </form>
- </div>
-
- {/* Projects List */}
- {projects.length === 0 ? (
- <div className="py-16 text-center flex flex-col items-center justify-center bg-white dark:bg-[var(--bg-card)] border border-dashed border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-6 shadow-xs">
- <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-primary mb-3">
- <FolderKanban className="w-6 h-6 stroke-[1.5]" />
- </div>
- <p className="text-sm font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">No active projects yet</p>
- <p className="text-xs text-neutral-455 mt-1 max-w-xs text-center font-sans">
- Let your AI Coach plan a dynamic midterm study schedule or portfolio breakdown by typing in the copilot chat box!
- </p>
- </div>
- ) : (
- <div className="space-y-4">
- {projects.map((proj) => {
- const daysLeft = Math.max(1, Math.ceil((new Date(proj.deadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)));
- const totalSubtasks = proj.phases.flatMap(p => p.subtasks);
- const pendingSubtasks = totalSubtasks.filter(s => s.status === "pending");
- const doneSubtasksCount = totalSubtasks.filter(s => s.status === "done").length;
- const remainingHours = Math.round(pendingSubtasks.reduce((acc, s) => acc + s.duration_minutes, 0) / 60 * 10) / 10;
- const urgency = Math.round((remainingHours / daysLeft) * 10) / 10;
- 
- // Check buffer status
- const safeDeadlineDate = new Date(proj.deadline);
- safeDeadlineDate.setDate(safeDeadlineDate.getDate() - 2);
- const safeDeadlineStr = safeDeadlineDate.toISOString().split("T")[0];
-
- return (
- <div key={proj.id} className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)]/60 rounded-3xl p-6 shadow-sm space-y-4">
- <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
- <div className="space-y-1 text-left">
- <h4 className="text-base font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] flex items-center gap-1.5">
- <Briefcase className="w-5 h-5 text-primary" />
- {proj.title}
- </h4>
- <p className="text-xs text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-medium">{proj.goal}</p>
- <div className="flex items-center gap-3 mt-1.5 flex-wrap">
- <span className="text-[10px] bg-primary/10 text-primary font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
- Deadline: {proj.deadline}
- </span>
- <span className="text-[10px] bg-emerald-50 text-emerald-600 font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
- Target Buffer Date: {safeDeadlineStr} (2 Days Buffer)
- </span>
- </div>
- </div>
- <div className="flex gap-2 w-full sm:w-auto justify-end">
- <button 
- onClick={() => handleAutoScheduleProject(proj)}
- className="bg-emerald-500 hover:bg-emerald-600 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1 cursor-pointer font-display"
- title="Sequentially schedules all pending subtasks across subsequent days up to deadline minus buffer"
- >
- <Sparkles className="w-3.5 h-3.5" />
- <span>Auto-Schedule Plan</span>
- </button>
- <button 
- onClick={() => {
- if (confirm(`Are you sure you want to delete the project "${proj.title}"?`)) {
- handleUpdateProjects(projects.filter(p => p.id !== proj.id));
- showToast(`Deleted project "${proj.title}"`, "success");
- }
- }}
- className="bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] border border-[var(--border-strong)] dark:border-[var(--border)] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer font-display"
- >
- <Trash2 className="w-3.5 h-3.5" />
- <span>Delete</span>
- </button>
- </div>
- </div>
-
- {/* Progress bar & urgent metric block */}
- <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center pt-2">
- <div className="space-y-1">
- <div className="flex justify-between text-xs font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">
- <span>Overall Progress</span>
- <span>{proj.progress}% ({doneSubtasksCount}/{totalSubtasks.length} subtasks)</span>
- </div>
- <div className="w-full bg-neutral-200 rounded-full h-2 overflow-hidden">
- <div className="bg-primary h-full rounded-full transition-all duration-300" style={{ width: `${proj.progress}%` }} />
- </div>
- </div>
- 
- {/* Metrics columns */}
- <div className="bg-[var(--bg-page)] border border-[var(--border)] dark:border-[var(--border)] rounded-2xl p-3 text-center grid grid-cols-2 gap-4 col-span-2">
- <div>
- <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">Urgency Score</span>
- <span className={`text-sm font-black ${urgency > 2 ? 'text-amber-500' : 'text-neutral-700 dark:text-[var(--text-primary)]'}`}>
- {urgency} hours/day
- </span>
- </div>
- <div>
- <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">Estimated Time Remaining</span>
- <span className="text-sm font-black text-[var(--text-secondary)] dark:text-[var(--text-primary)]">
- {remainingHours} hours ({totalSubtasks.filter(s => s.status === "pending").length} tasks)
- </span>
- </div>
- </div>
- </div>
-
- {/* Phases list */}
- <div className="mt-4 border-t border-[var(--border)] dark:border-[var(--border)] pt-4 space-y-4 text-left">
- <h5 className="text-xs font-black text-[var(--text-tertiary)] uppercase tracking-widest">Phases & Subtasks Checklist</h5>
- {proj.phases.map((phase) => (
- <div key={phase.id} className="bg-[var(--bg-page)] border border-[var(--border-strong)] dark:border-[var(--border)]/40 p-4.5 rounded-2xl space-y-3">
- <div className="flex justify-between items-center">
- <span className="text-xs font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">{phase.title}</span>
- </div>
-
- {/* Subtasks checklist */}
- <div className="space-y-2">
- {phase.subtasks.map((sub, sIdx) => {
- const isDone = sub.status === "done";
- return (
- <div key={sub.id} className="flex items-center justify-between gap-3 text-xs bg-white dark:bg-[var(--bg-card)] border border-neutral-150 dark:border-[var(--border)] p-2.5 rounded-xl">
- <div className="flex items-center gap-2.5 min-w-0">
- <button 
- onClick={() => {
- const updated = projects.map(p => {
- if (p.id !== proj.id) return p;
- return {
- ...p,
- phases: p.phases.map(ph => {
- if (ph.id !== phase.id) return ph;
- return {
- ...ph,
- subtasks: ph.subtasks.map(s => s.id === sub.id ? { ...s, status: (isDone ? "pending" : "done") as "pending" | "done" | "skipped" } : s)
- };
- })
- };
- });
- 
- // Sync progress
- const currentProj = updated.find(p => p.id === proj.id)!;
- const allSub = currentProj.phases.flatMap(p => p.subtasks);
- const doneSub = allSub.filter(s => s.status === "done").length;
- currentProj.progress = allSub.length > 0 ? Math.round((doneSub / allSub.length) * 100) : 0;
- 
- handleUpdateProjects(updated);
- triggerHaptic(15);
- }}
- className="cursor-pointer text-neutral-450 dark:text-[var(--text-secondary)] hover:text-primary transition-colors shrink-0"
- >
- {isDone ? (
- <CheckCircle2 className="w-4 h-4 text-emerald-500" />
- ) : (
- <Circle className="w-4 h-4 text-neutral-300" />
- )}
- </button>
- <span className={`font-semibold truncate ${isDone ? 'line-through text-neutral-400' : 'text-neutral-700 dark:text-[var(--text-primary)]'}`}>
- {sub.title}
- </span>
- </div>
- <div className="flex items-center gap-2">
- <span className="text-[10px] text-[var(--text-tertiary)] font-mono">{sub.duration_minutes}m</span>
- 
- {/* Reorder subtasks */}
- <button 
- disabled={sIdx === 0}
- onClick={() => {
- const updated = projects.map(p => {
- if (p.id !== proj.id) return p;
- return {
- ...p,
- phases: p.phases.map(ph => {
- if (ph.id !== phase.id) return ph;
- const subtasksCopy = [...ph.subtasks];
- const temp = subtasksCopy[sIdx];
- subtasksCopy[sIdx] = subtasksCopy[sIdx - 1];
- subtasksCopy[sIdx - 1] = temp;
- return { ...ph, subtasks: subtasksCopy };
- })
- };
- });
- handleUpdateProjects(updated);
- triggerHaptic(10);
- }}
- className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] disabled:opacity-30 cursor-pointer"
- title="Move Up"
- >
- <ChevronLeft className="w-3.5 h-3.5 rotate-90" />
- </button>
- <button 
- disabled={sIdx === phase.subtasks.length - 1}
- onClick={() => {
- const updated = projects.map(p => {
- if (p.id !== proj.id) return p;
- return {
- ...p,
- phases: p.phases.map(ph => {
- if (ph.id !== phase.id) return ph;
- const subtasksCopy = [...ph.subtasks];
- const temp = subtasksCopy[sIdx];
- subtasksCopy[sIdx] = subtasksCopy[sIdx + 1];
- subtasksCopy[sIdx + 1] = temp;
- return { ...ph, subtasks: subtasksCopy };
- })
- };
- });
- handleUpdateProjects(updated);
- triggerHaptic(10);
- }}
- className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] disabled:opacity-30 cursor-pointer"
- title="Move Down"
- >
- <ChevronRight className="w-3.5 h-3.5 rotate-90" />
- </button>
- 
- <button 
- onClick={() => {
- const updated = projects.map(p => {
- if (p.id !== proj.id) return p;
- return {
- ...p,
- phases: p.phases.map(ph => {
- if (ph.id !== phase.id) return ph;
- return { ...ph, subtasks: ph.subtasks.filter(s => s.id !== sub.id) };
- })
- };
- });
- // Sync progress
- const currentProj = updated.find(p => p.id === proj.id)!;
- const allSub = currentProj.phases.flatMap(p => p.subtasks);
- const doneSub = allSub.filter(s => s.status === "done").length;
- currentProj.progress = allSub.length > 0 ? Math.round((doneSub / allSub.length) * 100) : 0;
- 
- handleUpdateProjects(updated);
- showToast("Subtask deleted", "info");
- }}
- className="text-neutral-305 hover:text-red-500 transition-colors cursor-pointer"
- title="Delete Subtask"
- >
- <Trash2 className="w-3.5 h-3.5" />
- </button>
- </div>
- </div>
- );
- })}
-
- {/* Add subtask to phase inline form */}
- <form onSubmit={(e) => {
- e.preventDefault();
- const formEl = e.currentTarget;
- const title = (formEl.elements.namedItem("subtaskTitle") as HTMLInputElement).value.trim();
- const duration = parseInt((formEl.elements.namedItem("subtaskDuration") as HTMLInputElement).value) || 60;
- if (!title) return;
- const updated = projects.map(p => {
- if (p.id !== proj.id) return p;
- return {
- ...p,
- phases: p.phases.map(ph => {
- if (ph.id !== phase.id) return ph;
- return {
- ...ph,
- subtasks: [...ph.subtasks, {
- id: `subtask-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
- title,
- duration_minutes: duration,
- status: "pending" as const
- }]
- };
- })
- };
- });
-
- // Sync progress
- const currentProj = updated.find(p => p.id === proj.id)!;
- const allSub = currentProj.phases.flatMap(p => p.subtasks);
- const doneSub = allSub.filter(s => s.status === "done").length;
- currentProj.progress = allSub.length > 0 ? Math.round((doneSub / allSub.length) * 100) : 0;
-
- handleUpdateProjects(updated);
- formEl.reset();
- showToast("Subtask added to phase!", "success");
- }} className="flex items-center gap-2 mt-3 pt-2 border-t border-dashed border-[var(--border-strong)] dark:border-[var(--border)]">
- <input name="subtaskTitle" type="text" placeholder="Add subtask title..." className="flex-1 px-3 py-1.5 border border-[#D5D5E2] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary font-sans" required />
- <input name="subtaskDuration" type="number" placeholder="60" className="w-20 px-3 py-1.5 border border-[#D5D5E2] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary font-sans" />
- <button type="submit" className="bg-primary/10 text-primary hover:bg-primary/20 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer">
- Add Step
- </button>
- </form>
- </div>
- </div>
- ))}
- </div>
- </div>
- );
- })}
- </div>
- )}
- </div>
- )}
-
-
-
-
- {profileViewTab === "goals" && (
- <div className="space-y-8 text-left animate-fade-in">
- {/* Active Goals Section */}
- <div className="space-y-4">
- <div className="flex items-center justify-between">
- <div className="text-left">
- <h3 className="text-sm font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-1.5">
- <Target className="w-4 h-4 text-primary" /> Active Milestones
- </h3>
- <p className="text-xs text-neutral-450 dark:text-[var(--text-secondary)] mt-0.5 font-sans">Track your progress toward long-term life objectives.</p>
- </div>
- <button
- onClick={() => handleOpenCreateGoal()}
- className="bg-primary-gradient hover:opacity-90 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1 cursor-pointer font-display"
- >
- <Plus className="w-4 h-4" />
- <span>New Goal</span>
- </button>
- </div>
-
- {goals.length === 0 ? (
- <div className="py-16 text-center flex flex-col items-center justify-center bg-white dark:bg-[var(--bg-card)] border border-dashed border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-6 shadow-xs">
- <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-primary mb-3">
- <Target className="w-6 h-6 stroke-[1.5]" />
- </div>
- <p className="text-sm font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">No active goals yet</p>
- <p className="text-xs text-[var(--text-tertiary)] max-w-xs px-6 mt-1 leading-relaxed text-center font-sans">
- Define targets like weight logs, gym consistency, or study hours. DayFlow will track them automatically based on your Timeline tasks.
- </p>
- </div>
- ) : (
- <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
- {goals.map(goal => {
- const prediction = predictGoalCompletion(goal);
- const pct = Math.min(100, Math.round((goal.currentValue / goal.targetValue) * 100));
- 
- // Sparkline helper inline rendering
- const renderSparkline = (log: { date: string; value: number }[]) => {
- if (log.length < 2) return null;
- const values = log.map(l => l.value);
- const min = Math.min(...values);
- const max = Math.max(...values);
- const range = max - min || 1;
- const width = 90;
- const height = 24;
- const points = log.map((entry, index) => {
- const x = (index / (log.length - 1)) * width;
- const y = height - ((entry.value - min) / range) * height;
- return `${x},${y}`;
- }).join(" ");
-
- return (
- <svg className="w-24 h-6 text-emerald-500 stroke-current fill-none stroke-[2] overflow-visible">
- <polyline points={points} />
- </svg>
- );
- };
-
- return (
- <div key={goal.id} className={`bg-white dark:bg-[var(--bg-card)] border rounded-3xl p-5 shadow-xs transition-all flex flex-col gap-4 relative overflow-hidden group ${ goal.status === "paused" ? "opacity-65 border-neutral-200 dark:border-[var(--border)]" : "border-neutral-200 dark:border-[var(--border)]/80 hover:border-neutral-300 dark:border-[var(--border)]" }`}>
- {/* Top Row */}
- <div className="flex items-start justify-between gap-3 text-left">
- <div className="space-y-1 text-left">
- <div className="flex items-center gap-1.5">
- <span className={`text-[10px] font-extrabold uppercase tracking-widest px-2 py-0.5 rounded-full border ${ goal.category === "fitness" ? "bg-emerald-50 text-emerald-700 border-emerald-100" : goal.category === "academic" ? "bg-violet-50 text-violet-750 border-violet-100" : goal.category === "project" ? "bg-cyan-50 text-cyan-750 border-cyan-100" : goal.category === "habit" ? "bg-amber-50 text-amber-700 border-amber-100" : "bg-neutral-50 dark:bg-[var(--bg-card-hover)] text-neutral-600 dark:text-[var(--text-primary)] border-neutral-200 dark:border-[var(--border)]" }`}>
- {goal.category}
- </span>
- {goal.status === "paused" && (
- <span className="text-[10px] font-bold text-neutral-450 dark:text-[var(--text-secondary)] uppercase tracking-wider bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] px-1.5 py-0.5 rounded">Paused</span>
- )}
- {goal.status === "achieved" && (
- <span className="text-[10px] font-extrabold text-emerald-650 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded flex items-center gap-0.5">
- <Trophy className="w-2.5 h-2.5 animate-bounce" /> Complete
- </span>
- )}
- </div>
- <h4 className="font-display font-bold text-sm text-[var(--text-primary)] dark:text-[var(--text-primary)] tracking-tight group-hover:text-primary transition-colors">{goal.title}</h4>
- {goal.description && <p className="text-xs text-neutral-450 dark:text-[var(--text-secondary)] leading-relaxed font-sans">{goal.description}</p>}
- </div>
-
- {/* Action Buttons */}
- <div className="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
- <button 
- onClick={() => handleToggleGoalPause(goal.id)}
- className="p-1.5 hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] hover:text-[var(--text-primary)] dark:text-[var(--text-primary)] rounded-lg cursor-pointer transition-colors"
- title={goal.status === "active" ? "Pause tracking" : "Activate"}
- >
- {goal.status === "active" ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
- </button>
- <button 
- onClick={() => handleOpenEditGoal(goal)}
- className="p-1.5 hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] hover:text-[var(--text-primary)] dark:text-[var(--text-primary)] rounded-lg cursor-pointer transition-colors"
- title="Edit goal"
- >
- <Edit2 className="w-3.5 h-3.5" />
- </button>
- <button 
- onClick={() => handleDeleteGoal(goal.id)}
- className="p-1.5 hover:bg-red-50 text-[var(--text-tertiary)] hover:text-red-650 rounded-lg cursor-pointer transition-colors"
- title="Delete goal"
- >
- <Trash2 className="w-3.5 h-3.5" />
- </button>
- </div>
- </div>
-
- {/* Progress values & sparkline */}
- <div className="flex items-end justify-between border-t border-[var(--border)] dark:border-[var(--border)] pt-3">
- <div className="text-left">
- <span className="text-2xl font-black text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono tracking-tight">{goal.currentValue}</span>
- <span className="text-xs text-neutral-450 dark:text-[var(--text-secondary)] font-medium ml-1">/ {goal.targetValue} {goal.metricLabel}</span>
- </div>
- {renderSparkline(goal.progressLog)}
- </div>
-
- {/* Progress bar */}
- <div className="space-y-1.5">
- <div className="w-full h-2 bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
- <div 
- className="h-full bg-gradient-to-r from-violet-500 to-emerald-400 transition-all duration-500 rounded-full" 
- style={{ width: `${pct}%` }}
- />
- </div>
- <div className="flex justify-between items-center text-[10px] text-[var(--text-tertiary)] font-medium font-sans">
- <span>{pct}% complete</span>
- {goal.status === "active" && (
- <span>
- {prediction.estimatedDate ? (
- prediction.estimatedDate === "Done" ? "Goal target reached!" : `Est. completion: ${new Date(prediction.estimatedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
- ) : (
- "Calibrating pace..."
- )}
- </span>
- )}
- </div>
- </div>
- </div>
- );
- })}
- </div>
- )}
- </div>
-
- {/* AI Goal Suggestions */}
- {suggestGoalsFromTaskHistory(flexibleTasks, goals).length > 0 && (
- <div className="space-y-4">
- <h4 className="text-xs font-bold text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
- <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500/10" /> AI Suggestions
- </h4>
- <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
- {suggestGoalsFromTaskHistory(flexibleTasks, goals).map((sug, i) => (
- <div 
- key={i} 
- onClick={() => handleOpenCreateGoal({
- title: sug.title,
- category: sug.category,
- keywords: sug.keywords,
- targetValue: sug.targetValue,
- metricLabel: sug.metricLabel
- })}
- className="bg-gradient-to-br from-violet-50 to-indigo-50/40 border border-violet-100 hover:border-violet-200 p-4.5 rounded-2xl cursor-pointer transition-all hover:-translate-y-0.5 duration-200 text-left flex gap-3 items-start group shadow-2xs"
- >
- <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0 mt-0.5">
- <Sparkles className="w-4 h-4 fill-primary/10" />
- </div>
- <div className="space-y-1">
- <h5 className="font-bold text-xs text-[var(--text-primary)] dark:text-[var(--text-primary)] group-hover:text-primary transition-colors font-display">{sug.title}</h5>
- <p className="text-[11px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] leading-relaxed font-sans">{sug.suggestion}</p>
- <span className="inline-block text-[9px] font-extrabold text-primary uppercase tracking-widest mt-1">Tap to pre-fill</span>
- </div>
- </div>
- ))}
- </div>
- </div>
- )}
-
- {/* Achievements Timeline */}
- <div className="space-y-5">
- <h4 className="text-xs font-bold text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] uppercase tracking-widest flex items-center gap-1.5 font-display">
- <Award className="w-4 h-4 text-emerald-600" /> Unlocked Achievements
- </h4>
-
- {achievements.length === 0 ? (
- <div className="py-10 text-center text-xs text-[var(--text-tertiary)] italic bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl shadow-3xs p-6 font-sans">
- Complete task routines and reach goal milestones to unlock your first achievement badge.
- </div>
- ) : (
- <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-6 shadow-xs relative">
- {/* Vertical timeline line */}
- <div className="absolute left-10 top-8 bottom-8 w-0.5 bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)]" />
- 
- <div className="space-y-6">
- {[...achievements].sort((a, b) => new Date(b.earnedAt).getTime() - new Date(a.earnedAt).getTime()).map(ach => (
- <div key={ach.id} className="flex gap-4 items-start relative z-10 text-left group">
- {/* Left earned Date */}
- <div className="w-14 text-right shrink-0 mt-1">
- <span className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider block font-mono">
- {new Date(ach.earnedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
- </span>
- </div>
-
- {/* Center badge */}
- <div className="w-8 h-8 rounded-full bg-[#F5F4FF] border border-[var(--border)] dark:border-[var(--border)] flex items-center justify-center shrink-0 shadow-2xs group-hover:scale-110 transition-transform duration-200 text-lg select-none">
- {ach.icon}
- </div>
-
- {/* Right text info */}
- <div className="space-y-0.5">
- <h5 className="font-bold text-xs text-[var(--text-primary)] dark:text-[var(--text-primary)] group-hover:text-primary transition-colors font-display">{ach.title}</h5>
- <p className="text-[11px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-sans">{ach.description}</p>
- </div>
- </div>
- ))}
- </div>
- </div>
- )}
- </div>
- </div>
- )}
-
-
-
- </div>
- </div>
- )}
-
- {showSettingsModal && (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-neutral-900/40 backdrop-blur-xs animate-fade-in text-left">
-      <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-scale-up">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-strong)] dark:border-[var(--border)]">
-          <div className="flex items-center gap-2 text-primary font-bold font-display">
-            <SettingsIcon className="w-5 h-5" />
-            <span className="text-sm uppercase tracking-wider font-extrabold">App Settings</span>
-          </div>
-          <button 
-            onClick={() => { setShowSettingsModal(false); if (currentPath === "/settings") navigate("/routines"); }}
-            className="p-1.5 rounded-xl hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 text-neutral-455 hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] cursor-pointer transition-colors"
+          {/* Add Task Button */}
+          <div
+            style={transitionStyle}
+            className={`w-12 h-12 overflow-hidden ${
+              isAddTaskVisible 
+                ? "opacity-100 translate-y-0 scale-100 pointer-events-auto" 
+                : "opacity-0 translate-y-10 scale-75 pointer-events-none"
+            }`}
           >
-            <X className="w-5 h-5" />
+            <button
+              onClick={() => handleOpenAddFlexible(activeTab === "today")}
+              className="w-12 h-12 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-xl shadow-emerald-500/20 active:scale-95 transition-all cursor-pointer border border-emerald-500/20 shrink-0"
+              title="Add Task"
+            >
+              <Plus className="w-6 h-6 stroke-[2.5px]" />
+            </button>
+          </div>
+        </div>
+
+        {/* Row 2: Let's Chat Button */}
+        <div
+          style={transitionStyle}
+          className={`w-[104px] h-12 overflow-hidden ${
+            isChatVisible 
+              ? "opacity-100 translate-y-0 scale-100 pointer-events-auto" 
+              : "opacity-0 translate-y-10 scale-75 pointer-events-none"
+          }`}
+        >
+          <button
+            onClick={handleOpenAICopilot}
+            className="bg-primary-gradient hover:opacity-90 text-white w-[104px] h-12 rounded-2xl text-xs font-bold transition-all shadow-xl shadow-primary/20 flex items-center justify-center gap-1.5 cursor-pointer transform hover:scale-105 active:scale-95 font-display shrink-0"
+            title="Ask DayFlow AI Copilot"
+          >
+            <Sparkles className="w-4 h-4 fill-current stroke-[2px]" />
+            <span>Chat</span>
           </button>
         </div>
-        
-        {/* Scrollable Content wrapper */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          <div className="flex flex-col gap-6 md:gap-8 max-w-2xl mx-auto w-full">
+      </div>
+    );
+  })()}
 
- {/* Form Container */}
- <form 
- onSubmit={(e) => {
- e.preventDefault();
- localStorage.setItem("dayflow_profile_name", profileName);
- localStorage.setItem("dayflow_profile_age", profileAge);
- localStorage.setItem("dayflow_profile_bio", profileBio);
- localStorage.setItem("dayflow_profile_emoji", profileEmoji);
- showToast("Profile settings saved!", "success");
- triggerHaptic(20);
- }} 
- className="space-y-6 text-left"
- >
- {/* Section 1: User Profile */}
- <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-6 shadow-3xs space-y-4">
- <h3 className="text-sm font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-2 font-display">
- <User className="w-4 h-4 text-primary" /> Profile Details
- </h3>
- 
- <div className="grid grid-cols-4 gap-4">
- <div className="col-span-3">
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider mb-1.5 font-sans">Your Name</label>
- <input 
- type="text" 
- value={profileName}
- onChange={(e) => setProfileName(e.target.value)}
- placeholder="e.g. Alex Mercer"
- className="w-full px-3 py-2 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs focus:ring-1 focus:ring-primary focus:outline-none font-sans font-medium"
- required
- />
- </div>
- <div>
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider mb-1.5 text-center font-sans">Emoji</label>
- <input 
- type="text" 
- value={profileEmoji}
- onChange={(e) => setProfileEmoji(e.target.value)}
- placeholder="👨‍💻"
- className="w-full px-3 py-2 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs focus:ring-1 focus:ring-primary focus:outline-none text-center"
- maxLength={2}
- required
- />
- </div>
- </div>
-
- <div className="grid grid-cols-4 gap-4">
- <div>
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider mb-1.5 text-center font-sans">Age</label>
- <input 
- type="number" 
- value={profileAge}
- onChange={(e) => setProfileAge(e.target.value)}
- placeholder="25"
- min="0"
- max="120"
- className="w-full px-3 py-2 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs focus:ring-1 focus:ring-primary focus:outline-none text-center"
- required
- />
- </div>
- <div className="col-span-3">
- <label className="block text-[10px] font-bold text-neutral-455 uppercase tracking-wider mb-1.5 font-sans">Biography / Bio</label>
- <input 
- type="text" 
- value={profileBio}
- onChange={(e) => setProfileBio(e.target.value)}
- placeholder="Productivity creator. Tracking daily flows."
- className="w-full px-3 py-2 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs focus:ring-1 focus:ring-primary focus:outline-none font-sans font-medium"
- />
- </div>
- </div>
-
- <div className="flex justify-end pt-2">
- <button
- type="submit"
- className="px-4 py-2 bg-primary-gradient hover:opacity-90 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-primary/20 cursor-pointer"
- >
- Save Profile Changes
- </button>
- </div>
- </div>
- </form>
-
- {/* Section 2: Active Hours */}
- <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-6 shadow-3xs space-y-4 text-left">
- <h3 className="text-sm font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-2 font-display">
- <Clock className="w-4 h-4 text-primary" /> Active Scheduling Hours
- </h3>
- <p className="text-neutral-550 dark:text-[var(--text-secondary)] text-[11px] leading-relaxed">
- Tasks sequence and slots are automatically computed within this time framework.
- </p>
- <div className="flex items-center gap-3 max-w-xs">
- <input 
- type="time" 
- value={appSettings.day_start} 
- onChange={(e) => {
- const settings = { ...appSettings, day_start: e.target.value };
- setAppSettings(settings);
- saveSettings(settings);
- showToast("Active hours start updated!", "info");
- }}
- className="bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] text-center rounded-xl px-3 py-2 text-xs font-mono text-[var(--text-secondary)] dark:text-[var(--text-primary)] w-full focus:outline-none focus:border-primary"
- />
- <span className="text-xs text-[var(--text-tertiary)] font-mono font-bold">to</span>
- <input 
- type="time" 
- value={appSettings.day_end} 
- onChange={(e) => {
- const settings = { ...appSettings, day_end: e.target.value };
- setAppSettings(settings);
- saveSettings(settings);
- showToast("Active hours end updated!", "info");
- }}
- className="bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] text-center rounded-xl px-3 py-2 text-xs font-mono text-[var(--text-secondary)] dark:text-[var(--text-primary)] w-full focus:outline-none focus:border-primary"
- />
- </div>
- </div>
-
- {/* Section: Appearance */}
- <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-6 shadow-3xs space-y-4 text-left">
- <h3 className="text-sm font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-2 font-display">
- <Moon className="w-4 h-4 text-primary" /> Appearance
- </h3>
- <p className="text-neutral-550 dark:text-[var(--text-secondary)] text-[11px] leading-relaxed">
- Choose a visual theme or sync it automatically with your system.
- </p>
- <div className="flex bg-[var(--bg-card-hover)] p-1.5 rounded-xl border border-[var(--border-strong)] dark:border-[var(--border)]/60 shadow-inner">
- {(["light", "dark", "system"] as const).map((mode) => (
- <button
- key={mode}
- onClick={() => {
- const settings = { ...appSettings, themeMode: mode };
- setAppSettings(settings);
- saveSettings(settings);
- }}
- className={`flex-1 py-2 text-xs font-bold rounded-lg capitalize transition-all ${ appSettings.themeMode === mode ? "bg-white dark:bg-[var(--bg-card)] text-primary shadow-sm" : "text-neutral-500 dark:text-[var(--text-secondary)] hover:text-neutral-700 dark:text-[var(--text-primary)]" }`}
- >
- {mode}
- </button>
- ))}
- </div>
- </div>
-
- {/* Section 3: Data & Privacy */}
- <div className="bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-3xl p-6 shadow-3xs space-y-4 text-left">
- <h3 className="text-sm font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-2 font-display">
- <Shield className="w-4 h-4 text-primary" /> Data, Privacy & Notifications
- </h3>
- <p className="text-neutral-550 dark:text-[var(--text-secondary)] text-[11px] leading-relaxed font-sans">
- Control offline local storage and browser notification states. All task flow computation runs strictly inside your private browser space.
- </p>
-
- <div className="space-y-3 max-w-md">
- {notificationPermission === "granted" ? (
- <div className="flex items-center justify-between text-[11px] bg-emerald-50 border border-emerald-250/20 px-3 py-2.5 rounded-xl text-emerald-700 font-semibold">
- <span className="flex items-center gap-1 font-sans">
- <Check className="w-3.5 h-3.5" /> Notifications Active
- </span>
- </div>
- ) : notificationPermission === "denied" ? (
- <div className="flex items-center justify-between text-[11px] bg-rose-50 border border-rose-250/20 px-3 py-2.5 rounded-xl text-rose-700 font-semibold">
- <span className="flex items-center gap-1 font-sans">
- <AlertCircle className="w-3.5 h-3.5" /> Notifications Blocked by Browser
- </span>
- </div>
- ) : (
- <button
- type="button"
- onClick={handleRequestNotifications}
- className="w-full py-2.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1 font-display"
- >
- <Bell className="w-3.5 h-3.5" /> Enable Notifications
- </button>
- )}
-
- <div className="flex gap-3">
- <button
- type="button"
- onClick={exportMyData}
- className="flex-1 py-2.5 px-3 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-neutral-750 dark:text-[var(--text-primary)] text-xs font-bold rounded-xl transition-all cursor-pointer text-center flex items-center justify-center gap-1.5 font-display"
- >
- <Download className="w-3.5 h-3.5 text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]" /> Export Data (JSON)
- </button>
-
- <label
- className="flex-1 py-2.5 px-3 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-neutral-750 dark:text-[var(--text-primary)] text-xs font-bold rounded-xl transition-all cursor-pointer text-center flex items-center justify-center gap-1.5 font-display"
- >
- <Upload className="w-3.5 h-3.5 text-[var(--text-tertiary)] dark:text-[var(--text-secondary)]" /> Import Data
- <input
- type="file"
- accept=".json"
- onChange={importMyData}
- className="hidden"
- />
- </label>
- </div>
- </div>
- </div>
-
- {/* Section 4: Developer Options */}
- {showDevTools && (
- <div className="bg-white dark:bg-[var(--bg-card)] border border-[#E0D9FF]/40 rounded-3xl p-6 shadow-3xs space-y-4 text-left animate-fade-in">
- <h3 className="text-sm font-bold text-[#5A4DC2] uppercase tracking-wider flex items-center gap-2 font-display">
- <Database className="w-4 h-4 text-[#8B7EFF]" /> Developer Sandbox
- </h3>
- <p className="text-neutral-550 dark:text-[var(--text-secondary)] text-[11px] leading-relaxed font-sans">
- Populate temporary demonstration datasets for schedule calibration and metrics testing.
- </p>
- <button
- type="button"
- onClick={handleInjectMockMLData}
- className="w-full py-2.5 px-3 bg-[#F6F5FF] border border-[#E0D9FF] hover:bg-[#EFEBFF] text-[#5A4DC2] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm font-display max-w-xs"
- >
- <Sparkles className="w-3.5 h-3.5 text-[#8B7EFF] fill-[#8B7EFF]/10" /> Populate Demo History
- </button>
- </div>
- )}
-
- {/* Section 5: Danger Zone */}
- <div className="bg-rose-50/20 border border-rose-150 rounded-3xl p-6 space-y-4 text-left">
- <h3 className="text-sm font-bold text-rose-600 uppercase tracking-wider flex items-center gap-2 font-display">
- <Trash2 className="w-4 h-4 text-rose-550" /> Danger Zone
- </h3>
- <p className="text-neutral-550 dark:text-[var(--text-secondary)] text-[11px] leading-relaxed font-sans">
- Permanently erase all custom fixed blocks, completed tasks telemetry history, habits, milestones, and settings. This cannot be undone.
- </p>
- 
- {/* Data Deletion safety confirmation panel (friction) */}
- <div className="space-y-3 max-w-md">
- <button
- type="button"
- onClick={() => {
- setShowDeleteConfirm(true);
- triggerHaptic(15);
- }}
- className="py-2.5 px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 font-display"
- >
- <Trash2 className="w-3.5 h-3.5 text-rose-500" />
- <span>Clear All Data</span>
- </button>
-
- {showDeleteConfirm && (
- <div className="bg-white dark:bg-[var(--bg-card)] border border-rose-200 rounded-2xl p-4.5 space-y-3.5 shadow-sm animate-scale-up">
- <div className="flex gap-2.5 items-start">
- <AlertTriangle className="w-4.5 h-4.5 text-rose-550 shrink-0 mt-0.5 animate-pulse" />
- <div className="space-y-1">
- <h4 className="text-xs font-bold text-rose-800 font-display">Are you absolutely sure?</h4>
- <p className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-sans leading-relaxed">
- Please type <span className="font-extrabold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-mono">DELETE ALL DATA</span> in the input below to confirm the wipeout.
- </p>
- </div>
- </div>
-
- <input
- type="text"
- value={deleteConfirmText}
- onChange={(e) => setDeleteConfirmText(e.target.value)}
- placeholder="Type confirmation here..."
- className="w-full px-3 py-2 bg-rose-50/30 border border-rose-200 rounded-xl text-xs font-mono focus:outline-none focus:border-rose-500 text-rose-800 animate-fade-in"
- />
-
- <div className="flex gap-2">
- <button
- type="button"
- onClick={() => {
- setShowDeleteConfirm(false);
- setDeleteConfirmText("");
- }}
- className="flex-1 py-2 text-xs font-bold border border-[var(--border-strong)] dark:border-[var(--border)] hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)] dark:text-[var(--text-primary)] rounded-xl transition-all cursor-pointer text-center"
- >
- Cancel
- </button>
- <button
- type="button"
- disabled={deleteConfirmText !== "DELETE ALL DATA"}
- onClick={() => {
- performDataWipe();
- setShowDeleteConfirm(false);
- setDeleteConfirmText("");
- }}
- className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all text-center cursor-pointer ${ deleteConfirmText === "DELETE ALL DATA" ? "bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20" : "bg-neutral-100 dark:bg-[var(--bg-card-hover)] text-neutral-400 border border-neutral-200 dark:border-[var(--border)]/50 cursor-not-allowed" }`}
- >
- Wipe All Data
- </button>
- </div>
- </div>
- )}
- </div>
-  </div>
-  </div>
-  </div>
-  </div>
-  </div>
-  )}
- </main>
-
-     {/* UNIFIED FLOATING ACTION AREA */}
-   {activeTab !== "routines" && (
-     <div className="absolute md:bottom-6 bottom-[100px] right-4 z-[80] flex flex-row md:flex-col gap-2.5 items-center md:items-end pointer-events-none">
-       {activeTab === "today" && selectedDate === TODAY && (
-         <div className="relative pointer-events-auto flex items-center gap-2 group">
-           {hasUnverifiedPastTasks && (
-             <div className="bg-slate-900 dark:bg-zinc-800 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-xl shadow-lg border border-slate-700 dark:border-zinc-700 flex items-center gap-1 animate-pulse max-w-[150px] leading-tight">
-               <span>⚠️ Schedule outdated</span>
-             </div>
-           )}
-           <button
-             onClick={handleAlignTimeline}
-             className={`w-12 h-12 rounded-full text-white flex items-center justify-center shadow-xl active:scale-95 transition-all cursor-pointer border shrink-0 ${
-               hasUnverifiedPastTasks 
-                 ? "bg-primary hover:opacity-95 border-primary/20 shadow-primary/20 animate-bounce ring-2 ring-primary/20" 
-                 : "bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 dark:hover:bg-slate-600 border-slate-700/20 shadow-black/15"
-             }`}
-             title="Reschedule Day / Align Timeline"
-           >
-             <RefreshCw className={`w-5 h-5 stroke-[2.5px] ${hasUnverifiedPastTasks ? "animate-spin" : ""}`} />
-           </button>
-         </div>
-       )}
-       {(activeTab === "today" || activeTab === "backlog") && (
-         <button
-           onClick={() => handleOpenAddFlexible(activeTab === "today")}
-           className="w-12 h-12 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-xl shadow-emerald-500/20 active:scale-95 transition-all cursor-pointer border border-emerald-500/20 pointer-events-auto shrink-0 animate-scale-up"
-           title="Add Task"
-         >
-           <Plus className="w-6 h-6 stroke-[2.5px]" />
-         </button>
-       )}
-       <button
-         onClick={handleOpenAICopilot}
-         className="bg-primary-gradient hover:opacity-90 text-white pl-4 pr-5 py-3 rounded-full text-sm font-bold transition-all shadow-xl shadow-primary/20 flex items-center gap-2 cursor-pointer transform hover:scale-105 active:scale-95 font-display pointer-events-auto shrink-0"
-         title="Ask DayFlow AI Copilot"
-       >
-         <Sparkles className="w-5 h-5 fill-white stroke-[2px]" />
-         <span>{copilotButtonLabel}</span>
-       </button>
-     </div>
-   )}
-
-{/* BOTTOM NAVIGATION TAB BAR (Floating Pill) */}
+  {/* BOTTOM NAVIGATION TAB BAR (Floating Pill) */}
  
  <nav id="mobile_sticky_bottom_nav" className="menu fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-[64px] bg-white/85 dark:bg-[#1e1e23]/85 backdrop-blur-md shadow-2xl shadow-black/15 dark:shadow-black/40 rounded-full grid grid-cols-4 items-center z-[80] md:!hidden px-2 border border-[var(--border)]" role="navigation">
     {menuItems.map((item, index) => {
@@ -12281,502 +9181,62 @@ Please create the specified number of backlog tasks representing the project pha
  className="absolute inset-0 bg-black/40 z-[90] pointer-events-auto transition-opacity animate-fade-in cursor-pointer"
  />
  )}
+  <FixedBlockModal
+    isOpen={activeBottomSheet === "fixed"}
+    onClose={() => setActiveBottomSheet(null)}
+    editingBlock={editingBlock}
+    fixedForm={fixedForm}
+    setFixedForm={setFixedForm}
+    handleSubmitFixed={handleSubmitFixed}
+  />
 
- {/* SHEET 1 — Add/Edit Fixed Block */}
- <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "fixed" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
- >
- {/* Top drag handle indicator bar */}
- <div className="flex justify-center pb-3">
- <span className="w-10 h-1 bg-neutral-200 dark:bg-[var(--bg-card-hover)] rounded-full" />
- </div>
+  {/* SHEET 2 — Add/Edit Flexible Task */}
+  <FlexibleTaskModal
+    isOpen={activeBottomSheet === "flexible"}
+    onClose={() => setActiveBottomSheet(null)}
+    editingTask={editingTask}
+    TODAY={TODAY}
+    flexibleForm={flexibleForm}
+    setFlexibleForm={setFlexibleForm}
+    classificationFeedback={classificationFeedback}
+    isMetadataOpen={isMetadataOpen}
+    setIsMetadataOpen={setIsMetadataOpen}
+    flexibleTasks={flexibleTasks}
+    handleTitleBlur={handleTitleBlur}
+    handleSubmitFlexible={handleSubmitFlexible}
+  />
 
- <div className="flex items-center justify-between mb-4">
- <h3 className="font-display font-semibold text-lg text-[var(--text-primary)] dark:text-[var(--text-primary)]">
- {editingBlock ? "🔒 Edit Fixed block" : "🔒 Add Fixed block"}
- </h3>
- <button 
- type="button" 
- onClick={() => setActiveBottomSheet(null)}
- className="p-1 rounded-full bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)] cursor-pointer"
- >
- <X className="w-4 h-4" />
- </button>
- </div>
-
- <form onSubmit={handleSubmitFixed} className="space-y-4">
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Block Title</label>
- <input 
- type="text" 
- placeholder="e.g. Gym workout, Lunch with team, Class context"
- required
- value={fixedForm.title}
- onChange={(e) => setFixedForm({ ...fixedForm, title: e.target.value })}
- className="w-full px-3 py-2.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-sm bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- />
- </div>
-
- <div className="grid grid-cols-2 gap-3.5">
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Start Time (HH:MM)</label>
- <input 
- type="time" 
- required
- value={fixedForm.start_time}
- onChange={(e) => setFixedForm({ ...fixedForm, start_time: e.target.value })}
- className="w-full px-3 py-2.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-sm bg-white dark:bg-[var(--bg-card)]"
- />
- </div>
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">End Time (HH:MM)</label>
- <input 
- type="time" 
- required
- value={fixedForm.end_time}
- onChange={(e) => setFixedForm({ ...fixedForm, end_time: e.target.value })}
- className="w-full px-3 py-2.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-sm bg-white dark:bg-[var(--bg-card)]"
- />
- </div>
- </div>
-
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Repeats Selector</label>
- <div className="grid grid-cols-3 gap-1.5 mb-2.5">
- {(["none", "daily", "weekdays"] as const).map((rep) => (
- <button
- key={rep}
- type="button"
- onClick={() => setFixedForm({ 
- ...fixedForm, 
- repeats: rep,
- daysOfWeek: rep === "weekdays" ? [1, 2, 3, 4, 5] : (rep === "daily" ? [0, 1, 2, 3, 4, 5, 6] : [])
- })}
- className={`py-2 px-1 text-xs rounded-lg font-semibold border capitalize cursor-pointer transition-colors ${ fixedForm.repeats === rep ? "bg-primary/10 text-primary border-primary" : "bg-white dark:bg-[var(--bg-card)] text-neutral-500 dark:text-[var(--text-secondary)] border-neutral-200 dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)]" }`}
- >
- {rep === "none" ? "Once" : rep}
- </button>
- ))}
- </div>
-
- <div className="space-y-1 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] p-2.5 rounded-xl border border-neutral-150 dark:border-[var(--border)]">
- <label className="block text-[9px] font-black text-[var(--text-tertiary)] uppercase tracking-widest">Select Specific Days (Custom)</label>
- <div className="flex flex-wrap gap-1">
- {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((dayLabel, index) => {
- const active = fixedForm.repeats === "custom" && fixedForm.daysOfWeek?.includes(index);
- return (
- <button
- key={dayLabel}
- type="button"
- onClick={() => {
- let newDays = fixedForm.daysOfWeek ? [...fixedForm.daysOfWeek] : [];
- if (fixedForm.repeats !== "custom") {
- newDays = [index];
- } else {
- if (newDays.includes(index)) {
- newDays = newDays.filter(d => d !== index);
- } else {
- newDays = [...newDays, index].sort();
- }
- }
- setFixedForm({
- ...fixedForm,
- repeats: "custom",
- daysOfWeek: newDays
- });
- }}
- className={`px-2.5 py-1 rounded-md text-[10px] font-bold border transition-colors cursor-pointer ${ active ? "bg-primary text-white border-primary" : "bg-white dark:bg-[var(--bg-card)] text-neutral-500 dark:text-[var(--text-secondary)] border-neutral-200 dark:border-[var(--border)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)]" }`}
- >
- {dayLabel}
- </button>
- );
- })}
- </div>
- </div>
- </div>
-
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Color theme</label>
- <div className="flex gap-2">
- {["#E24B4A", "#7F77DD", "#1D9E75", "#EF9F27", "#3C3489"].map((col) => (
- <button
- key={col}
- type="button"
- onClick={() => setFixedForm({ ...fixedForm, color: col })}
- className="w-6 h-6 rounded-full border border-neutral-300 dark:border-[var(--border)] relative cursor-pointer"
- style={{ backgroundColor: col }}
- >
- {fixedForm.color === col && (
- <span className="absolute inset-0 flex items-center justify-center text-white text-xs">✓</span>
- )}
- </button>
- ))}
- </div>
- </div>
-
- <div className="pt-3 border-t border-[var(--border)] dark:border-[var(--border)] flex gap-2">
- <button 
- type="button"
- onClick={() => setActiveBottomSheet(null)}
- className="flex-1 py-3 text-sm font-bold rounded-xl border border-[var(--border-strong)] dark:border-[var(--border)] hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] transition-colors cursor-pointer"
- >
- Cancel
- </button>
- <button 
- type="submit"
- className="flex-1 py-3 text-sm font-bold rounded-xl bg-[#E24B4A] text-white hover:bg-red-700 transition-colors cursor-pointer"
- >
- {editingBlock ? "Save changes" : "Lock to schedule"}
- </button>
- </div>
- </form>
- </div>
-
- {/* SHEET 2 — Add/Edit Flexible Task */}
- <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "flexible" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
- >
- <div className="flex justify-center pb-3">
- <span className="w-10 h-1 bg-neutral-200 dark:bg-[var(--bg-card-hover)] rounded-full" />
- </div>
-
- <div className="flex items-center justify-between mb-4">
- <h3 className="font-display font-semibold text-lg text-[var(--text-primary)] dark:text-[var(--text-primary)]">
- {editingTask ? "⚡ Edit task" : flexibleForm.scheduled_date ? "⚡ Add task to today" : "⚡ Add to backlog"}
- </h3>
- <button 
- type="button" 
- onClick={() => setActiveBottomSheet(null)}
- className="p-1 rounded-full bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)]"
- >
- <X className="w-4 h-4" />
- </button>
- </div>
-
- <form onSubmit={handleSubmitFlexible} className="space-y-4 text-left">
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Title / Mission</label>
- <input 
- type="text" 
- placeholder="e.g. Study DSA recursion, Read chapter 2, Laundry load"
- required
- value={flexibleForm.title}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, title: e.target.value })}
- onBlur={handleTitleBlur}
- className="w-full px-3 py-2.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-sm bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- />
- {classificationFeedback && (
- <div className="mt-2 flex items-center justify-between p-2 rounded-xl bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border)] dark:border-[var(--border)] text-xs">
- <div className="flex items-center gap-1.5 font-medium">
- {classificationFeedback.confidence >= 0.75 ? (
- <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] font-bold">
- ✓ Classified: {classificationFeedback.category}
- </span>
- ) : classificationFeedback.confidence >= 0.5 ? (
- <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-100 text-[10px] font-bold">
- ⚡ Guess: {classificationFeedback.category}
- </span>
- ) : (
- <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-100 text-[10px] font-bold">
- ⚠️ Low confidence: {classificationFeedback.category}
- </span>
- )}
- <span className="text-[10px] text-[var(--text-tertiary)]">
- via {classificationFeedback.source} ({Math.round(classificationFeedback.confidence * 100)}%)
- </span>
- </div>
- <button
- type="button"
- onClick={() => setIsMetadataOpen(!isMetadataOpen)}
- className="text-[10px] text-primary font-bold hover:underline"
- >
- {isMetadataOpen ? "Hide Options" : "Adjust"}
- </button>
- </div>
- )}
- </div>
-
- {isMetadataOpen && (
- <div className="space-y-4 pt-2 border-t border-[var(--border)] dark:border-[var(--border)] mt-2 animate-fade-in">
- <div className="grid grid-cols-2 gap-3">
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Duration (mins)</label>
- <div className="flex items-center gap-1.5">
- <button
- type="button"
- onClick={() => setFlexibleForm({ ...flexibleForm, duration_minutes: Math.max(15, flexibleForm.duration_minutes - 15) })}
- className="px-2 py-1.5 bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] rounded-lg text-xs font-bold cursor-pointer"
- >
- -15
- </button>
- <span className="flex-1 text-center font-mono text-sm font-bold bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] py-1.5 rounded-lg border">
- {flexibleForm.duration_minutes >= 60 
- ? `${Math.floor(flexibleForm.duration_minutes / 60)}h ${flexibleForm.duration_minutes % 60}m` 
- : `${flexibleForm.duration_minutes}m`}
- </span>
- <button
- type="button"
- onClick={() => setFlexibleForm({ ...flexibleForm, duration_minutes: Math.min(480, flexibleForm.duration_minutes + 15) })}
- className="px-2 py-1.5 bg-[var(--bg-card-hover)] dark:bg-[var(--bg-card-hover)] rounded-lg text-xs font-bold cursor-pointer"
- >
- +15
- </button>
- </div>
- </div>
-
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Energy Required</label>
- <div className="flex gap-1">
- {(["high", "medium", "low"] as const).map((energy) => (
- <button
- key={energy}
- type="button"
- onClick={() => setFlexibleForm({ ...flexibleForm, energy_level: energy })}
- className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer ${ flexibleForm.energy_level === energy ? "bg-primary/10 text-primary border-primary" : "bg-white dark:bg-[var(--bg-card)] text-neutral-500 dark:text-[var(--text-secondary)] border-neutral-200 dark:border-[var(--border)]" }`}
- >
- {energy === "high" ? "🔥 High" : energy === "low" ? "🌙 Low" : "⚡ Med"}
- </button>
- ))}
- </div>
- </div>
- </div>
-
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Importance</label>
- <div className="flex gap-1.5">
- {(["critical", "important", "optional"] as const).map((imp) => (
- <button
- key={imp}
- type="button"
- onClick={() => setFlexibleForm({ ...flexibleForm, importance: imp })}
- className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer transition-all ${ flexibleForm.importance === imp ? imp === "critical" ? "bg-red-50 text-red-700 border-red-200" : imp === "important" ? "bg-primary/10 text-primary border-primary" : "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-white dark:bg-[var(--bg-card)] text-neutral-500 dark:text-[var(--text-secondary)] border-neutral-200 dark:border-[var(--border)]" }`}
- >
- {imp === "critical" ? "🚨 Critical" : imp === "optional" ? "🌱 Optional" : "⚡ Important"}
- </button>
- ))}
- </div>
- </div>
-
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Task Rigidity (Flexibility)</label>
- <div className="flex gap-1.5">
- {(["fixed", "movable", "optional"] as const).map((flex) => (
- <button
- key={flex}
- type="button"
- onClick={() => setFlexibleForm({ ...flexibleForm, task_flexibility: flex })}
- className={`flex-1 py-1.5 text-xs rounded-lg font-bold border capitalize cursor-pointer transition-all ${ flexibleForm.task_flexibility === flex ? flex === "fixed" ? "bg-purple-50 text-purple-700 border-purple-200" : flex === "optional" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-blue-50 text-blue-700 border-blue-200" : "bg-white dark:bg-[var(--bg-card)] text-neutral-500 dark:text-[var(--text-secondary)] border-neutral-200 dark:border-[var(--border)]" }`}
- >
- {flex === "fixed" ? "🔒 Rigid (Fixed)" : flex === "optional" ? "🌱 Optional" : "↔ Movable"}
- </button>
- ))}
- </div>
- </div>
- </div>
- )}
-
- <div>
- <label className="flex items-center gap-2 text-sm font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)] select-none cursor-pointer">
- <input 
- type="checkbox"
- checked={flexibleForm.hasDeadline}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, hasDeadline: e.target.checked })}
- className="w-4 h-4 text-primary shrink-0 transition-colors cursor-pointer"
- />
- <span>Has relative Deadline or Pinned Date?</span>
- </label>
- 
- {flexibleForm.hasDeadline && (
- <input 
- type="date"
- required={flexibleForm.hasDeadline}
- value={flexibleForm.deadline}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, deadline: e.target.value })}
- className="w-full px-3 py-2.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-sm bg-white dark:bg-[var(--bg-card)] mt-1.5"
- />
- )}
- </div>
-
- <div>
- <label className="block text-xs font-bold text-[#9999B3] uppercase tracking-wider mb-1">Schedule for date (optional)</label>
- <input 
- type="date" 
- value={flexibleForm.scheduled_date}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, scheduled_date: e.target.value })}
- className="w-full px-3 py-2.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-sm bg-white dark:bg-[var(--bg-card)]"
- />
- <p className="text-xs text-[#9999B3] mt-1">
- {flexibleForm.scheduled_date ? `Slotted to ${flexibleForm.scheduled_date}` : "Leave blank to save to backlog."}
- </p>
- </div>
-
- {/* Advanced Metadata collapsible details block */}
- <div className="pt-2">
- <details 
- open={isMetadataOpen} 
- onToggle={(e) => setIsMetadataOpen((e.target as HTMLDetailsElement).open)}
- className="border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl p-3 bg-[var(--bg-page)] space-y-3"
- >
- <summary className="text-xs font-bold text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] cursor-pointer select-none outline-none hover:text-[var(--text-secondary)] dark:text-[var(--text-primary)] flex items-center justify-between">
- <span>ADVANCED COGNITIVE METADATA</span>
- <span className="text-[10px] text-[var(--text-tertiary)] font-mono">{isMetadataOpen ? "▼ COLLAPSE" : "▶ EXPAND"}</span>
- </summary>
- 
- <div className="pt-3 space-y-3 border-t border-[var(--border)] dark:border-[var(--border)]">
- {/* Category */}
- <div>
- <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">Category</label>
- <select
- value={flexibleForm.category}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, category: e.target.value as any })}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- <option value="study">🎓 Study</option>
- <option value="project">💻 Project</option>
- <option value="meeting">👥 Meeting</option>
- <option value="health">🏋️ Health</option>
- <option value="habit">🔄 Habit</option>
- <option value="admin">⚙️ Admin</option>
- <option value="social">🍻 Social</option>
- <option value="creative">🎨 Creative</option>
- <option value="personal">👤 Personal</option>
- <option value="misc">📦 Misc</option>
- </select>
- </div>
-
- {/* Rigidity */}
- <div>
- <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">Rigidity</label>
- <select
- value={flexibleForm.rigidity}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, rigidity: e.target.value as any })}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- <option value="flexible">Flexible</option>
- <option value="semi_flexible">Semi-flexible</option>
- <option value="fixed">Fixed</option>
- </select>
- </div>
-
- {/* Recoverability */}
- <div>
- <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">Recoverability</label>
- <select
- value={flexibleForm.recoverability}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, recoverability: e.target.value as any })}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- <option value="easy">Easy to recover</option>
- <option value="hard">Hard to recover</option>
- <option value="impossible">Impossible to recover</option>
- </select>
- </div>
-
- {/* Dependency Chain */}
- <div>
- <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">Dependency Strength</label>
- <select
- value={flexibleForm.dependency_chain}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, dependency_chain: e.target.value as any })}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- <option value="none">No dependencies</option>
- <option value="weak">Weak dependence</option>
- <option value="strong">Strong dependence</option>
- </select>
- </div>
-
- {/* Progress Type */}
- <div>
- <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">Progress Model</label>
- <select
- value={flexibleForm.progress_type}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, progress_type: e.target.value as any })}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- <option value="binary">Binary (Done/Not Done)</option>
- <option value="compound">Compound (Accumulates progress)</option>
- <option value="streak">Streak (Maintains daily momentum)</option>
- </select>
- </div>
-
- {/* Deadline Pressure */}
- <div>
- <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">Deadline Pressure</label>
- <select
- value={flexibleForm.deadline_pressure}
- onChange={(e) => setFlexibleForm({ ...flexibleForm, deadline_pressure: e.target.value as any })}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- <option value="none">None</option>
- <option value="low">Low</option>
- <option value="medium">Medium</option>
- <option value="high">High</option>
- <option value="critical">Critical</option>
- </select>
- </div>
-
- {/* Dependency links */}
- <div className="grid grid-cols-2 gap-2">
- <div>
- <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">Blocked By</label>
- <select
- multiple
- value={flexibleForm.blocked_by}
- onChange={(e) => {
- const selected = Array.from(e.target.selectedOptions, option => option.value);
- setFlexibleForm(prev => ({ ...prev, blocked_by: selected }));
- }}
- className="w-full h-24 px-2 py-1 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-[11px] bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- {flexibleTasks
- .filter(t => !editingTask || t.id !== editingTask.id)
- .map(t => (
- <option key={t.id} value={t.id}>{t.title}</option>
- ))}
- </select>
- </div>
- <div>
- <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">Blocks Tasks</label>
- <select
- multiple
- value={flexibleForm.blocks}
- onChange={(e) => {
- const selected = Array.from(e.target.selectedOptions, option => option.value);
- setFlexibleForm(prev => ({ ...prev, blocks: selected }));
- }}
- className="w-full h-24 px-2 py-1 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-[11px] bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- {flexibleTasks
- .filter(t => !editingTask || t.id !== editingTask.id)
- .map(t => (
- <option key={t.id} value={t.id}>{t.title}</option>
- ))}
- </select>
- </div>
- </div>
- <p className="text-[9px] text-[var(--text-tertiary)] mt-1 leading-tight">Cmd/Ctrl-click to select multiple tasks.</p>
- </div>
- </details>
- </div>
-
- <div className="pt-3 border-t border-[var(--border)] dark:border-[var(--border)] flex gap-2">
- <button 
- type="button"
- onClick={() => setActiveBottomSheet(null)}
- className="flex-1 py-3 text-sm font-bold rounded-xl border border-[var(--border-strong)] dark:border-[var(--border)] hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] transition-colors cursor-pointer"
- >
- Cancel
- </button>
- <button 
- type="submit"
- className="flex-1 py-3 text-sm font-bold rounded-xl bg-primary text-white hover:bg-primary-dark transition-colors cursor-pointer"
- >
- {editingTask ? "Confirm Save" : flexibleForm.scheduled_date ? "Add to Today" : "Save to Backlog"}
- </button>
- </div>
- </form>
- </div>
+  {/* Settings Modal */}
+  <SettingsModal
+    isOpen={showSettingsModal}
+    onClose={() => setShowSettingsModal(false)}
+    profileName={profileName}
+    setProfileName={setProfileName}
+    profileAge={profileAge}
+    setProfileAge={setProfileAge}
+    profileBio={profileBio}
+    setProfileBio={setProfileBio}
+    profileEmoji={profileEmoji}
+    setProfileEmoji={setProfileEmoji}
+    appSettings={appSettings}
+    setAppSettings={setAppSettings}
+    saveSettings={saveSettings}
+    notificationPermission={notificationPermission}
+    handleRequestNotifications={handleRequestNotifications}
+    exportMyData={exportMyData}
+    importMyData={importMyData}
+    showDevTools={showDevTools}
+    handleInjectMockMLData={handleInjectMockMLData}
+    showDeleteConfirm={showDeleteConfirm}
+    setShowDeleteConfirm={setShowDeleteConfirm}
+    deleteConfirmText={deleteConfirmText}
+    setDeleteConfirmText={setDeleteConfirmText}
+    performDataWipe={performDataWipe}
+    currentPath={currentPath}
+    navigate={navigate}
+    showToast={showToast}
+    triggerHaptic={triggerHaptic}
+  />
 
  {/* SHEET 3 — AI Copilot */}
  {(() => {
@@ -12799,325 +9259,30 @@ Please create the specified number of backlog tasks representing the project pha
  })()}
 
  {/* SHEET 5 — End of Day Review */}
- <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "eodreview" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
- >
- <div className="flex justify-center pb-3">
- <span className="w-10 h-1 bg-neutral-200 dark:bg-[var(--bg-card-hover)] rounded-full" />
- </div>
-
- <div className="flex items-center justify-between mb-2">
- <h3 className="font-display font-semibold text-lg text-primary flex items-center gap-1.5">
- <CalendarCheck className="w-5 h-5 text-amber-500 shrink-0" />
- <span>End of Day Review</span>
- </h3>
- <button 
- type="button" 
- onClick={() => setActiveBottomSheet(null)}
- className="p-1 rounded-full bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)]"
- >
- <X className="w-4 h-4" />
- </button>
- </div>
-
- <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-4">
- Review incomplete items from today and stale tasks from your backlog to keep your workspace fresh.
- </p>
-
- <div className="space-y-5 flex-1 overflow-y-auto pr-1">
- {/* SECTION 1: INCOMPLETE TASKS TODAY */}
- <div className="space-y-3">
- <h4 className="text-xs uppercase font-bold text-[#9999B3] tracking-wider block">Today's Incomplete Tasks</h4>
- {todayIncompleteTasks.length === 0 ? (
- <p className="text-xs text-[var(--text-tertiary)] italic">No incomplete tasks scheduled for today.</p>
- ) : (
- <div className="space-y-3">
- {todayIncompleteTasks.map(task => (
- <div key={task.id} className="p-3 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)]/80 rounded-xl space-y-2.5">
- <div className="flex items-start justify-between gap-2">
- <span className="text-xs font-semibold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display block leading-tight">{task.title}</span>
- <span className="text-[10px] font-mono font-bold bg-neutral-200 px-1.5 py-0.5 rounded text-[var(--text-secondary)] dark:text-[var(--text-primary)] shrink-0">{task.duration_minutes}m</span>
- </div>
- <div className="flex items-center gap-1.5 flex-wrap">
- <button
- onClick={() => handleEodMoveToTomorrow(task.id)}
- className="text-[10px] font-bold bg-primary-gradient hover:opacity-90 text-white px-2 py-1 rounded cursor-pointer transition-colors"
- >
- Do Tomorrow
- </button>
- <div className="flex items-center bg-neutral-200 rounded p-0.5 gap-0.5">
- <button
- onClick={() => handleEodReduceAndTomorrow(task.id, 50)}
- className="text-[10px] font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)] hover:bg-white dark:bg-[var(--bg-card)] px-1.5 py-0.5 rounded cursor-pointer transition-colors"
- title="Mark 50% done today, schedule remaining half tomorrow"
- >
- 50% Done
- </button>
- <button
- onClick={() => handleEodReduceAndTomorrow(task.id, 75)}
- className="text-[10px] font-bold text-[var(--text-secondary)] dark:text-[var(--text-primary)] hover:bg-white dark:bg-[var(--bg-card)] px-1.5 py-0.5 rounded cursor-pointer transition-colors"
- title="Mark 75% done today, schedule remaining 25% tomorrow"
- >
- 75% Done
- </button>
- </div>
- <button
- onClick={() => handleDeleteFlexible(task.id)}
- className="text-[10px] font-bold text-red-600 hover:bg-red-50 hover:text-red-700 px-2 py-1 rounded cursor-pointer transition-colors ml-auto"
- >
- Delete
- </button>
- </div>
- </div>
- ))}
- </div>
- )}
- </div>
-
- {/* SECTION 2: STALE BACKLOG ITEMS */}
- <div className="space-y-3 pt-3 border-t border-[var(--border)] dark:border-[var(--border)]">
- <h4 className="text-xs uppercase font-bold text-[#9999B3] tracking-wider block">Stale Tasks (Pending 3+ Days)</h4>
- {staleTasks.length === 0 ? (
- <p className="text-xs text-[var(--text-tertiary)] italic">No stale backlog tasks. Nice job!</p>
- ) : (
- <div className="space-y-3">
- {staleTasks.slice(0, 3).map(task => {
- // Calculate age
- const parts = task.id.split("-");
- let ageDays = 3;
- const timestamp = parts[0] === "flex" ? parseInt(parts[1], 10) : parts[0] === "ai" && parts[1] === "flex" ? parseInt(parts[2], 10) : 0;
- if (timestamp > 0) {
- ageDays = Math.max(3, Math.floor((Date.now() - timestamp) / (24 * 60 * 60 * 1000)));
- }
- 
- return (
- <div key={task.id} className="p-3 bg-amber-50/50 border border-amber-100 rounded-xl space-y-2">
- <div className="flex items-start justify-between gap-2">
- <div>
- <span className="text-xs font-semibold text-[var(--text-primary)] dark:text-[var(--text-primary)] font-display block leading-tight">{task.title}</span>
- <span className="text-[10px] text-amber-700 font-semibold block mt-0.5">⚠️ Pending for {ageDays} days</span>
- </div>
- <span className="text-[10px] font-mono font-bold bg-neutral-200 px-1.5 py-0.5 rounded text-[var(--text-secondary)] dark:text-[var(--text-primary)] shrink-0">{task.duration_minutes}m</span>
- </div>
- 
- <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-amber-100/60">
- <span className="text-[10px] text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-semibold">Still relevant?</span>
- <div className="flex gap-1.5">
- <button
- onClick={() => handleEodKeepStale(task.id)}
- className="text-[10px] font-bold bg-white dark:bg-[var(--bg-card)] text-emerald-600 border border-emerald-200 hover:bg-emerald-50 px-2 py-0.5 rounded cursor-pointer transition-colors"
- >
- Yes, Keep
- </button>
- <button
- onClick={() => handleDeleteFlexible(task.id)}
- className="text-[10px] font-bold bg-white dark:bg-[var(--bg-card)] text-red-500 border border-red-200 hover:bg-red-50 px-2 py-0.5 rounded cursor-pointer transition-colors"
- >
- No, Delete
- </button>
- </div>
- </div>
- </div>
- );
- })}
- {staleTasks.length > 3 && (
- <p className="text-[10px] text-[var(--text-tertiary)] italic text-right">+ {staleTasks.length - 3} more stale tasks in backlog</p>
- )}
- </div>
- )}
- </div>
- </div>
-
- <div className="pt-4 border-t border-[var(--border)] dark:border-[var(--border)] flex gap-2 shrink-0">
- <button 
- type="button"
- onClick={() => setActiveBottomSheet(null)}
- className="w-full py-3 text-sm font-bold rounded-xl bg-neutral-900 text-white hover:bg-neutral-800 transition-colors cursor-pointer text-center"
- >
- Close Review
- </button>
- </div>
- </div>
+  <EodCheckinModal
+    isOpen={activeBottomSheet === "eodreview"}
+    onClose={() => setActiveBottomSheet(null)}
+    todayIncompleteTasks={todayIncompleteTasks}
+    staleTasks={staleTasks}
+    handleEodMoveToTomorrow={handleEodMoveToTomorrow}
+    handleEodReduceAndTomorrow={handleEodReduceAndTomorrow}
+    handleEodKeepStale={handleEodKeepStale}
+    handleDeleteFlexible={handleDeleteFlexible}
+  />
 
  {/* SHEET 6 — Profile Creator / Editor */}
- <div 
- className={`absolute bottom-0 left-0 right-0 max-h-[85vh] md:max-h-[90vh] md:max-w-lg md:left-1/2 md:right-auto md:-translate-x-1/2 md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:rounded-3xl bg-[var(--bg-card)] border border-transparent shadow-2xl p-6 z-[100] overflow-y-auto transform transition-all duration-300 ease-out flex flex-col ${ activeBottomSheet === "profile" ? "translate-y-0 opacity-100 scale-100 pointer-events-auto" : "translate-y-full md:translate-y-10 md:scale-95 opacity-0 pointer-events-none invisible" }`}
- >
- <div className="flex justify-center pb-3">
- <span className="w-10 h-1 bg-neutral-200 dark:bg-[var(--bg-card-hover)] rounded-full" />
- </div>
-
- <div className="flex items-center justify-between mb-2">
- <h3 className="font-display font-semibold text-lg text-primary flex items-center gap-1.5">
- <BookMarked className="w-5 h-5 text-primary shrink-0" />
- <span>{editingProfile ? "Edit Profile" : "Create Profile"}</span>
- </h3>
- <button 
- type="button" 
- onClick={() => setActiveBottomSheet(null)}
- className="p-1 rounded-full bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] hover:bg-[var(--bg-card-hover)] dark:hover:bg-zinc-700 dark:bg-[var(--bg-card-hover)] text-[var(--text-secondary)]"
- >
- <X className="w-4 h-4" />
- </button>
- </div>
-
- <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-4">
- Define repeating commitments for specific circumstances (e.g. university lectures on weekdays, gym workouts daily).
- </p>
-
- <div className="space-y-4 flex-1 overflow-y-auto pr-1 pb-4">
- {/* PROFILE META */}
- <div className="grid grid-cols-3 gap-3">
- <div className="col-span-2">
- <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Profile Name</label>
- <input 
- type="text" 
- value={profileForm.name}
- onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
- placeholder="e.g. College Days, Holidays"
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- required
- />
- </div>
- <div>
- <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Emoji</label>
- <input 
- type="text" 
- value={profileForm.emoji}
- onChange={(e) => setProfileForm({ ...profileForm, emoji: e.target.value })}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none text-center"
- maxLength={2}
- />
- </div>
- </div>
-
- <div className="grid grid-cols-2 gap-3">
- <div>
- <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Accent Color</label>
- <input 
- type="color" 
- value={profileForm.accentColor}
- onChange={(e) => setProfileForm({ ...profileForm, accentColor: e.target.value })}
- className="w-full h-8 p-1 bg-white dark:bg-[var(--bg-card)] border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl cursor-pointer"
- />
- </div>
- <div>
- <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Automatic Schedule Rules</label>
- <select
- value={profileForm.appliesTo}
- onChange={(e) => setProfileForm({ ...profileForm, appliesTo: e.target.value as ProfileAppliesTo })}
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- >
- <option value="weekdays">Weekdays (Mon-Fri)</option>
- <option value="weekends">Weekends (Sat-Sun)</option>
- <option value="everyday">Everyday</option>
- <option value="manual">Manual Activation Only</option>
- </select>
- </div>
- </div>
-
- <div>
- <label className="block text-[10px] font-bold text-[#9999B3] uppercase tracking-wider mb-1">Description</label>
- <input 
- type="text" 
- value={profileForm.description}
- onChange={(e) => setProfileForm({ ...profileForm, description: e.target.value })}
- placeholder="Describe when this profile activates..."
- className="w-full px-3 py-2 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-xl text-xs bg-white dark:bg-[var(--bg-card)] focus:ring-1 focus:ring-primary focus:outline-none"
- />
- </div>
-
- {/* INLINE BLOCKS MANAGEMENT */}
- <div className="border-t border-[var(--border)] dark:border-[var(--border)] pt-4 space-y-3">
- <h4 className="text-xs font-bold text-[var(--text-primary)] dark:text-[var(--text-primary)] uppercase tracking-wider">Profile Commitment Blocks</h4>
- 
- {/* Blocks List */}
- {profileForm.blocks.length === 0 ? (
- <p className="text-[11px] text-[var(--text-tertiary)] italic">No blocks configured yet. Add some below.</p>
- ) : (
- <div className="space-y-1.5 max-h-[140px] overflow-y-auto pr-1">
- {profileForm.blocks.map(block => (
- <div key={block.id} className="p-2 bg-[var(--bg-page)] dark:bg-[var(--bg-card-hover)] border border-[var(--border-strong)] dark:border-[var(--border)]/60 rounded-xl flex items-center justify-between text-xs">
- <div className="flex items-center gap-2">
- <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: block.color || "#E24B4A" }} />
- <span className="font-semibold text-[var(--text-secondary)] dark:text-[var(--text-primary)]">{block.title}</span>
- </div>
- <div className="flex items-center gap-2">
- <span className="font-mono text-[var(--text-tertiary)] dark:text-[var(--text-secondary)] font-semibold">{block.start_time} - {block.end_time}</span>
- <button
- type="button"
- onClick={() => handleRemoveProfileBlock(block.id)}
- className="p-1 hover:bg-red-50 text-red-500 rounded transition-colors cursor-pointer"
- title="Remove Block"
- >
- <Trash2 className="w-3.5 h-3.5" />
- </button>
- </div>
- </div>
- ))}
- </div>
- )}
-
- {/* Add block sub-form */}
- <div className="p-3 bg-[var(--bg-page)] border border-[var(--border-strong)] dark:border-[var(--border)]/60 rounded-2xl space-y-2.5">
- <span className="text-[10px] font-bold text-[#9999B3] uppercase tracking-wider block font-sans">Add Commitment Block</span>
- <div className="grid grid-cols-2 gap-2">
- <div className="col-span-2">
- <input 
- type="text" 
- placeholder="Block Title (e.g. Gym, Classes)" 
- value={profileBlockForm.title}
- onChange={(e) => setProfileBlockForm({ ...profileBlockForm, title: e.target.value })}
- className="w-full px-2.5 py-1.5 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)] focus:outline-none focus:ring-1 focus:ring-primary"
- />
- </div>
- <div>
- <label className="block text-[9px] text-[#9999B3] font-bold mb-0.5">Start Time</label>
- <input 
- type="time" 
- value={profileBlockForm.start_time}
- onChange={(e) => setProfileBlockForm({ ...profileBlockForm, start_time: e.target.value })}
- className="w-full px-2 py-1 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)] font-mono"
- />
- </div>
- <div>
- <label className="block text-[9px] text-[#9999B3] font-bold mb-0.5">End Time</label>
- <input 
- type="time" 
- value={profileBlockForm.end_time}
- onChange={(e) => setProfileBlockForm({ ...profileBlockForm, end_time: e.target.value })}
- className="w-full px-2 py-1 border border-[var(--border-strong)] dark:border-[var(--border)] rounded-lg text-xs bg-white dark:bg-[var(--bg-card)] font-mono"
- />
- </div>
- </div>
- <button
- type="button"
- onClick={handleAddProfileBlock}
- className="w-full py-1.5 text-xs font-bold bg-neutral-900 text-white hover:bg-neutral-800 rounded-xl cursor-pointer transition-colors text-center font-display"
- >
- ＋ Insert Block into Profile
- </button>
- </div>
- </div>
- </div>
-
- <div className="pt-4 border-t border-[var(--border)] dark:border-[var(--border)] flex gap-2 shrink-0">
- <button 
- type="button"
- onClick={() => setActiveBottomSheet(null)}
- className="flex-1 py-3 text-sm font-bold rounded-xl border border-[var(--border-strong)] dark:border-[var(--border)] transition-colors cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--bg-page)] dark:hover:bg-zinc-800 dark:bg-[var(--bg-card-hover)] text-center"
- >
- Discard
- </button>
- <button 
- type="button"
- onClick={handleSaveProfile}
- className="flex-1 py-3 text-sm font-bold rounded-xl bg-primary-gradient hover:opacity-90 text-white transition-colors cursor-pointer text-center font-display"
- >
- Save Profile
- </button>
- </div>
- </div>
+  <ProfileModal
+    isOpen={activeBottomSheet === "profile"}
+    onClose={() => setActiveBottomSheet(null)}
+    editingProfile={editingProfile}
+    profileForm={profileForm}
+    setProfileForm={setProfileForm}
+    profileBlockForm={profileBlockForm}
+    setProfileBlockForm={setProfileBlockForm}
+    handleAddProfileBlock={handleAddProfileBlock}
+    handleRemoveProfileBlock={handleRemoveProfileBlock}
+    handleSaveProfile={handleSaveProfile}
+  />
 
  {/* SHEET 7 — Goal Creator / Editor */}
  <div 

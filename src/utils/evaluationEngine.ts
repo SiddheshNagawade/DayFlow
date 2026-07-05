@@ -2,11 +2,17 @@ import { FlexibleTask, TaskExecutionLog, WeeklyEvalSnapshot } from "../types";
 
 // Helper to get Monday of the week for a given date object
 export function getMondayOfDate(d: Date): string {
+  if (!d || isNaN(d.getTime())) {
+    d = new Date();
+  }
   const date = new Date(d.getTime());
   const day = date.getDay();
   // Adjust day: Sunday is 0, we want Monday to be 1. Sunday should diff by -6.
   const diff = date.getDate() - day + (day === 0 ? -6 : 1);
   const monday = new Date(date.setDate(diff));
+  if (isNaN(monday.getTime())) {
+    return new Date().toISOString().split("T")[0];
+  }
   return monday.toISOString().split("T")[0];
 }
 
@@ -195,13 +201,15 @@ export function checkAndGenerateWeeklySnapshot(
   // Determine the earliest task/log date to start evaluation history
   let earliestDateStr = currentWeekMondayStr;
   
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
   tasks.forEach(t => {
-    if (t.scheduled_date && t.scheduled_date < earliestDateStr) {
+    if (t.scheduled_date && dateRegex.test(t.scheduled_date) && t.scheduled_date < earliestDateStr) {
       earliestDateStr = t.scheduled_date;
     }
   });
   logs.forEach(l => {
-    if (l.date && l.date < earliestDateStr) {
+    if (l.date && dateRegex.test(l.date) && l.date < earliestDateStr) {
       earliestDateStr = l.date;
     }
   });
@@ -212,8 +220,13 @@ export function checkAndGenerateWeeklySnapshot(
   const startMonth = parseInt(startParts[1], 10) - 1;
   const startDay = parseInt(startParts[2], 10);
   const startDate = new Date(startYear, startMonth, startDay);
+  
+  if (isNaN(startDate.getTime())) {
+    console.error("Invalid start date computed in checkAndGenerateWeeklySnapshot:", earliestDateStr);
+    return;
+  }
+  
   let currentMondayStr = getMondayOfDate(startDate);
-
   const history = loadEvalHistory();
   let hasChanges = false;
 
@@ -221,17 +234,33 @@ export function checkAndGenerateWeeklySnapshot(
   const getSnapshotSignature = (s: WeeklyEvalSnapshot) => 
     `${s.pgsScore || 0}-${s.completionRate}-${s.carryOverRate}-${s.planningAccuracy}-${s.streakDays}-${s.aiSuggestionAcceptanceRate}`;
 
+  let safetyCounter = 0;
   // Iterate week-by-week up to (but not including) the current uncompleted week
   while (currentMondayStr < currentWeekMondayStr) {
+    safetyCounter++;
+    if (safetyCounter > 500) {
+      console.warn("Safety limit reached in checkAndGenerateWeeklySnapshot loop.");
+      break;
+    }
+
     const existingIdx = history.findIndex(h => h.weekStart === currentMondayStr);
     
     // Live Zone is the last 14 days (current week + previous week).
     // If it is older than 14 days and already exists, we skip recalculating it.
     const startPartsLoop = currentMondayStr.split("-");
+    if (startPartsLoop.length < 3) {
+      console.error("Malformed loop date format in checkAndGenerateWeeklySnapshot:", currentMondayStr);
+      break;
+    }
     const y = parseInt(startPartsLoop[0], 10);
     const m = parseInt(startPartsLoop[1], 10) - 1;
     const d = parseInt(startPartsLoop[2], 10);
     const loopMondayDate = new Date(y, m, d);
+    if (isNaN(loopMondayDate.getTime())) {
+      console.error("Invalid loop date computed in checkAndGenerateWeeklySnapshot:", currentMondayStr);
+      break;
+    }
+
     const diffDays = Math.floor((nowMs - loopMondayDate.getTime()) / (1000 * 60 * 60 * 24));
     const isRecent = diffDays <= 14;
 
@@ -251,10 +280,18 @@ export function checkAndGenerateWeeklySnapshot(
 
     // Move to next Monday
     const nextParts = currentMondayStr.split("-");
+    if (nextParts.length < 3) {
+      console.error("Malformed next date format in checkAndGenerateWeeklySnapshot loop:", currentMondayStr);
+      break;
+    }
     const nextYear = parseInt(nextParts[0], 10);
     const nextMonth = parseInt(nextParts[1], 10) - 1;
     const nextDay = parseInt(nextParts[2], 10);
     const nextDate = new Date(nextYear, nextMonth, nextDay + 7);
+    if (isNaN(nextDate.getTime())) {
+      console.error("Invalid next date computed in checkAndGenerateWeeklySnapshot loop.");
+      break;
+    }
     currentMondayStr = getMondayOfDate(nextDate);
   }
 

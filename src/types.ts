@@ -111,6 +111,14 @@ export interface FlexibleTask {
 
   // Rich detail expansion (workout exercises, class rooms, etc.)
   description?: string; // multi-line detail: one item per line
+  subtasks?: string;     // point-wise subtasks string
+  subtask_list?: { title: string; duration: number }[]; // parsed subtasks list
+
+  // Daily Execution Plan — AI-generated per-day actionable steps (separate from static description)
+  daily_plan?: string;               // newline-separated steps for today's occurrence
+  daily_plan_generated_date?: string; // "YYYY-MM-DD" — which date this plan was generated for
+  daily_plan_edited?: boolean;        // true if user manually edited it from AI default
+
 
   // Advanced CCM Telemetry
   mood_before?: number;   // 1-10 scale
@@ -122,10 +130,17 @@ export interface FlexibleTask {
   delay_count?: number; // how many times this task was delayed today
   last_friction_reason?: FrictionReason;
 
+  // Machine Learning telemetry & suggestions
+  predictedDuration?: number;
+  predictedCompletionProb?: number;
+  suggestedIntervention?: { type: "DECOMPOSE" | "SHIFT_TO_PEAK" | "SHRINK"; reason: string };
+
   // Execution Engine — AI Consequence Insight
   consequence_insight?: string;          // AI-generated narrative cached after first fetch
   consequence_teaser?: string;           // AI-generated one-line teaser cached after first fetch
   consequence_generated_at?: string;     // ISO date — used to decide if regeneration is needed
+  original_scheduled_date?: string;       // YYYY-MM-DD original scheduled date
+  backlog_shifted_at?: string;            // ISO timestamp when shifted to backlog
 
   // Execution Engine — Partial Completion ("Do 25 min" option)
   partial_completion?: boolean;          // true if user chose reduced version today
@@ -143,6 +158,10 @@ export interface FlexibleTask {
   projectId?: string;
   phaseId?: string;
   subtaskId?: string;
+
+  // Sync and conflict resolution metadata
+  field_timestamps: Record<string, string>;
+  schema_version: number;
 }
 
 export type GoalCategory = 
@@ -273,6 +292,9 @@ export interface ScheduledItem {
   carry_over_count?: number;
   isRoutine?: boolean;
   rigidity?: "hard" | "soft";
+  predictedDuration?: number;
+  predictedCompletionProb?: number;
+  suggestedIntervention?: { type: "DECOMPOSE" | "SHIFT_TO_PEAK" | "SHRINK"; reason: string };
 }
 
 // ─── Behavioral memory logs ───────────────────────────────────────────────────
@@ -407,6 +429,14 @@ export interface CalendarEvent {
   };
   confidence: 0.3 | 0.8 | 1.0;
   source: "user_direct" | "ai_inferred";
+  capacity_impact?: string;
+  capacity_reduction_pct?: number;
+}
+
+export interface RoutineProfile {
+  id: string;
+  name: string;
+  isDefault?: boolean;
 }
 
 export interface RoutineBlock {
@@ -419,6 +449,7 @@ export interface RoutineBlock {
   rigidity: "hard" | "soft";
   confidence?: 0.3 | 0.8 | 1.0;
   source?: "user_direct" | "ai_inferred";
+  profileId?: string; // Links this routine block to a specific routine profile
 }
 
 export interface PendingQuestion {
@@ -495,11 +526,19 @@ export interface AICompactContext {
     delayDays: number;           // math-computed locally, AI explains it
   }>;
   userMessage?: string;
+  adaptationLogs?: DaySchedule["adaptationLogs"];
+  knowledgeLayer?: KnowledgeInsight[];
 }
 
 export interface DaySchedule {
   items: ScheduledItem[];
   conflicts: FlexibleTask[];
+  adaptationLogs?: {
+    calibratedTasksCount: number;
+    postponedOptionalTasks: string[];
+    interventions: { taskId: string; taskTitle: string; type: "DECOMPOSE" | "SHIFT_TO_PEAK" | "SHRINK"; reason: string }[];
+  };
+  planningDecisions?: PlanningDecision[];
 }
 
 // ─── Routine Profiles ────────────────────────────────────────────────────────
@@ -570,6 +609,10 @@ export interface Project {
   phases: ProjectPhase[];
   totalHoursEstimate: number;
   progress: number; // calculated percentage
+
+  // Sync and conflict resolution metadata
+  field_timestamps: Record<string, string>;
+  schema_version: number;
 }
 
 export type GenerativeUICardType = "schedule_proposal" | "study_roadmap" | "project_milestone" | "reflection";
@@ -597,4 +640,55 @@ export interface ChatMessage {
     options?: { id: string; title: string }[];
     confidence: number;
   };
+}
+
+export function createFieldTimestamps(obj: Record<string, any>): Record<string, string> {
+  const now = new Date().toISOString();
+  const ts: Record<string, string> = {};
+  for (const key of Object.keys(obj)) {
+    if (key !== "field_timestamps") {
+      ts[key] = now;
+    }
+  }
+  return ts;
+}
+
+export type KnowledgeCategory =
+  | 'productivity'
+  | 'focus'
+  | 'energy'
+  | 'planning'
+  | 'health'
+  | 'study'
+  | 'habits';
+
+export interface KnowledgeInsight {
+  id: string;
+  category: KnowledgeCategory;
+  text: string;
+  confidence: number; // 0..1
+  evidence_count: number;
+  last_verified: string; // ISO timestamp
+  createdAt: string; // ISO timestamp
+}
+
+export interface PlanningDecision {
+  action: 'move' | 'split' | 'delay' | 'promote' | 'protect' | 'expand' | 'shrink' | 'noop';
+  taskId: string;
+  reason: string;
+  confidence: number; // 0..1
+  alternative: string;
+  impact: string;
+  horizon: 'today' | 'week' | 'month' | 'strategic';
+  source: 'rule' | 'behavior_model' | 'knowledge_layer' | 'user' | 'AI';
+  executed?: boolean;
+}
+
+export interface SyncStatus {
+  state: 'offline' | 'syncing' | 'synced' | 'error';
+  pending: number;
+  lastSync: string | null;
+  lastSuccessfulSync: string | null;
+  lastError?: string;
+  authenticated: boolean;
 }

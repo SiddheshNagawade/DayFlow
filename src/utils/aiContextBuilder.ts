@@ -8,7 +8,7 @@
  * AI receives only what it needs to reason and coach.
  */
 
-import { FlexibleTask, ScheduledItem, UserGoal, BehaviorSignals, AICompactContext } from "../types";
+import { FlexibleTask, ScheduledItem, UserGoal, BehaviorSignals, AICompactContext, KnowledgeInsight } from "../types";
 import { predictGoalCompletion } from "./goalEngine";
 import { getTaskCategory } from "./mlEngine";
 
@@ -32,7 +32,9 @@ export function buildAICompactContext(
   goals: UserGoal[],
   driftedTask: ScheduledItem | null,
   backlogCount: number,
-  userMessage?: string
+  userMessage?: string,
+  adaptationLogs?: AICompactContext["adaptationLogs"],
+  knowledgeLayer?: KnowledgeInsight[]
 ): AICompactContext {
   // Today's load in minutes (flexible tasks only)
   const todayLoadMins = todayItems
@@ -96,6 +98,8 @@ export function buildAICompactContext(
     },
     goalImpact: goalImpact.length > 0 ? goalImpact : undefined,
     userMessage,
+    adaptationLogs,
+    knowledgeLayer,
   };
 }
 

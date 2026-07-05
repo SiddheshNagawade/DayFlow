@@ -9,7 +9,7 @@
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
   --color-primary: #18181b;
-  --color-primary-light: #3f3f46;
+  --color-primary-light: #f4f4f5;
   --color-primary-dark: #09090b;
 
   --color-primary-50: #f4f4f5;
@@ -185,7 +185,7 @@
   --color-text-dark-subtle:  var(--text-tertiary);
 
   --color-primary:       #e8e8eb;
-  --color-primary-light: #b0b0b8;
+  --color-primary-light: #27272a;
   --color-primary-dark:  #ffffff;
 
   --color-primary-50:  #09090b;
@@ -294,12 +294,19 @@
 /* ============================================================
    BASE STYLES
    ============================================================ */
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+}
+
 body {
   font-family: var(--font-sans);
   background-color: var(--bg-page);
   color: var(--text-primary);
-  margin: 0;
-  padding: 0;
   overflow: hidden;
   transition: background-color 0.25s ease, color 0.25s ease;
 }
@@ -308,8 +315,8 @@ body {
    PRIMARY GRADIENT BUTTON
    ============================================================ */
 @utility bg-primary-gradient {
-  background: var(--primary-btn-bg);
-  color: var(--primary-btn-text);
+  background: var(--primary-btn-bg) !important;
+  color: var(--primary-btn-text) !important;
 }
 
 /* ============================================================
@@ -474,14 +481,47 @@ body {
 }
 
 /* ============================================================
-   MOBILE BOTTOM NAV MENU
+   MOBILE SCROLL ISOLATION
    ============================================================ */
+
+/* Each tab pane is an isolated vertical scroll container.
+   This prevents any horizontal drift on mobile — the app
+   should feel like a native iOS/Android app. */
+.tab-pane {
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  overscroll-behavior-x: none;
+  /* Fill the available space between header and bottom nav */
+  height: 100%;
+  position: relative;
+}
+
+/* Clamp the root app shell — nothing ever scrolls horizontally */
+#root,
+.app-shell {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+/* Prevent rubber-band horizontal bounce on iOS at the page level */
+#phone_mockup_container {
+  overflow-x: hidden;
+  touch-action: pan-y;
+}
+
+#mobile_viewport_content {
+  overflow-x: hidden;
+  touch-action: pan-y;
+}
+
+
 .menu {
   display: flex;
   align-items: center;
   justify-content: space-around;
   width: 100%;
-  position: relative;
   background-color: transparent;
 }
 
@@ -555,3 +595,63 @@ body {
   .text-lg { font-size: 1.2rem !important; }
   .text-xl { font-size: 1.3rem !important; }
 }
+
+@keyframes scale-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+.animate-scale-pulse {
+  animation: scale-pulse 0.9s infinite ease-in-out;
+}
+
+/* ─── Swipe-to-reveal card pattern ─── */
+.swipe-card-wrapper {
+  position: relative;
+  overflow: hidden;
+  border-radius: inherit;
+  touch-action: pan-y;
+}
+
+.swipe-card-inner {
+  position: relative;
+  z-index: 2;
+  will-change: transform;
+  transition: transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  border-radius: inherit;
+}
+
+.swipe-card-inner.is-swiping {
+  transition: none;
+}
+
+.swipe-actions-strip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: stretch;
+  z-index: 1;
+  border-radius: 0 inherit inherit 0;
+}
+
+.swipe-action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 16px;
+  cursor: pointer;
+  border: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  transition: filter 0.15s;
+}
+
+.swipe-action-btn:active {
+  filter: brightness(0.88);
+}
+

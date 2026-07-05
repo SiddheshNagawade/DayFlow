@@ -85,36 +85,6 @@ DayFlow processes your natural language instructions in tiers:
 - **AI**: Gemini API (via server-side proxy)
 - **Storage**: `localStorage` — 100% client-side, fully sandboxed, no account needed
 
----
-
-## Running Locally
-
-**Prerequisites:** Node.js 18+
-
-```bash
-# Install dependencies
-npm install
-
-# Add your Gemini API key
-echo "GEMINI_API_KEY=your_key_here" > .env
-
-# Start the dev server
-npm run dev
-```
-
-Open `http://localhost:3000`.
-
----
-
-## Design Philosophy
-
-- **No forced interruptions** — behavioural prompts appear inline, not as modals
-- **Scroll-over nav** — the floating bottom bar uses frosted glass, content scrolls cleanly under it  
-- **Premium aesthetics** — monochromatic color system, not multicolored or bright. Calm and intentional.
-- **Mobile-first** — designed to be used on a phone, in the moment, throughout the day
-- **Offline-first** — everything runs in the browser. No sync, no account, no lock-in.
-
----
 
 ## Repository
 

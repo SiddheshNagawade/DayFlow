@@ -444,7 +444,7 @@ export function computeBehaviorSignals(
 
   let totalFrictionCount = 0;
 
-  if (coldStartMode && onboardingProfile) {
+  if (coldStartMode && onboardingProfile && Array.isArray(onboardingProfile.struggles)) {
     // Populate priors from struggles onboarding selections
     onboardingProfile.struggles.forEach(s => {
       if (s === "procrastination" || s === "overplanning") frictionCounts.resistance = 3;

@@ -281,11 +281,12 @@ Your response must contain exactly:
     "payload": {
       "changes": [
         {
-          "action": "delete" | "move_to_tomorrow" | "change_time" | "reduce_duration" | "add",
+          "action": "delete" | "move_to_tomorrow" | "change_time" | "reduce_duration" | "add" | "mark_important",
           "taskId": "task ID to modify (empty/omit for add)",
           "newTime": "HH:MM (for change_time)",
           "durationMinutes": 60,
           "newTaskTitle": "title for add",
+          "importance": "important" | "critical" | "optional" (for mark_important),
           "reasoning": "Individual change reasoning"
         }
       ],
@@ -853,11 +854,74 @@ Respond ONLY with a valid JSON object conforming exactly to this structure. Do n
   }
 });
 
+// 3.55 Daily Execution Plan API — generates per-day actionable steps for a task
+app.post("/api/daily-plan", async (req, res) => {
+  try {
+    const { taskTitle, taskDescription, durationMinutes, timeOfDay, previousPlans } = req.body;
+    if (!taskTitle || typeof taskTitle !== "string") {
+      res.status(400).json({ error: "taskTitle is required" });
+      return;
+    }
+
+    const duration = Number(durationMinutes) || 60;
+    const timeContext = timeOfDay === "morning" ? "morning (high focus time)"
+      : timeOfDay === "afternoon" ? "afternoon (moderate energy)"
+      : timeOfDay === "evening" ? "evening (wind-down)"
+      : "daytime";
+
+    const prevPlansText = Array.isArray(previousPlans) && previousPlans.length > 0
+      ? `\nPrevious sessions:\n${previousPlans.slice(-3).map((p: string, i: number) => `- Session ${i + 1}: ${p}`).join("\n")}`
+      : "";
+
+    const systemPrompt = `You are a productivity coach generating a concrete daily execution plan.
+Given a task and context, produce 3–5 specific, actionable steps the user should do in their ${duration}-minute slot today (${timeContext}).
+Each step must:
+- Start with an action verb (e.g. "Review", "Write", "Practice", "Draft", "Set up", "Read")
+- Be concrete enough to start immediately
+- Fit within the allotted time${prevPlansText ? "\n- Build on what was done in previous sessions" : ""}
+Return ONLY a valid JSON object. No markdown, no preamble.`;
+
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Task: "${taskTitle}"\nDescription/context: "${taskDescription || "None"}"\nDuration: ${duration} minutes\nTime: ${timeContext}${prevPlansText}`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.3,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            steps: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING, description: "A single concrete action step" }
+            },
+            estimated_minutes: {
+              type: Type.ARRAY,
+              items: { type: Type.INTEGER, description: "Estimated minutes for each step" }
+            }
+          },
+          required: ["steps"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response from daily plan model");
+    const result = JSON.parse(text);
+    res.json(result);
+  } catch (error: any) {
+    console.error("Daily plan API error:", error);
+    handleApiError(res, error, "Failed to generate daily plan.");
+  }
+});
+
 
 
 // 3.6 Task Decomposition API — splits vague/long tasks into exactly 3 actionable steps
 app.post("/api/decompose-task", async (req, res) => {
   try {
+
     const { taskTitle, duration } = req.body;
     if (!taskTitle || typeof taskTitle !== "string") {
       res.status(400).json({ error: "taskTitle is required" });
@@ -1055,11 +1119,191 @@ Generate the Consequence JSON:`;
     handleApiError(res, error, "Failed to generate consequence insight.");
   }
 });
+// 5. AI Reasoning API — hybrid rule-engine/LLM context reasoning endpoint
+app.post("/api/ai-reasoning", async (req, res) => {
+  try {
+    const { trigger, context, staleTasksSummary } = req.body;
+    
+    const triggerType = trigger || "reflection";
+    const compactContext = context || {};
+    const staleTasks = staleTasksSummary || [];
+    const behaviorSignals = compactContext.behaviorSignals || {};
+
+    // 1. DETERMINISTIC RULE ENGINE FOR ADJUSTMENTS
+    const proposals: any[] = [];
+    let hasHighRiskChange = false;
+
+    staleTasks.forEach((task: any) => {
+      if (task.rigidity === "fixed") {
+        proposals.push({
+          type: "expire",
+          taskId: task.id,
+          reason: "Deterministic: Fixed calendar event cannot be carried forward after time slot expires."
+        });
+        hasHighRiskChange = true;
+      } else if (task.carry_over_count >= 3) {
+        proposals.push({
+          type: "split",
+          taskId: task.id,
+          reason: "Deterministic: Task deferred repeatedly. Splitting into smaller 20-minute focus slots."
+        });
+        hasHighRiskChange = true;
+      } else {
+        proposals.push({
+          type: "carry_over",
+          taskId: task.id,
+          reason: "Deterministic: Carried over to tomorrow's list."
+        });
+      }
+    });
+
+    // 2. LLM CALL ONLY FOR PERSONALIZED COACHING EXPLANATION
+    const systemPrompt = `You are the AI Behavioral Coach for DayFlow.
+Your job is NOT to calculate task adjustments. The adjustments have already been computed deterministically.
+Your job is to translate these adjustments into a warm, human-like, highly-personalized coaching explanation ("message") explaining WHY we are proposing these changes, directly referencing the user's implicit behavioral signals (planning bias, fatigue windows, avoidance patterns).
+
+DayFlow Philosophy:
+Humans fail due to bad self-models (self-perception errors) and overload, not laziness. Be supportive, honest, and direct.
+
+Rules:
+- DO NOT use bullet points, numbered lists, or code references in your message. Write a single unified paragraph (max 3-4 sentences).
+- Speak like an elite coach talking to a friend — matter-of-fact, calm, intelligent, and supportive.
+- Address the user based on their specific patterns:
+  - If a task is split: explain that they've delayed it multiple times, suggesting avoidance of task size/friction, and we split it to get them started.
+  - If they are overloaded (overloadRisk is high): explain that today's load exceeds their sustainable completed average, and we need to push items to tomorrow to prevent burnout.
+  - Check their friction reasons (e.g. low energy, resistance) and link them to the adjustment logic.
+
+Your output must conform to this schema:
+{
+  "proposalRisk": "low" | "medium" | "high",
+  "message": "Your coaching explanation."
+}`;
+
+    const userMessage = `Trigger: ${triggerType}
+Deterministic proposals: ${JSON.stringify(proposals)}
+Current State: ${JSON.stringify(compactContext.currentState || {})}
+Goal Impact: ${JSON.stringify(compactContext.goalImpact || [])}
+Behavioral Signals: ${JSON.stringify(behaviorSignals)}
+
+Generate the coaching message:`;
+
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: userMessage,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.6,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            proposalRisk: { type: Type.STRING, enum: ["low", "medium", "high"] },
+            message: { type: Type.STRING }
+          },
+          required: ["proposalRisk", "message"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response from AI Reasoning engine");
+
+    const parsed = JSON.parse(text);
+    
+    // Override proposalRisk to medium/high if we have splits/expires to enforce user review
+    let finalRisk = parsed.proposalRisk || "low";
+    if (hasHighRiskChange && finalRisk === "low") {
+      finalRisk = "medium";
+    }
+
+    res.json({
+      proposalRisk: finalRisk,
+      message: parsed.message,
+      proposals
+    });
+
+  } catch (error: any) {
+    console.error("AI Reasoning Endpoint Error:", error);
+    handleApiError(res, error, "Failed to run AI reasoning.");
+  }
+});
 
 
 
 
 
+
+
+// 3.7 Subtasks Analysis API — analyzes bullet points, estimates durations, and coaches
+app.post("/api/analyze-subtasks", async (req, res) => {
+  try {
+    const { taskTitle, currentDuration, subtasksText } = req.body;
+    if (!subtasksText || typeof subtasksText !== "string") {
+      res.status(400).json({ error: "subtasksText is required" });
+      return;
+    }
+
+    const durationVal = Number(currentDuration) || 60;
+
+    const systemPrompt = `You are an execution planning coach.
+Analyze the user's list of subtasks for the task "${taskTitle || "Task"}".
+Based on the list of subtasks:
+1. Estimate a realistic focus duration (in minutes) for each subtask.
+2. Sum them up to suggest a new total task duration.
+3. Write a brief (1-2 sentences), warm coaching message explaining why this duration is proposed. For example: "Since you added 'Write Unit Tests', this will likely take an extra 30 minutes. I suggest adjusting the task duration."
+4. If the subtasks list seems empty, return the suggested_duration as currentDuration (${durationVal}).
+
+Respond strictly with a valid JSON matching this schema:
+{
+  "suggested_duration": number,
+  "message": "Coaching message",
+  "subtasks": [
+    { "title": "string", "duration": number }
+  ]
+}`;
+
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Task: "${taskTitle}"
+Current Duration: ${durationVal} minutes
+Subtasks written by user:
+${subtasksText}`,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.3,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            suggested_duration: { type: Type.INTEGER },
+            message: { type: Type.STRING },
+            subtasks: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  duration: { type: Type.INTEGER }
+                },
+                required: ["title", "duration"]
+              }
+            }
+          },
+          required: ["suggested_duration", "message", "subtasks"]
+        }
+      }
+    });
+
+    const text = response.text?.trim();
+    if (!text) throw new Error("Empty response from analyze-subtasks model");
+    res.json(JSON.parse(text));
+  } catch (error: any) {
+    console.error("Analyze subtasks API error:", error);
+    handleApiError(res, error, "Failed to analyze subtasks.");
+  }
+});
 
 
 // Global Error Handler for Vercel

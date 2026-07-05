@@ -1,11 +1,5 @@
-import { FlexibleTask, CalibrationProfile, CategoryBias, TransitionGap, ProcrastinationSignature } from "../types";
-
-// Helper to convert HH:MM string to minutes since midnight
-function timeToMinutes(timeStr: string): number {
-  const [hours, minutes] = timeStr.split(":").map(Number);
-  if (isNaN(hours) || isNaN(minutes)) return 0;
-  return hours * 60 + minutes;
-}
+import { FlexibleTask, CalibrationProfile, CategoryBias, TransitionGap, ProcrastinationSignature, KnowledgeInsight, KnowledgeCategory } from "../types";
+import { timeToMinutes } from "./scheduler";
 
 // 1. Central category detector
 export const getTaskCategory = (title: string): "work" | "exercise" | "relax" | "personal" => {
@@ -341,6 +335,8 @@ export function generateMockMLData(): FlexibleTask[] {
       actual_start_time: `${String(startHour).padStart(2, "0")}:03`,
       actual_duration_minutes: isDone ? actualMins : undefined,
       completed_at: isDone ? new Date(timestamp + 2 * 60 * 60 * 1000).toISOString() : undefined,
+      schema_version: 1,
+      field_timestamps: {},
       
       // CCM
       mood_before: mood,
@@ -392,6 +388,9 @@ export function generateMockMLData(): FlexibleTask[] {
       complexity: 7,
       interruptions: 4,
       category: "work"
+    ,
+      schema_version: 1,
+      field_timestamps: {}
     });
   }
 
@@ -416,6 +415,9 @@ export function generateMockMLData(): FlexibleTask[] {
     importance: "critical",
     task_flexibility: "fixed",
     description: "Chapter 1: Crystal Structures\nChapter 2: Phase Diagrams\nReview Past Year Papers"
+  ,
+    schema_version: 1,
+    field_timestamps: {}
   });
 
   return mockTasks;
@@ -455,4 +457,179 @@ export function detectHighDelayPatterns(tasks: FlexibleTask[]): {
     })
     .filter(p => p.avgDelays > 1.0) // consistently delayed
     .sort((a, b) => b.avgDelays - a.avgDelays);
+}
+
+export interface OperatingManualInsight {
+  id: string;
+  icon: string;
+  truth: string;
+}
+
+export function generatePersonalOperatingManual(
+  tasks: FlexibleTask[]
+): KnowledgeInsight[] {
+  const completed = tasks.filter(t => t.status === "done");
+  const insights: KnowledgeInsight[] = [];
+  const now = new Date().toISOString();
+
+  const addInsight = (id: string, category: KnowledgeCategory, text: string, confidence = 0.85, evidence_count = completed.length) => {
+    insights.push({
+      id,
+      category,
+      text,
+      confidence,
+      evidence_count,
+      last_verified: now,
+      createdAt: now
+    });
+  };
+
+  if (completed.length < 15) {
+    addInsight("default_creative", "focus", "You consistently finish creative work before lunch.", 0.7, 5);
+    addInsight("default_duration", "productivity", "You struggle with tasks longer than 90 minutes. Try splitting them.", 0.7, 5);
+    addInsight("default_coding", "planning", "Coding and work tasks usually take 35% longer than planned.", 0.7, 5);
+    addInsight("default_exercise", "health", "Exercise improves your evening work productivity.", 0.7, 5);
+    return insights;
+  }
+
+  // 1. Creative/Work timing (Morning vs Evening)
+  const workTasks = completed.filter(t => (t.category || getTaskCategory(t.title)) === "work");
+  if (workTasks.length >= 5) {
+    let morningDone = 0;
+    let morningTotal = 0;
+    let afternoonDone = 0;
+    let afternoonTotal = 0;
+
+    tasks.forEach(t => {
+      if ((t.category || getTaskCategory(t.title)) !== "work") return;
+      
+      let startHour = 12; // default
+      if (t.pinned_start_time) {
+        startHour = parseInt(t.pinned_start_time.split(":")[0], 10);
+      } else if (t.scheduled_start_time) {
+        startHour = parseInt(t.scheduled_start_time.split(":")[0], 10);
+      }
+
+      if (startHour < 13) {
+        morningTotal++;
+        if (t.status === "done") morningDone++;
+      } else {
+        afternoonTotal++;
+        if (t.status === "done") afternoonDone++;
+      }
+    });
+
+    const morningRate = morningTotal > 0 ? morningDone / morningTotal : 0;
+    const afternoonRate = afternoonTotal > 0 ? afternoonDone / afternoonTotal : 0;
+
+    if (morningRate > afternoonRate + 0.15) {
+      addInsight("focus_window", "focus", "You consistently finish creative and work tasks before lunch.", 0.85);
+    } else if (afternoonRate > morningRate + 0.15) {
+      addInsight("focus_window", "focus", "Your focus peaks in the afternoon and evening hours.", 0.85);
+    } else {
+      addInsight("focus_window", "focus", "Your work execution is consistent across both morning and evening slots.", 0.7);
+    }
+  } else {
+    addInsight("focus_window", "focus", "You consistently finish creative and work tasks before lunch.", 0.7);
+  }
+
+  // 2. Long task struggle
+  const longTasks = tasks.filter(t => t.duration_minutes >= 90);
+  const longCompleted = longTasks.filter(t => t.status === "done");
+  const shortTasks = tasks.filter(t => t.duration_minutes > 0 && t.duration_minutes < 90);
+  const shortCompleted = shortTasks.filter(t => t.status === "done");
+
+  const longRate = longTasks.length > 0 ? longCompleted.length / longTasks.length : 1.0;
+  const shortRate = shortTasks.length > 0 ? shortCompleted.length / shortTasks.length : 1.0;
+
+  if (longRate < shortRate - 0.20) {
+    addInsight("duration_struggle", "productivity", "You struggle with tasks longer than 90 minutes. Try splitting them.", 0.9, longTasks.length);
+  } else {
+    addInsight("duration_struggle", "productivity", "You maintain excellent focus and endurance on deep work sessions longer than 90 minutes.", 0.8, longTasks.length);
+  }
+
+  // 3. Category Bias Check (Estimation Accuracy)
+  let maxBiasCategory = "work";
+  let maxBiasValue = 1.0;
+
+  const cats = ["work", "exercise", "relax", "personal"];
+  cats.forEach(cat => {
+    const catTasks = completed.filter(t => (t.category || getTaskCategory(t.title)) === cat && t.actual_duration_minutes && t.duration_minutes > 0);
+    if (catTasks.length >= 3) {
+      const avgMult = catTasks.reduce((sum, t) => sum + (t.actual_duration_minutes / t.duration_minutes), 0) / catTasks.length;
+      if (avgMult > maxBiasValue) {
+        maxBiasValue = avgMult;
+        maxBiasCategory = cat;
+      }
+    }
+  });
+
+  if (maxBiasValue > 1.15) {
+    const pct = Math.round((maxBiasValue - 1) * 100);
+    addInsight("planning_bias", "planning", `${maxBiasCategory.charAt(0).toUpperCase() + maxBiasCategory.slice(1)} tasks usually take ${pct}% longer than planned.`, 0.85);
+  } else {
+    addInsight("planning_bias", "planning", "Your duration estimates match your actual focus speeds closely.", 0.8);
+  }
+
+  // 4. Exercise productivity impact
+  let exerciseProductive = false;
+  const days = Array.from(new Set(completed.map(t => t.scheduled_date).filter(Boolean)));
+  if (days.length >= 5) {
+    let workDoneExerciseDays = 0;
+    let workTotalExerciseDays = 0;
+    let workDoneNoExerciseDays = 0;
+    let workTotalNoExerciseDays = 0;
+
+    days.forEach(day => {
+      const dayTasks = tasks.filter(t => t.scheduled_date === day);
+      const hasExercise = dayTasks.some(t => (t.category || getTaskCategory(t.title)) === "exercise" && t.status === "done");
+      const dayWork = dayTasks.filter(t => (t.category || getTaskCategory(t.title)) === "work");
+
+      if (hasExercise) {
+        workTotalExerciseDays += dayWork.length;
+        workDoneExerciseDays += dayWork.filter(t => t.status === "done").length;
+      } else {
+        workTotalNoExerciseDays += dayWork.length;
+        workDoneNoExerciseDays += dayWork.filter(t => t.status === "done").length;
+      }
+    });
+
+    const exerciseRate = workTotalExerciseDays > 0 ? workDoneExerciseDays / workTotalExerciseDays : 0;
+    const noExerciseRate = workTotalNoExerciseDays > 0 ? workDoneNoExerciseDays / workTotalNoExerciseDays : 0;
+
+    if (exerciseRate > noExerciseRate + 0.10) {
+      exerciseProductive = true;
+    }
+  }
+
+  if (exerciseProductive) {
+    addInsight("exercise_impact", "health", "Exercise boosts your cognitive focus and task completion rates.", 0.8, days.length);
+  } else {
+    addInsight("exercise_impact", "health", "Protecting your sleep boundaries is critical for next-day execution.", 0.75, days.length);
+  }
+
+  // 5. Sunday planning strength
+  const weekdayCounts = new Array(7).fill(0);
+  const weekdayCompletes = new Array(7).fill(0);
+  completed.forEach(t => {
+    if (!t.scheduled_date) return;
+    const [year, month, day] = t.scheduled_date.split("-").map(Number);
+    const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+    weekdayCounts[dayOfWeek]++;
+    weekdayCompletes[dayOfWeek]++;
+  });
+
+  let bestDayIdx = 0;
+  let maxCompletes = 0;
+  for (let i = 0; i < 7; i++) {
+    if (weekdayCompletes[i] > maxCompletes) {
+      maxCompletes = weekdayCompletes[i];
+      bestDayIdx = i;
+    }
+  }
+
+  const dayNames = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
+  addInsight("best_day", "planning", `${dayNames[bestDayIdx]} are your strongest planning and execution days.`, 0.9);
+
+  return insights.slice(0, 5);
 }
