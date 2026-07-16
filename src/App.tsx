@@ -924,6 +924,12 @@ const ToastItem: React.FC<{
 export default function App() {
   const [user, setUser] = useState<any>(null);
 
+  // Diagnostic/Status States
+  const [dbStatus, setDbStatus] = useState<"connected" | "error" | "guest">("connected");
+  const [dbErrorMessage, setDbErrorMessage] = useState<string | null>(null);
+  const [aiStatus, setAiStatus] = useState<"ok" | "offline" | "no_key" | "error">("ok");
+  const [aiErrorMessage, setAiErrorMessage] = useState<string | null>(null);
+
   // 1. Core Application State
   const [fixedBlocks, setFixedBlocks] = useState<FixedBlock[]>([]);
  const [flexibleTasks, setFlexibleTasks] = useState<FlexibleTask[]>([]);
