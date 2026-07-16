@@ -2854,13 +2854,23 @@ export default function App() {
  // 1. Initial Storage Bootstrap
  useEffect(() => {
    // Intercept fetch to track AI Backend & API Credits status in real-time
-   const originalFetch = window.fetch;
+   const originalFetch = window.fetch.bind(window);
    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
    
    window.fetch = async function (...args) {
+     let urlStr = "";
+     if (args[0]) {
+       if (typeof args[0] === 'string') {
+         urlStr = args[0];
+       } else if (args[0] instanceof URL) {
+         urlStr = args[0].href;
+       } else if ((args[0] as any).url) {
+         urlStr = (args[0] as any).url;
+       }
+     }
+
      try {
-       const response = await originalFetch.apply(this, args);
-       const urlStr = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url || '';
+       const response = await originalFetch(...args);
        
        if (urlStr.includes('/api/')) {
          if (!response.ok) {
@@ -2903,7 +2913,6 @@ export default function App() {
        
        return response;
      } catch (err: any) {
-       const urlStr = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url || '';
        if (urlStr.includes('/api/')) {
          setAiStatus("offline");
          setAiErrorMessage(err.message || "Failed to reach backend server.");
