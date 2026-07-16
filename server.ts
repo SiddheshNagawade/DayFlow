@@ -1364,7 +1364,7 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) {
+if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   startServer();
 }
 
