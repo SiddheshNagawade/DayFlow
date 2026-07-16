@@ -74,7 +74,12 @@ function handleApiError(res: express.Response, error: any, defaultMsg: string) {
 
 // 1. Health check routing
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", time: new Date().toISOString() });
+  const hasApiKey = !!process.env.GEMINI_API_KEY;
+  res.json({ 
+    status: "ok", 
+    geminiApiKeyConfigured: hasApiKey, 
+    time: new Date().toISOString() 
+  });
 });
 
 // 2. Schedule Parsing API (Section 4 of Spec)

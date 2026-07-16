@@ -2853,6 +2853,108 @@ export default function App() {
 
  // 1. Initial Storage Bootstrap
  useEffect(() => {
+   // Intercept fetch to track AI Backend & API Credits status in real-time
+   const originalFetch = window.fetch;
+   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
+   
+   window.fetch = async function (...args) {
+     try {
+       const response = await originalFetch.apply(this, args);
+       const urlStr = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url || '';
+       
+       if (urlStr.includes('/api/')) {
+         if (!response.ok) {
+           let errorMsg = `HTTP ${response.status}`;
+           try {
+             const clone = response.clone();
+             const json = await clone.json();
+             errorMsg = json.error || json.message || errorMsg;
+           } catch (_) {}
+           
+           setAiStatus("error");
+           if (errorMsg.toLowerCase().includes("quota") || errorMsg.toLowerCase().includes("credit") || errorMsg.toLowerCase().includes("429") || errorMsg.toLowerCase().includes("limit")) {
+             setAiErrorMessage("Gemini API credits exhausted or quota exceeded (429).");
+           } else if (errorMsg.toLowerCase().includes("key") || errorMsg.toLowerCase().includes("unauthorized") || errorMsg.toLowerCase().includes("401")) {
+             setAiErrorMessage("Gemini API key is invalid or missing.");
+           } else {
+             setAiErrorMessage(errorMsg);
+           }
+         } else {
+           setAiStatus((prev) => (prev === "error" || prev === "offline" ? "ok" : prev));
+         }
+       }
+       
+       const isSupabaseRequest = urlStr.includes("supabase.co") || (supabaseUrl && urlStr.includes(supabaseUrl));
+       if (isSupabaseRequest) {
+         if (!response.ok) {
+           let errorMsg = `HTTP ${response.status}`;
+           try {
+             const clone = response.clone();
+             const json = await clone.json();
+             errorMsg = json.msg || json.message || json.error_description || errorMsg;
+           } catch (_) {}
+           
+           setDbStatus("error");
+           setDbErrorMessage(errorMsg);
+         } else {
+           setDbStatus((prev) => (prev === "error" ? "connected" : prev));
+         }
+       }
+       
+       return response;
+     } catch (err: any) {
+       const urlStr = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url || '';
+       if (urlStr.includes('/api/')) {
+         setAiStatus("offline");
+         setAiErrorMessage(err.message || "Failed to reach backend server.");
+       }
+       const isSupabaseRequest = urlStr.includes("supabase.co") || (supabaseUrl && urlStr.includes(supabaseUrl));
+       if (isSupabaseRequest) {
+         setDbStatus("error");
+         setDbErrorMessage(err.message || "Network error: Failed to reach database.");
+       }
+       throw err;
+     }
+   };
+
+   // Run initial diagnostic checks
+   // 1. Check Supabase credentials & connection
+   const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+   if (!supabaseUrl || supabaseUrl.includes("placeholder-project-id") || !supabaseAnonKey || supabaseAnonKey === "placeholder-anon-key") {
+     setDbStatus("guest");
+   } else {
+     supabase.auth.getSession().then(({ data, error }) => {
+       if (error) {
+         setDbStatus("error");
+         setDbErrorMessage(error.message);
+       } else {
+         setDbStatus("connected");
+       }
+     }).catch((err) => {
+       setDbStatus("error");
+       setDbErrorMessage(err?.message || "Failed to contact Supabase database.");
+     });
+   }
+
+   // 2. Check Backend Server and Gemini API key
+   fetch("/api/health")
+     .then(async (res) => {
+       if (!res.ok) {
+         throw new Error(`Server returned status ${res.status}`);
+       }
+       const data = await res.json();
+       if (data.geminiApiKeyConfigured) {
+         setAiStatus("ok");
+       } else {
+         setAiStatus("no_key");
+         setAiErrorMessage("GEMINI_API_KEY environment variable is not defined on the server.");
+       }
+     })
+     .catch((err) => {
+       setAiStatus("offline");
+       setAiErrorMessage(err.message || "Could not connect to the backend server.");
+     });
+
  const blocks = loadFixedBlocks();
  const tasks = loadFlexibleTasks();
  const appSettingsLoaded = loadSettings();
@@ -2935,7 +3037,10 @@ export default function App() {
  }
  }
 
- return () => clearInterval(interval);
+ return () => {
+   clearInterval(interval);
+   window.fetch = originalFetch;
+ };
  }, []);
 
   const handleSignOut = async () => {
@@ -9007,6 +9112,43 @@ Please create the specified number of backlog tasks representing the project pha
  </div>
  )}
  </header>
+
+ {/* System Diagnostics status banner */}
+ {(dbStatus === "error" || dbStatus === "guest" || aiStatus === "offline" || aiStatus === "no_key" || aiStatus === "error") && (
+ <div className="px-4 py-2 bg-amber-500/10 dark:bg-amber-500/5 border-b border-amber-500/20 text-amber-800 dark:text-amber-300 text-xs flex flex-col gap-1 flex-shrink-0 animate-fade-in z-20">
+ {dbStatus === "guest" && (
+ <div className="flex items-center gap-1.5 font-medium">
+ <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
+ <span>Offline Guest Mode (Local storage only. Configure Supabase variables to enable database cloud sync).</span>
+ </div>
+ )}
+ {dbStatus === "error" && (
+ <div className="flex items-center gap-1.5 font-bold text-red-600 dark:text-red-400">
+ <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0 animate-pulse"></span>
+ <span>Database Offline: {dbErrorMessage || "Could not reach database."} (Falling back to local storage).</span>
+ </div>
+ )}
+ {aiStatus === "offline" && (
+ <div className="flex items-center gap-1.5 font-bold text-red-600 dark:text-rose-400">
+ <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0 animate-pulse"></span>
+ <span>AI Backend Offline: {aiErrorMessage || "Could not connect to AI backend."} (AI Coach & Copilot features disabled).</span>
+ </div>
+ )}
+ {aiStatus === "no_key" && (
+ <div className="flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400">
+ <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
+ <span>AI Features Disabled: GEMINI_API_KEY environment variable is not defined on the server.</span>
+ </div>
+ )}
+ {aiStatus === "error" && (
+ <div className="flex items-center gap-1.5 font-bold text-red-650 dark:text-red-400">
+ <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0 animate-pulse"></span>
+ <span>AI API Error: {aiErrorMessage || "Gemini API request failed."} (Quota limits exceeded or credits exhausted).</span>
+ </div>
+ )}
+ </div>
+ )}
+
 
  {/* MAIN DYNAMIC CONTENT RAIL (Independently scrolling tab viewports) */}
  <main id="mobile_viewport_content" className="flex-1 overflow-hidden flex flex-col relative bg-[var(--bg-page)]">
