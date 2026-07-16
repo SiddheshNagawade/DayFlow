@@ -921,7 +921,55 @@ const ToastItem: React.FC<{
   );
 };
 
+const formatMessageText = (text: string): React.ReactNode => {
+  if (!text) return "";
+  
+  // Split message into lines to handle bullet and numbered lists
+  const lines = text.split("\n");
+  
+  return lines.map((line, lineIdx) => {
+    // Check if it is a bullet/numbered item (e.g. starts with "* ", "- ", "1. ")
+    const bulletMatch = line.match(/^(\s*)([*\-·]|\d+\.)\s+(.*)/);
+    
+    // Parse bold text "**text**" within the line
+    const parseBold = (str: string) => {
+      const parts = str.split(/\*\*([^*]+)\*\*/g);
+      return parts.map((part, idx) => {
+        if (idx % 2 === 1) {
+          return <strong key={idx} className="font-extrabold text-slate-900 dark:text-white">{part}</strong>;
+        }
+        return part;
+      });
+    };
+
+    if (bulletMatch) {
+      const indent = bulletMatch[1].length * 8; // indentation pixels
+      const bulletChar = bulletMatch[2];
+      const bulletContent = bulletMatch[3];
+      const isDigit = /^\d+/.test(bulletChar);
+      
+      return (
+        <div key={lineIdx} className="flex items-start gap-1.5 my-0.5 text-left" style={{ paddingLeft: `${indent}px` }}>
+          {isDigit ? (
+            <span className="text-primary/80 dark:text-indigo-405 font-bold shrink-0 select-none text-[11px] min-w-[14px] text-right">{bulletChar}</span>
+          ) : (
+            <span className="text-primary/80 dark:text-indigo-405 mt-1.5 shrink-0 select-none text-[6px]">●</span>
+          )}
+          <span className="flex-1">{parseBold(bulletContent)}</span>
+        </div>
+      );
+    }
+    
+    return (
+      <div key={lineIdx} className={line.trim() === "" ? "h-2" : "min-h-[16px] text-left"}>
+        {parseBold(line)}
+      </div>
+    );
+  });
+};
+
 export default function App() {
+
   const [user, setUser] = useState<any>(null);
 
   // Diagnostic/Status States
@@ -7746,7 +7794,7 @@ Please create the specified number of backlog tasks representing the project pha
     setInjectedQuestionThisSession(true);
 
     // Create the welcome greeting
-    const greeting = `Welcome to DayFlow! 🚀 I'm your Day Coach.\n\nI've configured your base profile as a **${role}** with wake hours **${sleep.wake} - ${sleep.sleep}**.\n\nTo start off, let me ask: ${firstQ.question}`;
+    const greeting = `Hey there! 🚀 I'm your Day Coach.\n\nSet up your profile as a **${role}** (${sleep.wake} - ${sleep.sleep}).\n\nLet's start: ${firstQ.question}`;
     setChatHistory([{ sender: "ai", text: greeting }]);
     
     // Auto-open Day Coach
@@ -7754,7 +7802,7 @@ Please create the specified number of backlog tasks representing the project pha
     setCopilotError(null);
     setProposedChanges(null);
     setCopilotMinimized(false);
-    setActiveBottomSheet("assistant");
+
 
     markOnboardingComplete();
     setShowOnboarding(false);
@@ -7799,14 +7847,14 @@ Please create the specified number of backlog tasks representing the project pha
     localStorage.setItem("dayflow_pending_questions", JSON.stringify(remainingPending));
     setInjectedQuestionThisSession(true);
 
-    const greeting = `Welcome to DayFlow! 🚀 I'm your Day Coach.\n\nI've configured your base profile as a **working** professional with wake hours **07:00 - 23:00**.\n\nTo start off, let me ask: ${firstQ.question}`;
+    const greeting = `Hey there! 🚀 I'm your Day Coach.\n\nSet up your profile as a **working** professional (07:00 - 23:00).\n\nLet's start: ${firstQ.question}`;
     setChatHistory([{ sender: "ai", text: greeting }]);
     
     setCopilotInput("");
     setCopilotError(null);
     setProposedChanges(null);
     setCopilotMinimized(false);
-    setActiveBottomSheet("assistant");
+
 
     markOnboardingComplete();
     setShowOnboarding(false);
@@ -8053,9 +8101,8 @@ Please create the specified number of backlog tasks representing the project pha
  <div className="relative">
  <div 
  className={`text-xs leading-relaxed ${ isAI ? "p-3.5 bg-[#F6F5FF] border border-[#E0D9FF] text-[#1F2937] rounded-xl font-medium shadow-none text-left dark:msg-model dark:border-transparent" : "p-3.5 bg-primary text-white rounded-xl font-semibold shadow-[0_2px_4px_rgba(79,70,229,0.2)] text-left dark:msg-user dark:shadow-none" }`}
- style={{ whiteSpace: "pre-wrap" }}
  >
- {msg.text}
+ {formatMessageText(msg.text)}
  </div>
  
  {!isAI && !isProcessingCopilot && (
